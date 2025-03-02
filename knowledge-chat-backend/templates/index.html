@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document Processor</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ccc;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #eee;
+            border-radius: 5px;
+        }
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+        .sidebar {
+            width: 300px;
+            border-right: 1px solid #ccc;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .main-content {
+            flex: 1;
+            padding: 20px;
+        }
+        .history-item {
+            border: 1px solid #eee;
+            margin-bottom: 10px;
+            padding: 10px;
+            cursor: pointer;
+        }
+        .history-item:hover {
+            background-color: #f5f5f5;
+        }
+        .history-item.active {
+            border-color: #007bff;
+            background-color: #f8f9fa;
+        }
+        .history-timestamp {
+            font-size: 0.8em;
+            color: #666;
+        }
+        .history-query {
+            font-weight: bold;
+            margin: 5px 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .collapsed {
+            max-height: 100px;
+            overflow: hidden;
+        }
+        .expanded {
+            max-height: none;
+        }
+        .toggle-expand {
+            color: #007bff;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- History Sidebar -->
+        <div class="sidebar" id="historySidebar">
+            <h3>Conversation History</h3>
+            <div id="historyList"></div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <h1>Document Processor</h1>
+            
+            <div class="container">
+                <h2>Upload File</h2>
+                <form id="uploadForm">
+                    <input type="file" id="fileInput" accept=".pdf,.sql,.py" required>
+                    <button type="submit">Upload and Process</button>
+                </form>
+                <div id="uploadResult" class="result"></div>
+            </div>
+
+            <div class="container">
+                <h2>Query Collection</h2>
+                <form id="queryForm">
+                    <select id="collectionName" required>
+                        <option value="pdf_documents">PDF Documents</option>
+                        <option value="sql_documents">SQL Documents</option>
+                        <option value="python_documents">Python Documents</option>
+                    </select>
+                    <input type="text" id="queryText" placeholder="Enter your query" required>
+                    <button type="submit">Query</button>
+                </form>
+                <div id="queryResult" class="result"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const resultDiv = document.getElementById('uploadResult');
+            const fileInput = document.getElementById('fileInput');
+            
+            // Show loading state
+            resultDiv.innerHTML = 'Processing file...';
+            
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                const response = await fetch('/upload/', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Upload failed');
+                }
+                
+                const result = await response.json();
+                resultDiv.innerHTML = `
+                    <h3>Upload Result:</h3>
+                    <pre>
+File: ${result.filename}
+Status: ${result.status}
+Collection: ${result.collection}
+Documents Processed: ${result.num_documents || 'N/A'}
+                    </pre>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <div style="color: red;">
+                        <h3>Error:</h3>
+                        <pre>${error.message}</pre>
+                    </div>
+                `;
+            }
+        });
+
+        document.getElementById('queryForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const collectionName = document.getElementById('collectionName').value;
+            const queryText = document.getElementById('queryText').value;
+
+            try {
+                const response = await fetch('/query/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: `collection_name=${encodeURIComponent(collectionName)}&query_text=${encodeURIComponent(queryText)}`
+                });
+                const result = await response.json();
+                document.getElementById('queryResult').innerHTML = 
+                    `<pre>${JSON.stringify(result, null, 2)}</pre>`;
+            } catch (error) {
+                document.getElementById('queryResult').innerHTML = 
+                    `<pre>Error: ${error.message}</pre>`;
+            }
+        });
+
+        // Function to format timestamp
+        function formatTimestamp(timestamp) {
+            return new Date(timestamp).toLocaleString();
+        }
+
+        // Function to load and display history
+        async function loadHistory() {
+            try {
+                const response = await fetch('/history/');
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    const historyList = document.getElementById('historyList');
+                    historyList.innerHTML = '';
+
+                    data.history.forEach(item => {
+                        const historyItem = document.createElement('div');
+                        historyItem.className = 'history-item collapsed';
+                        
+                        historyItem.innerHTML = `
+                            <div class="history-timestamp">${formatTimestamp(item.timestamp)}</div>
+                            <div class="history-query">${item.query}</div>
+                            <div class="history-content collapsed">
+                                <strong>Response:</strong>
+                                <pre>${JSON.stringify(item.output, null, 2)}</pre>
+                                ${item.code_context ? `
+                                    <strong>Code Context:</strong>
+                                    <pre>${JSON.stringify(item.code_context, null, 2)}</pre>
+                                ` : ''}
+                            </div>
+                            <div class="toggle-expand">Show more</div>
+                        `;
+
+                        // Add click handler for expansion
+                        const toggleBtn = historyItem.querySelector('.toggle-expand');
+                        const content = historyItem.querySelector('.history-content');
+                        
+                        toggleBtn.addEventListener('click', () => {
+                            const isCollapsed = content.classList.contains('collapsed');
+                            content.classList.toggle('collapsed');
+                            content.classList.toggle('expanded');
+                            toggleBtn.textContent = isCollapsed ? 'Show less' : 'Show more';
+                        });
+
+                        historyList.appendChild(historyItem);
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading history:', error);
+            }
+        }
+
+        // Load history when page loads
+        document.addEventListener('DOMContentLoaded', loadHistory);
+
+        // Refresh history periodically (every 30 seconds)
+        setInterval(loadHistory, 30000);
+    </script>
+</body>
+</html> 

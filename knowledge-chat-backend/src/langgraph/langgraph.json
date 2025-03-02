@@ -1,0 +1,11 @@
+{
+    "python_version": "3.11",
+    "dockerfile_lines": [],
+    "dependencies": [
+      "."
+    ],
+    "graphs": {
+      "my_agent": "./workflow.py:graph"
+    },
+    "env": ".env"
+  }
