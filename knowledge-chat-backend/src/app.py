@@ -9,6 +9,7 @@ from pathlib import Path
 from .utils import ChromaDBManager
 from .tools import SearchTools
 from .agents.code_research import SimpleAnalysisSystem
+from .agents.data_architect.question_parser import QuestionParserSystem
 import logging
 from pydantic import BaseModel
 from .db.database import ChatDatabase
@@ -51,6 +52,9 @@ db_manager = ChromaDBManager(persist_directory=str(BASE_DIR / "chroma_db"))
 code_search_tools = SearchTools(db_manager)
 analysis_system = SimpleAnalysisSystem(code_search_tools)
 
+# Initialize question parser system
+question_parser_system = QuestionParserSystem(code_search_tools, feedback_timeout=120)
+
 # Initialize database
 chat_db = ChatDatabase()
 
@@ -72,6 +76,13 @@ class ChatRequest(BaseModel):
     message: str
     conversation_id: Optional[str] = None  # Add conversation ID support
     context: Optional[Dict[str, Any]] = None  # Add context support
+    wait_for_feedback: bool = False  # New parameter to control feedback behavior
+
+class FeedbackRequest(BaseModel):
+    conversation_id: str
+    approved: bool
+    comments: str = ""
+    suggested_changes: Dict[str, Any] = {}
 
 class ChatResponse(BaseModel):
     answer: str
@@ -81,6 +92,9 @@ class ChatResponse(BaseModel):
     technical_details: Optional[str] = None
     business_context: Optional[str] = None
     data_lineage: Optional[Dict[str, Any]] = None
+    parsed_question: Optional[Dict[str, Any]] = None
+    feedback_required: bool = False
+    feedback_status: Optional[str] = None
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -289,38 +303,181 @@ async def get_schema():
 
 @app.post("/chat/")
 async def chat(request: ChatRequest):
-    """Process a chat message with context."""
+    """Process a chat message."""
     try:
-        # Initialize analysis system with conversation context
-        analysis_system = SimpleAnalysisSystem(
-            tools=SearchTools(db_manager),
-            db=chat_db
-        )
+        logger.info(f"Processing chat request: {request.message}")
         
-        # Process the query with context
-        result = analysis_system.analyze(
-            query=request.message,
-            conversation_id=request.conversation_id,
-            context=request.context
-        )
-        
-        return ChatResponse(
-            answer=result["output"],
-            conversation_id=result.get("conversation_id", ""),
-            sources=result.get("sources", {}),
-            analysis={
-                "code": result.get("code_analysis", ""),
-                "documentation": result.get("doc_analysis", ""),
-                "github": result.get("github_analysis", "")
+        if request.wait_for_feedback:
+            logger.info("Using question parser with human feedback")
+            result = await question_parser_system.parse_question_with_feedback(request.message)
+            
+            # Check if we're waiting for feedback
+            if result.get("status") == "waiting":
+                logger.info("Waiting for human feedback")
+                parsed_question = result.get("parsed_question", {})
+                
+                # Format the interpretation message
+                interpretation_msg = (
+                    f"Based on your question: '{parsed_question.get('original_question')}'\n\n"
+                    f"I understand you're asking about: {parsed_question.get('rephrased_question')}\n\n"
+                    f"Business Context: {parsed_question.get('business_context')}\n\n"
+                )
+                
+                # Add alternative interpretations if available
+                alternatives = parsed_question.get('alternative_interpretations', [])
+                if alternatives:
+                    interpretation_msg += "\nAlternative interpretations:\n"
+                    for i, alt in enumerate(alternatives, 1):
+                        interpretation_msg += f"{i}. {alt}\n"
+                
+                return JSONResponse(
+                    content={
+                        "answer": interpretation_msg,
+                        "conversation_id": result.get("conversation_id", ""),
+                        "sources": {},
+                        "analysis": {},
+                        "parsed_question": parsed_question,
+                        "feedback_required": True,
+                        "feedback_status": "waiting",
+                        "confidence_score": parsed_question.get("confidence_score", 0.0)
+                    },
+                    status_code=200
+                )
+            
+            # Process approved/updated interpretation
+            final_answer = f"Based on the confirmed interpretation, here's what I found:\n\n{result.get('parsed_question', {}).get('suggested_approach', '')}"
+            
+            return JSONResponse(
+                content={
+                    "answer": final_answer,
+                    "conversation_id": result.get("conversation_id", ""),
+                    "sources": result.get("doc_context", {}),
+                    "analysis": {
+                        "business_context": result.get("parsed_question", {}).get("business_context", ""),
+                        "tables": result.get("parsed_question", {}).get("relevant_tables", []),
+                        "intent": result.get("parsed_question", {}).get("query_intent", {})
+                    },
+                    "parsed_question": result.get("parsed_question", {}),
+                    "feedback_required": False,
+                    "feedback_status": "completed"
+                },
+                status_code=200
+            )
+        else:
+            # Use the synchronous version without human feedback
+            logger.info("Using question parser without human feedback")
+            result = question_parser_system.parse_question(request.message)
+            
+            final_answer = f"Based on my understanding of your question, here's what I found:\n\n{result.get('parsed_question', {}).get('suggested_approach', '')}"
+            
+            return JSONResponse(
+                content={
+                    "answer": final_answer,
+                    "conversation_id": result.get("conversation_id", ""),
+                    "sources": result.get("doc_context", {}),
+                    "analysis": {
+                        "business_context": result.get("parsed_question", {}).get("business_context", ""),
+                        "tables": result.get("parsed_question", {}).get("relevant_tables", []),
+                        "intent": result.get("parsed_question", {}).get("query_intent", {})
+                    },
+                    "parsed_question": result.get("parsed_question", {}),
+                    "feedback_required": False,
+                    "feedback_status": "auto_approved"
+                },
+                status_code=200
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in chat endpoint: {str(e)}", exc_info=True)
+        return JSONResponse(
+            content={
+                "error": str(e),
+                "feedback_required": False,
+                "feedback_status": "error"
             },
-            technical_details=result.get("technical_details", ""),
-            business_context=result.get("business_context", ""),
-            data_lineage=result.get("data_lineage", {})
+            status_code=500
+        )
+
+@app.post("/feedback/")
+async def provide_feedback(request: FeedbackRequest):
+    """Provide feedback for a parsed question."""
+    try:
+        from src.agents.data_architect.human_feedback import HumanFeedbackSystem
+        
+        # Get the feedback system
+        feedback_system = HumanFeedbackSystem()
+        
+        # Provide feedback
+        success = feedback_system.provide_feedback(
+            request.conversation_id,
+            {
+                "approved": request.approved,
+                "comments": request.comments,
+                "suggested_changes": request.suggested_changes
+            }
+        )
+        
+        if not success:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "error",
+                    "message": f"No pending feedback request found for conversation {request.conversation_id}"
+                }
+            )
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "message": "Feedback received"
+            }
         )
         
     except Exception as e:
-        logger.error(f"Error in chat endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error providing feedback: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": str(e)
+            }
+        )
+
+@app.get("/pending-feedback/")
+async def get_pending_feedback():
+    """Get all pending feedback requests."""
+    try:
+        from src.agents.data_architect.human_feedback import HumanFeedbackSystem
+        
+        # Get the feedback system
+        feedback_system = HumanFeedbackSystem()
+        
+        # Get pending feedback requests
+        pending = feedback_system.get_pending_feedback_requests()
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "pending_requests": [
+                    {
+                        "conversation_id": conv_id,
+                        "parsed_question": data["parsed_question"],
+                        "timestamp": data["timestamp"].isoformat()
+                    }
+                    for conv_id, data in pending.items()
+                ]
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting pending feedback: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": str(e)
+            }
+        )
 
 @app.get("/conversations/{conversation_id}")
 async def get_conversation(conversation_id: str):

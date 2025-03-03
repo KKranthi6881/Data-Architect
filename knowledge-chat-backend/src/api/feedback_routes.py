@@ -20,16 +20,26 @@ class PendingFeedbackResponse(BaseModel):
 @router.get("/pending", response_model=List[PendingFeedbackResponse])
 async def get_pending_feedback():
     """Get all pending feedback requests."""
-    pending = feedback_system.get_pending_feedback_requests()
-    
-    return [
-        {
-            "conversation_id": conv_id,
-            "parsed_question": data["parsed_question"],
-            "timestamp": data["timestamp"].isoformat()
+    try:
+        pending = feedback_system.get_pending_feedback_requests()
+        
+        # Only return requests that are actually waiting for feedback
+        valid_pending = {
+            conv_id: data for conv_id, data in pending.items() 
+            if data.get("status") == "waiting"
         }
-        for conv_id, data in pending.items()
-    ]
+        
+        return [
+            {
+                "conversation_id": conv_id,
+                "parsed_question": data["parsed_question"],
+                "timestamp": data["timestamp"].isoformat()
+            }
+            for conv_id, data in valid_pending.items()
+        ]
+    except Exception as e:
+        logger.error(f"Error getting pending feedback: {str(e)}")
+        return []
 
 @router.post("/{conversation_id}")
 async def provide_feedback(conversation_id: str, feedback: FeedbackRequest = Body(...)):

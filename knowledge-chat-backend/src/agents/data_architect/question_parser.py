@@ -9,8 +9,11 @@ import uuid
 import logging
 from sqlite3 import connect
 from threading import Lock
-from trustcall import create_extractor
 import asyncio
+import json
+import re
+from langchain.output_parsers import PydanticOutputParser
+from langchain_core.prompts import PromptTemplate
 
 from src.tools import SearchTools
 from src.db.database import ChatDatabase
@@ -56,6 +59,10 @@ class ParsedQuestion(BaseModel):
     rephrased_question: str = Field(
         description="The question rephrased for clarity"
     )
+    alternative_interpretations: List[str] = Field(
+        description="Alternative ways to interpret the question",
+        default_factory=list
+    )
     business_context: str = Field(
         description="Business context relevant to the question"
     )
@@ -68,6 +75,10 @@ class ParsedQuestion(BaseModel):
     suggested_approach: str = Field(
         description="Suggested approach to answer the question"
     )
+    confidence_score: float = Field(
+        description="Confidence score of the interpretation (0-1)",
+        default=0.0
+    )
 
 def create_question_parser(tools: SearchTools):
     # Initialize model
@@ -78,8 +89,55 @@ def create_question_parser(tools: SearchTools):
         timeout=120,
     )
     
-    # Create TrustCall extractor
-    question_extractor = create_extractor(parser_model, tools=[ParsedQuestion])
+    # Create a simpler prompt that directly asks for JSON
+    parser_prompt = PromptTemplate(
+        template="""
+        You are an expert data analyst and SQL specialist. Parse the following user question 
+        and provide a structured analysis based on the available documentation context.
+        
+        USER QUESTION:
+        {query}
+        
+        DOCUMENTATION CONTEXT:
+        {doc_context}
+        
+        Guidelines:
+        - Identify the business context of the question
+        - Determine which tables and columns are relevant
+        - Understand the metrics and dimensions needed
+        - Identify any filters or time periods mentioned
+        - Rephrase the question for clarity if needed
+        - Suggest an approach to answer the question
+        
+        Return your response as a valid JSON object with the following structure:
+        
+        ```json
+        {{
+            "original_question": "The original question asked by the user",
+            "rephrased_question": "The question rephrased for clarity",
+            "business_context": "Business context relevant to the question",
+            "relevant_tables": [
+                {{
+                    "name": "table_name",
+                    "columns": ["column1", "column2"],
+                    "description": "Description of the table's purpose"
+                }}
+            ],
+            "query_intent": {{
+                "primary_intent": "data retrieval/analysis/comparison",
+                "time_period": "Time period mentioned if any",
+                "filters": {{"field": "value"}},
+                "metrics": ["metric1", "metric2"],
+                "grouping": ["dimension1", "dimension2"]
+            }},
+            "suggested_approach": "Suggested approach to answer the question"
+        }}
+        ```
+        
+        Make sure your response is a valid JSON object that follows this exact structure.
+        """,
+        input_variables=["query", "doc_context"]
+    )
 
     def process_question(state: ParserState) -> Dict:
         """Process and parse the user's question."""
@@ -103,46 +161,67 @@ def create_question_parser(tools: SearchTools):
             
             doc_context = "\n".join(doc_snippets)
             
-            # Create prompt for question parsing
-            prompt = f"""
-            You are an expert data analyst and SQL specialist. Parse the following user question 
-            and provide a structured analysis based on the available documentation context.
-            
-            USER QUESTION:
-            {query}
-            
-            DOCUMENTATION CONTEXT:
-            {doc_context}
-            
-            Guidelines:
-            - Identify the business context of the question
-            - Determine which tables and columns are relevant
-            - Understand the metrics and dimensions needed
-            - Identify any filters or time periods mentioned
-            - Rephrase the question for clarity if needed
-            - Suggest an approach to answer the question
-            
-            Provide a structured analysis of the question.
-            """
-            
-            # Use TrustCall to extract structured information
-            extraction_result = question_extractor.invoke(
-                {
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ]
-                }
+            # Format the prompt
+            formatted_prompt = parser_prompt.format(
+                query=query,
+                doc_context=doc_context
             )
             
-            # Get the structured output
-            parsed_question = extraction_result["responses"][0]
+            # Get response from the model
+            response = parser_model.invoke(formatted_prompt)
+            response_text = response.content if hasattr(response, 'content') else str(response)
+            
+            # Extract JSON from the response
+            json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                # Try to find JSON without the markdown code block
+                json_match = re.search(r'({[\s\S]*})', response_text)
+                if json_match:
+                    json_str = json_match.group(1)
+                else:
+                    json_str = response_text
+            
+            try:
+                # Parse the JSON
+                parsed_dict = json.loads(json_str)
+                
+                # Ensure all required fields are present
+                if "relevant_tables" not in parsed_dict or not parsed_dict["relevant_tables"]:
+                    parsed_dict["relevant_tables"] = [{"name": "unknown", "columns": []}]
+                
+                if "query_intent" not in parsed_dict:
+                    parsed_dict["query_intent"] = {
+                        "primary_intent": "unknown",
+                        "metrics": []
+                    }
+                elif "metrics" not in parsed_dict["query_intent"]:
+                    parsed_dict["query_intent"]["metrics"] = []
+                
+                # Ensure all required fields are present
+                for field in ["original_question", "rephrased_question", "business_context", "suggested_approach"]:
+                    if field not in parsed_dict:
+                        parsed_dict[field] = query if field == "original_question" else ""
+                
+            except Exception as parse_error:
+                logger.error(f"Error parsing JSON output: {str(parse_error)}")
+                # Fallback to a simpler structure if parsing fails
+                parsed_dict = {
+                    "original_question": query,
+                    "rephrased_question": query,
+                    "business_context": "Error occurred during parsing",
+                    "relevant_tables": [{"name": "unknown", "columns": []}],
+                    "query_intent": {
+                        "primary_intent": "unknown",
+                        "metrics": []
+                    },
+                    "suggested_approach": f"Error during question parsing: {str(parse_error)}"
+                }
             
             return {
                 "doc_context": {"query": query, "results": search_results.get('results', [])},
-                "parsed_question": parsed_question.model_dump()
+                "parsed_question": parsed_dict
             }
             
         except Exception as e:
@@ -152,7 +231,7 @@ def create_question_parser(tools: SearchTools):
                     "original_question": query,
                     "rephrased_question": query,
                     "business_context": "Error occurred during parsing",
-                    "relevant_tables": [],
+                    "relevant_tables": [{"name": "unknown", "columns": []}],
                     "query_intent": {
                         "primary_intent": "unknown",
                         "metrics": []
@@ -248,7 +327,8 @@ class QuestionParserSystem:
                 "feedback": feedback_result.get("feedback", {}),
                 "status": feedback_result.get("status", "unknown"),
                 "query": query,
-                "messages": feedback_result.get("messages", [])
+                "messages": feedback_result.get("messages", []),
+                "conversation_id": conversation_id  # Add conversation_id to response
             }
             
             # Save conversation to database
@@ -264,7 +344,7 @@ class QuestionParserSystem:
                     "original_question": query,
                     "rephrased_question": query,
                     "business_context": "Error occurred during parsing",
-                    "relevant_tables": [],
+                    "relevant_tables": [{"name": "unknown", "columns": []}],
                     "query_intent": {
                         "primary_intent": "unknown",
                         "metrics": []
@@ -275,7 +355,8 @@ class QuestionParserSystem:
                 "feedback": None,
                 "status": "error",
                 "query": query,
-                "messages": [HumanMessage(content=query)]
+                "messages": [HumanMessage(content=query)],
+                "conversation_id": str(uuid.uuid4())
             }
             return error_response
     
@@ -304,7 +385,8 @@ class QuestionParserSystem:
                 "doc_context": result.get("doc_context", {}),
                 "feedback": {"approved": True, "comments": "Auto-approved"},
                 "status": "approved",
-                "query": query
+                "query": query,
+                "conversation_id": conversation_id
             }
             
             # Save conversation to database
@@ -320,7 +402,7 @@ class QuestionParserSystem:
                     "original_question": query,
                     "rephrased_question": query,
                     "business_context": "Error occurred during parsing",
-                    "relevant_tables": [],
+                    "relevant_tables": [{"name": "unknown", "columns": []}],
                     "query_intent": {
                         "primary_intent": "unknown",
                         "metrics": []
@@ -330,6 +412,7 @@ class QuestionParserSystem:
                 "doc_context": {},
                 "feedback": None,
                 "status": "error",
-                "query": query
+                "query": query,
+                "conversation_id": str(uuid.uuid4())
             }
             return error_response

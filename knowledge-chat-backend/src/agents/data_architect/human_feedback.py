@@ -294,8 +294,8 @@ class HumanFeedbackSystem:
             return False
         
         try:
-            # Update the pending feedback status
-            self.pending_feedback[conversation_id]["status"] = "received"
+            # Update the pending feedback status immediately
+            self.pending_feedback[conversation_id]["status"] = "processed"
             
             # Create a FeedbackResponse object
             feedback_response = {
@@ -308,6 +308,16 @@ class HumanFeedbackSystem:
             callback = self.feedback_callbacks[conversation_id]
             if not callback.done():
                 callback.set_result(feedback_response)
+            
+            # Remove from pending feedback after a short delay
+            async def cleanup():
+                await asyncio.sleep(2)
+                if conversation_id in self.pending_feedback:
+                    del self.pending_feedback[conversation_id]
+                if conversation_id in self.feedback_callbacks:
+                    del self.feedback_callbacks[conversation_id]
+                
+            asyncio.create_task(cleanup())
             
             return True
             
