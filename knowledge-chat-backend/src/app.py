@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Request, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, Request, HTTPException, Form, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -18,8 +18,10 @@ from datetime import datetime
 from langchain_community.utilities import SQLDatabase
 from src.tools import SearchTools
 from typing import Optional, List, Dict, Any
+from src.agents.data_architect.human_feedback import HumanFeedbackSystem
+from src.api.feedback_routes import router as feedback_router
 
-app = FastAPI()
+app = FastAPI(title="Knowledge Chat API")
 
 # Add CORS middleware
 app.add_middleware(
@@ -95,6 +97,9 @@ class ChatResponse(BaseModel):
     parsed_question: Optional[Dict[str, Any]] = None
     feedback_required: bool = False
     feedback_status: Optional[str] = None
+
+# Include feedback routes
+app.include_router(feedback_router, prefix="/feedback-status", tags=["feedback"])
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -311,22 +316,23 @@ async def chat(request: ChatRequest):
             logger.info("Using question parser with human feedback")
             result = await question_parser_system.parse_question_with_feedback(request.message)
             
-            # Check if we're waiting for feedback
+            # Check if we need feedback
             if result.get("status") == "waiting":
                 logger.info("Waiting for human feedback")
                 parsed_question = result.get("parsed_question", {})
                 
                 # Format the interpretation message
                 interpretation_msg = (
-                    f"Based on your question: '{parsed_question.get('original_question')}'\n\n"
-                    f"I understand you're asking about: {parsed_question.get('rephrased_question')}\n\n"
+                    f"I understand your question as:\n\n"
+                    f"'{parsed_question.get('rephrased_question')}'\n\n"
                     f"Business Context: {parsed_question.get('business_context')}\n\n"
+                    "Please review if this interpretation is correct."
                 )
                 
                 # Add alternative interpretations if available
                 alternatives = parsed_question.get('alternative_interpretations', [])
                 if alternatives:
-                    interpretation_msg += "\nAlternative interpretations:\n"
+                    interpretation_msg += "\n\nAlternative interpretations:\n"
                     for i, alt in enumerate(alternatives, 1):
                         interpretation_msg += f"{i}. {alt}\n"
                 
@@ -334,8 +340,6 @@ async def chat(request: ChatRequest):
                     content={
                         "answer": interpretation_msg,
                         "conversation_id": result.get("conversation_id", ""),
-                        "sources": {},
-                        "analysis": {},
                         "parsed_question": parsed_question,
                         "feedback_required": True,
                         "feedback_status": "waiting",
@@ -344,19 +348,20 @@ async def chat(request: ChatRequest):
                     status_code=200
                 )
             
-            # Process approved/updated interpretation
+            # If we got here without waiting status, something went wrong
+            if result.get("status") == "error":
+                raise HTTPException(
+                    status_code=500,
+                    detail=result.get("error", "Error processing question")
+                )
+            
+            # Process the approved/completed result
             final_answer = f"Based on the confirmed interpretation, here's what I found:\n\n{result.get('parsed_question', {}).get('suggested_approach', '')}"
             
             return JSONResponse(
                 content={
                     "answer": final_answer,
                     "conversation_id": result.get("conversation_id", ""),
-                    "sources": result.get("doc_context", {}),
-                    "analysis": {
-                        "business_context": result.get("parsed_question", {}).get("business_context", ""),
-                        "tables": result.get("parsed_question", {}).get("relevant_tables", []),
-                        "intent": result.get("parsed_question", {}).get("query_intent", {})
-                    },
                     "parsed_question": result.get("parsed_question", {}),
                     "feedback_required": False,
                     "feedback_status": "completed"
@@ -402,8 +407,6 @@ async def chat(request: ChatRequest):
 async def provide_feedback(request: FeedbackRequest):
     """Provide feedback for a parsed question."""
     try:
-        from src.agents.data_architect.human_feedback import HumanFeedbackSystem
-        
         # Get the feedback system
         feedback_system = HumanFeedbackSystem()
         
@@ -447,8 +450,6 @@ async def provide_feedback(request: FeedbackRequest):
 async def get_pending_feedback():
     """Get all pending feedback requests."""
     try:
-        from src.agents.data_architect.human_feedback import HumanFeedbackSystem
-        
         # Get the feedback system
         feedback_system = HumanFeedbackSystem()
         
