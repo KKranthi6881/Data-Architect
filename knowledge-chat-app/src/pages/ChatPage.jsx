@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   Box,
   Flex,
@@ -40,7 +40,13 @@ import {
   DrawerOverlay,
   DrawerContent,
   DrawerCloseButton,
-  Select
+  Select,
+  Accordion,
+  AccordionItem,
+  AccordionButton,
+  AccordionPanel,
+  AccordionIcon,
+  Progress
 } from '@chakra-ui/react'
 import { 
   IoSend, 
@@ -115,191 +121,167 @@ const sampleConversation = [
 ];
 
 const ChatPage = () => {
+  const [input, setInput] = useState('')
   const [messages, setMessages] = useState([
-    { 
-      id: 1, 
-      role: 'assistant', 
-      content: 'Hello! I\'m your Data Architecture Assistant. How can I help you today?', 
-      timestamp: new Date().toISOString() 
+    {
+      type: 'assistant',
+      content: "Hello! I'm your Data Architecture Assistant. How can I help you today?",
     }
   ])
-  const [input, setInput] = useState('')
-  const [isTyping, setIsTyping] = useState(false)
-  const messagesEndRef = useRef(null)
-  const bgColor = useColorModeValue('white', 'gray.700')
-  const borderColor = useColorModeValue('gray.200', 'gray.600')
-  
-  // Auto-scroll to bottom of messages
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-  
-  const handleSendMessage = () => {
+  const [loading, setLoading] = useState(false)
+  const [processingStep, setProcessingStep] = useState('')
+
+  const sendMessage = async () => {
     if (!input.trim()) return
     
-    // Add user message
-    const userMessage = {
-      id: messages.length + 1,
-      role: 'user',
-      content: input,
-      timestamp: new Date().toISOString()
-    }
-    
-    setMessages(prev => [...prev, userMessage])
+    setLoading(true)
+    const userMessage = input
     setInput('')
-    setIsTyping(true)
     
-    // Simulate AI response after a delay
-    setTimeout(() => {
-      const aiMessage = {
-        id: messages.length + 2,
-        role: 'assistant',
-        content: `I understand you're asking about "${input}". Here's what I found in our data architecture:`,
-        timestamp: new Date().toISOString()
-      }
+    // Add user message
+    setMessages(prev => [...prev, { 
+      type: 'user', 
+      content: userMessage 
+    }])
+
+    try {
+      // Show processing steps
+      setProcessingStep('Analyzing code and documentation...')
       
-      setMessages(prev => [...prev, aiMessage])
-      setIsTyping(false)
-    }, 1500)
+      const response = await fetch('http://localhost:8000/chat/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: userMessage
+        })
+      })
+
+      const data = await response.json()
+      console.log("Response from server:", data)
+
+      // Add assistant response
+      setMessages(prev => [...prev, {
+        type: 'assistant',
+        content: data.answer,
+        details: {
+          code: data.analysis?.code || '',
+          documentation: data.analysis?.documentation || '',
+          github: data.analysis?.github || '',
+          technical: data.technical_details || '',
+          sources: data.sources || {}
+        }
+      }])
+
+    } catch (error) {
+      console.error('Error:', error)
+      setMessages(prev => [...prev, {
+        type: 'error',
+        content: 'Error processing your request'
+      }])
+    }
+
+    setProcessingStep('')
+    setLoading(false)
   }
-  
+
   return (
-    <Flex h="calc(100vh - 64px)" maxW="1200px" mx="auto">
-      {/* Sidebar with chat history */}
-      <Box w="250px" borderRight="1px" borderColor={borderColor} p={4} display={{ base: 'none', md: 'block' }}>
-        <VStack align="stretch" spacing={4}>
-          <Button leftIcon={<IoAdd />} colorScheme="brand" size="sm">
-            New Chat
-          </Button>
-          
-          <Divider />
-          
-          <Heading size="xs" color="gray.500">RECENT CHATS</Heading>
-          
-          {/* Chat history items */}
-          <VStack align="stretch" spacing={2}>
-            <Card variant="outline" bg="brand.50" _hover={{ shadow: 'sm' }} cursor="pointer">
-              <CardBody py={2} px={3}>
-                <Text fontSize="sm" fontWeight="medium" noOfLines={1}>
-                  Database Schema Question
-                </Text>
-                <Text fontSize="xs" color="gray.500">
-                  Today, 10:30 AM
-                </Text>
-              </CardBody>
-            </Card>
+    <Box p={4}>
+      {/* Messages */}
+      <VStack spacing={4} mb={8} align="stretch">
+        {messages.map((message, index) => (
+          <Box 
+            key={index}
+            bg={message.type === 'user' ? 'blue.50' : 'gray.50'}
+            p={4}
+            borderRadius="md"
+            alignSelf={message.type === 'user' ? 'flex-end' : 'flex-start'}
+            maxW="80%"
+          >
+            <Text>{message.content}</Text>
             
-            <Card variant="outline" _hover={{ shadow: 'sm' }} cursor="pointer">
-              <CardBody py={2} px={3}>
-                <Text fontSize="sm" fontWeight="medium" noOfLines={1}>
-                  SQL Query Optimization
-                </Text>
-                <Text fontSize="xs" color="gray.500">
-                  Yesterday, 2:45 PM
-                </Text>
-              </CardBody>
-            </Card>
-          </VStack>
-        </VStack>
-      </Box>
-      
-      {/* Main chat area */}
-      <Flex flex="1" direction="column">
-        {/* Messages */}
-        <VStack 
-          flex="1" 
-          spacing={4} 
-          p={4} 
-          overflowY="auto" 
-          align="stretch"
-        >
-          {messages.map(message => (
-            <HStack 
-              key={message.id} 
-              alignSelf={message.role === 'user' ? 'flex-end' : 'flex-start'}
-              maxW="80%"
-            >
-              {message.role === 'assistant' && (
-                <Avatar size="sm" icon={<IoDocumentText fontSize="1.2rem" />} bg="brand.500" />
-              )}
-              
-              <Box 
-                bg={message.role === 'user' ? 'brand.500' : bgColor}
-                color={message.role === 'user' ? 'white' : 'inherit'}
-                px={4} 
-                py={2} 
-                borderRadius="lg" 
-                shadow="sm"
-              >
-                <Text>{message.content}</Text>
-                
-                {message.code && (
-                  <Box mt={2} p={2} bg="gray.50" borderRadius="md" fontSize="sm">
-                    <Code colorScheme="blue" whiteSpace="pre" display="block">
-                      {message.code}
-                    </Code>
-                  </Box>
-                )}
-                
-                <Text fontSize="xs" color={message.role === 'user' ? 'whiteAlpha.700' : 'gray.500'} textAlign="right" mt={1}>
-                  {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </Text>
+            {/* Show details button only for assistant messages with details */}
+            {message.type === 'assistant' && message.details && (
+              <Box mt={4}>
+                <Accordion allowToggle>
+                  <AccordionItem>
+                    <AccordionButton>
+                      <Box flex="1" textAlign="left">
+                        View Analysis Details
+                      </Box>
+                      <AccordionIcon />
+                    </AccordionButton>
+                    <AccordionPanel>
+                      <VStack align="stretch" spacing={4}>
+                        {message.details.code && (
+                          <Box>
+                            <Text fontWeight="bold">Code Analysis:</Text>
+                            <Code p={2} whiteSpace="pre-wrap">
+                              {message.details.code}
+                            </Code>
+                          </Box>
+                        )}
+                        {message.details.documentation && (
+                          <Box>
+                            <Text fontWeight="bold">Documentation Analysis:</Text>
+                            <Code p={2} whiteSpace="pre-wrap">
+                              {message.details.documentation}
+                            </Code>
+                          </Box>
+                        )}
+                        {message.details.github && (
+                          <Box>
+                            <Text fontWeight="bold">GitHub Analysis:</Text>
+                            <Code p={2} whiteSpace="pre-wrap">
+                              {message.details.github}
+                            </Code>
+                          </Box>
+                        )}
+                        {message.details.technical && (
+                          <Box>
+                            <Text fontWeight="bold">Technical Details:</Text>
+                            <Code p={2} whiteSpace="pre-wrap">
+                              {message.details.technical}
+                            </Code>
+                          </Box>
+                        )}
+                      </VStack>
+                    </AccordionPanel>
+                  </AccordionItem>
+                </Accordion>
               </Box>
-              
-              {message.role === 'user' && (
-                <Avatar size="sm" bg="gray.400" />
-              )}
-            </HStack>
-          ))}
-          
-          {isTyping && (
-            <HStack alignSelf="flex-start" maxW="80%">
-              <Avatar size="sm" icon={<IoDocumentText fontSize="1.2rem" />} bg="brand.500" />
-              <Box bg={bgColor} px={4} py={2} borderRadius="lg" shadow="sm">
-                <Text>AI is thinking...</Text>
-              </Box>
-            </HStack>
-          )}
-          
-          <div ref={messagesEndRef} />
-        </VStack>
+            )}
+          </Box>
+        ))}
         
-        {/* Input area */}
-        <Box p={4} borderTop="1px" borderColor={borderColor}>
-          <InputGroup>
-            <Textarea
-              placeholder="Ask about database schemas, data models, or SQL queries..."
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyPress={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  handleSendMessage()
-                }
-              }}
-              pr="4.5rem"
-              resize="none"
-              rows={1}
-              maxH="120px"
-            />
-            <InputRightElement width="4.5rem" h="100%">
-              <IconButton
-                h="1.75rem"
-                size="sm"
-                icon={<IoSend />}
-                colorScheme="brand"
-                onClick={handleSendMessage}
-                isDisabled={!input.trim()}
-                aria-label="Send message"
-              />
-            </InputRightElement>
-          </InputGroup>
-          <Text fontSize="xs" color="gray.500" mt={2} textAlign="center">
-            Connected to Snowflake Data Warehouse
-          </Text>
-        </Box>
-      </Flex>
-    </Flex>
+        {/* Show processing step */}
+        {processingStep && (
+          <Box p={4} bg="gray.100" borderRadius="md">
+            <Text>{processingStep}</Text>
+            <Progress size="xs" isIndeterminate mt={2} />
+          </Box>
+        )}
+      </VStack>
+
+      {/* Input area */}
+      <HStack>
+        <Input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Ask about database schemas, data models, or SQL queries..."
+          onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+          disabled={loading}
+        />
+        <Button 
+          onClick={sendMessage} 
+          isLoading={loading}
+          colorScheme="blue"
+        >
+          Send
+        </Button>
+      </HStack>
+    </Box>
   )
 }
 

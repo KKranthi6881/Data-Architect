@@ -16,6 +16,7 @@ import streamlit as st
 from datetime import datetime
 from langchain_community.utilities import SQLDatabase
 from src.tools import SearchTools
+from typing import Optional, List, Dict, Any
 
 app = FastAPI()
 
@@ -53,8 +54,6 @@ analysis_system = SimpleAnalysisSystem(code_search_tools)
 # Initialize database
 chat_db = ChatDatabase()
 
-
-
 # Add new model for code analysis requests
 class CodeAnalysisRequest(BaseModel):
     query: str
@@ -68,6 +67,20 @@ class GitHubRepoRequest(BaseModel):
     repo_url: str
     username: str = ""
     token: str = ""
+
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None  # Add conversation ID support
+    context: Optional[Dict[str, Any]] = None  # Add context support
+
+class ChatResponse(BaseModel):
+    answer: str
+    conversation_id: str
+    sources: Dict[str, Any]
+    analysis: Dict[str, Any]
+    technical_details: Optional[str] = None
+    business_context: Optional[str] = None
+    data_lineage: Optional[Dict[str, Any]] = None
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -266,8 +279,6 @@ async def analyze_code(request: CodeAnalysisRequest):
             }
         )
 
-
-
 @app.get("/schema")
 async def get_schema():
     try:
@@ -276,18 +287,49 @@ async def get_schema():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
+@app.post("/chat/")
+async def chat(request: ChatRequest):
+    """Process a chat message with context."""
+    try:
+        # Initialize analysis system with conversation context
+        analysis_system = SimpleAnalysisSystem(
+            tools=SearchTools(db_manager),
+            db=chat_db
+        )
+        
+        # Process the query with context
+        result = analysis_system.analyze(
+            query=request.message,
+            conversation_id=request.conversation_id,
+            context=request.context
+        )
+        
+        return ChatResponse(
+            answer=result["output"],
+            conversation_id=result.get("conversation_id", ""),
+            sources=result.get("sources", {}),
+            analysis={
+                "code": result.get("code_analysis", ""),
+                "documentation": result.get("doc_analysis", ""),
+                "github": result.get("github_analysis", "")
+            },
+            technical_details=result.get("technical_details", ""),
+            business_context=result.get("business_context", ""),
+            data_lineage=result.get("data_lineage", {})
+        )
         
     except Exception as e:
-        logger.error(f"Error in SQL analysis: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": str(e)
-            }
-        )
+        logger.error(f"Error in chat endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """Get conversation history."""
+    try:
+        history = chat_db.get_conversation(conversation_id)
+        return {"history": history}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Conversation not found: {str(e)}")
 
 def render_history_sidebar():
     """Render the conversation history in the sidebar"""

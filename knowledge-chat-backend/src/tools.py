@@ -4,68 +4,169 @@ import logging
 from src.utils import ChromaDBManager
 from langchain.tools import Tool
 from pydantic import BaseModel, Field
+import json
+import re
 
 logger = logging.getLogger(__name__)
 
 class SearchTools:
-    def __init__(self, db_manager):
+    def __init__(self, db_manager: ChromaDBManager):
+        """Initialize search tools with a database manager."""
         self.db_manager = db_manager
 
-    def search_code(self, query: str) -> Dict[str, Any]:
+    def search_code(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """
-        Search through code documents
+        Search for code snippets based on a query.
         
         Args:
             query: The search query
+            limit: Maximum number of results to return
             
         Returns:
-            Dict containing search results
+            Dictionary with search results
         """
         try:
-            # Search in SQL and Python collections
-            sql_results = self.db_manager.code_similarity_search(
-                collection_name="sql_documents",
-                code_snippet=query,
-                n_results=3
+            # Get the code collection
+            collection = self.db_manager.get_or_create_collection("code_documents")
+            
+            # Search for documents
+            results = collection.query(
+                query_texts=[query],
+                n_results=limit
             )
-            python_results = self.db_manager.code_similarity_search(
-                collection_name="py_documents",
-                code_snippet=query,
-                n_results=3
-            )
-            
-            # Format results for the agent
-            formatted_results = []
-            
-            # Format SQL results
-            if 'results' in sql_results:
-                for result in sql_results['results']:
-                    formatted_results.append({
-                        'content': result.get('code', ''),
-                        'source': 'SQL',
-                        'file_info': result.get('file_info', {}),
-                        'similarity': result.get('similarity', 0)
-                    })
-            
-            # Format Python results
-            if 'results' in python_results:
-                for result in python_results['results']:
-                    formatted_results.append({
-                        'content': result.get('code', ''),
-                        'source': 'Python',
-                        'file_info': result.get('file_info', {}),
-                        'similarity': result.get('similarity', 0)
-                    })
             
             return {
-                "tool": "code_search",
-                "tool_input": query,
+                "status": "success",
+                "results": self._format_results(results)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error searching code: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    def search_github_repos(self, query: str, limit: int = 5) -> Dict[str, Any]:
+        """
+        Search for GitHub repository content based on a query.
+        
+        Args:
+            query: The search query
+            limit: Maximum number of results to return
+            
+        Returns:
+            Dictionary with search results
+        """
+        try:
+            # Get the GitHub documents collection
+            collection = self.db_manager.get_or_create_collection("github_documents")
+            
+            # Search for documents
+            results = collection.query(
+                query_texts=[query],
+                n_results=limit
+            )
+            
+            if not results or not results['documents'] or len(results['documents'][0]) == 0:
+                return {
+                    "status": "success",
+                    "results": [],
+                    "message": "No GitHub repository content found matching your query."
+                }
+            
+            # Format the results
+            formatted_results = []
+            
+            for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
+                # Extract metadata
+                repo_url = metadata.get('repo_url', 'Unknown repository')
+                repo_owner = metadata.get('repo_owner', 'Unknown owner')
+                repo_name = metadata.get('repo_name', 'Unknown repository')
+                file_path = metadata.get('file_path', 'Unknown file')
+                language = metadata.get('language', 'Unknown language')
+                
+                # Format the result
+                formatted_result = {
+                    "id": i + 1,
+                    "repository": {
+                        "url": repo_url,
+                        "owner": repo_owner,
+                        "name": repo_name
+                    },
+                    "file": {
+                        "path": file_path,
+                        "language": language
+                    },
+                    "content": doc,
+                    "score": results['distances'][0][i] if 'distances' in results else None
+                }
+                
+                formatted_results.append(formatted_result)
+            
+            return {
+                "status": "success",
                 "results": formatted_results
             }
             
         except Exception as e:
-            logger.error(f"Error in code search: {str(e)}")
-            return {"error": str(e), "results": []}
+            logger.error(f"Error searching GitHub content: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    def search_sql_schema(self, query: str, limit: int = 5) -> Dict[str, Any]:
+        """
+        Search for SQL schema information based on a query.
+        
+        Args:
+            query: The search query
+            limit: Maximum number of results to return
+            
+        Returns:
+            Dictionary with search results
+        """
+        try:
+            # Get the SQL schema collection
+            collection = self.db_manager.get_or_create_collection("sql_documents")
+            
+            # Search for documents
+            results = collection.query(
+                query_texts=[query],
+                n_results=limit
+            )
+            
+            return {
+                "status": "success",
+                "results": self._format_results(results)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error searching SQL schema: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    def _format_results(self, results) -> List[Dict[str, Any]]:
+        """Format search results into a standardized structure."""
+        if not results or not results['documents'] or len(results['documents'][0]) == 0:
+            return []
+        
+        formatted_results = []
+        
+        for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
+            formatted_result = {
+                "id": i + 1,
+                "content": doc,
+                "metadata": metadata,
+                "score": results['distances'][0][i] if 'distances' in results else None
+            }
+            
+            formatted_results.append(formatted_result)
+        
+        return formatted_results
 
     def search_documentation(self, query: str) -> Dict[str, Any]:
         """

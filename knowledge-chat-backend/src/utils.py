@@ -551,16 +551,16 @@ class ChromaDBManager:
         # Create a temporary directory for the repository
         temp_dir = tempfile.mkdtemp(prefix="github_repo_")
         
+        # Add a class variable to track current file path
+        self.current_file_path = ""
+        
         try:
             # Construct the clone URL with authentication if provided
-            # Make sure we use the clean repo name without .git suffix
             base_clone_url = f"https://github.com/{owner}/{repo_name}.git"
             
             if username and token:
-                # Format: https://username:token@github.com/owner/repo.git
                 clone_url = f"https://{username}:{token}@github.com/{owner}/{repo_name}.git"
             elif token:
-                # Format: https://token@github.com/owner/repo.git
                 clone_url = f"https://{token}@github.com/{owner}/{repo_name}.git"
             else:
                 clone_url = base_clone_url
@@ -585,6 +585,9 @@ class ChromaDBManager:
             processed_files = []
             language_counts = {}
             
+            # Initialize code analyzer
+            analyzer = CodeAnalyzer()
+            
             # Walk through the repository directory
             for root, dirs, files in os.walk(temp_dir):
                 # Skip .git directory
@@ -595,8 +598,22 @@ class ChromaDBManager:
                     file_path = os.path.join(root, file)
                     rel_path = os.path.relpath(file_path, temp_dir)
                     
+                    # Set current file path for context in language detection
+                    self.current_file_path = rel_path
+                    
                     # Skip binary files
                     if self._is_binary_file(file_path):
+                        continue
+                    
+                    # Read file content
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Store content for language detection
+                    self.current_file_content = content
+                    
+                    # Skip empty files
+                    if not content.strip():
                         continue
                     
                     # Get file extension
@@ -614,30 +631,31 @@ class ChromaDBManager:
                     language_counts[language] = language_counts.get(language, 0) + 1
                     
                     try:
-                        # Read file content
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        
-                        # Skip empty files
-                        if not content.strip():
-                            continue
-                        
-                        # Analyze file with CodeAnalyzer if applicable
+                        # Analyze file with CodeAnalyzer based on language
                         analysis = None
                         try:
-                            if language in ['python', 'sql', 'javascript', 'typescript']:
-                                analyzer = CodeAnalyzer()
-                                # Skip analysis for now, just store the file content
-                                analysis = {"file_type": language}
+                            if language == 'python':
+                                analysis = analyzer.analyze_python(file_path)
+                            elif language == 'sql':
+                                analysis = analyzer.analyze_sql(file_path)
+                            elif language in ['javascript', 'typescript']:
+                                # Use a generic analysis for JS/TS if specific methods aren't available
+                                analysis = {"file_type": language, "path": rel_path}
+                            else:
+                                # Basic analysis for other file types
+                                analysis = {"file_type": language, "path": rel_path}
                         except Exception as analysis_error:
                             logger.warning(f"Error analyzing file {rel_path}: {str(analysis_error)}")
-                            analysis = {"error": str(analysis_error)}
+                            # Continue with basic analysis rather than failing
+                            analysis = {"error": str(analysis_error), "file_type": language, "path": rel_path}
                         
+                        # Store processed file information
                         processed_files.append({
                             "path": rel_path,
                             "language": language,
                             "content": content,
-                            "analysis": analysis
+                            "analysis": analysis,
+                            "size": os.path.getsize(file_path)
                         })
                         
                     except Exception as e:
@@ -650,9 +668,10 @@ class ChromaDBManager:
             # Create documents for vector storage
             documents = []
             
+            # Process each file into chunks
             for file in processed_files:
-                # Create a document for each file
-                doc_id = f"{owner}_{repo_name}_{base64.urlsafe_b64encode(file['path'].encode()).decode()}"
+                # Generate a unique ID for the document
+                doc_id = base64.b64encode(f"{repo_url}:{file['path']}".encode()).decode()
                 
                 # Create chunks from the file content
                 if file['language'] in ['python', 'javascript', 'typescript', 'java']:
@@ -666,7 +685,7 @@ class ChromaDBManager:
                 for i, chunk in enumerate(chunks):
                     chunk_id = f"{doc_id}_chunk_{i}"
                     
-                    # Create metadata
+                    # Create metadata with only primitive types
                     metadata = {
                         "repo_url": repo_url,
                         "repo_owner": owner,
@@ -674,12 +693,22 @@ class ChromaDBManager:
                         "file_path": file['path'],
                         "language": file['language'],
                         "chunk_index": i,
-                        "total_chunks": len(chunks)
+                        "total_chunks": len(chunks),
+                        "size": file.get('size', 0)
                     }
                     
-                    # Add analysis data if available
+                    # Add simplified analysis data if available
                     if file['analysis']:
-                        metadata["analysis"] = file['analysis']
+                        # Convert complex analysis objects to simple strings
+                        simple_analysis = {}
+                        for key, value in file['analysis'].items():
+                            if isinstance(value, (str, int, float, bool)):
+                                simple_analysis[key] = value
+                            elif isinstance(value, (list, dict)):
+                                # Convert to string representation
+                                simple_analysis[key] = str(value)
+                        
+                        metadata["analysis_summary"] = simple_analysis
                     
                     # Add the document
                     documents.append({
@@ -832,4 +861,17 @@ class ChromaDBManager:
             'ps1': 'powershell',
             'r': 'r'
         }
+        
+        # Check for DBT files with compound extensions
+        if ext in ['sql.jinja', 'sql.j2', 'sql.jinja2']:
+            return 'dbt'
+        
+        # For files in models/ directory with .sql extension, treat as DBT
+        if ext == 'sql' and ('/models/' in self.current_file_path or '/macros/' in self.current_file_path):
+            return 'dbt'
+        
+        # For SQL files with Jinja content, treat as DBT
+        if ext == 'sql' and hasattr(self, 'current_file_content') and ('{{' in self.current_file_content or '{%' in self.current_file_content):
+            return 'dbt'
+        
         return extension_map.get(ext)

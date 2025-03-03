@@ -6,6 +6,7 @@ import HomePage from './pages/HomePage'
 import AboutPage from './pages/AboutPage'
 import ChatPage from './pages/ChatPage'
 import FileUploadPage from './pages/knowledge/FileUploadPage'
+import './App.css'
 
 function App() {
   return (
