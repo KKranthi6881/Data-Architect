@@ -17,9 +17,11 @@ import streamlit as st
 from datetime import datetime
 from langchain_community.utilities import SQLDatabase
 from src.tools import SearchTools
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from src.agents.data_architect.human_feedback import HumanFeedbackSystem
 from src.api.feedback_routes import router as feedback_router
+import re
+import uuid
 
 app = FastAPI(title="Knowledge Chat API")
 
@@ -55,7 +57,10 @@ code_search_tools = SearchTools(db_manager)
 analysis_system = SimpleAnalysisSystem(code_search_tools)
 
 # Initialize question parser system
-question_parser_system = QuestionParserSystem(code_search_tools, feedback_timeout=120)
+question_parser_system = QuestionParserSystem(
+    tools=code_search_tools,
+    feedback_timeout=120
+)
 
 # Initialize database
 chat_db = ChatDatabase()
@@ -80,11 +85,12 @@ class ChatRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None  # Add context support
     wait_for_feedback: bool = False  # New parameter to control feedback behavior
 
+# Add FeedbackRequest model
 class FeedbackRequest(BaseModel):
     conversation_id: str
     approved: bool
-    comments: str = ""
-    suggested_changes: Dict[str, Any] = {}
+    comments: Optional[str] = None
+    suggested_changes: Optional[Dict] = None
 
 class ChatResponse(BaseModel):
     answer: str
@@ -100,6 +106,9 @@ class ChatResponse(BaseModel):
 
 # Include feedback routes
 app.include_router(feedback_router, prefix="/feedback-status", tags=["feedback"])
+
+# Initialize feedback system
+feedback_system = HumanFeedbackSystem()
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -308,89 +317,56 @@ async def get_schema():
 
 @app.post("/chat/")
 async def chat(request: ChatRequest):
-    """Process a chat message."""
     try:
         logger.info(f"Processing chat request: {request.message}")
         
-        if request.wait_for_feedback:
-            logger.info("Using question parser with human feedback")
-            result = await question_parser_system.parse_question_with_feedback(request.message)
-            
-            # Check if we need feedback
-            if result.get("status") == "waiting":
-                logger.info("Waiting for human feedback")
-                parsed_question = result.get("parsed_question", {})
-                
-                # Format the interpretation message
-                interpretation_msg = (
-                    f"I understand your question as:\n\n"
-                    f"'{parsed_question.get('rephrased_question')}'\n\n"
-                    f"Business Context: {parsed_question.get('business_context')}\n\n"
-                    "Please review if this interpretation is correct."
-                )
-                
-                # Add alternative interpretations if available
-                alternatives = parsed_question.get('alternative_interpretations', [])
-                if alternatives:
-                    interpretation_msg += "\n\nAlternative interpretations:\n"
-                    for i, alt in enumerate(alternatives, 1):
-                        interpretation_msg += f"{i}. {alt}\n"
-                
-                return JSONResponse(
-                    content={
-                        "answer": interpretation_msg,
-                        "conversation_id": result.get("conversation_id", ""),
-                        "parsed_question": parsed_question,
-                        "feedback_required": True,
-                        "feedback_status": "waiting",
-                        "confidence_score": parsed_question.get("confidence_score", 0.0)
-                    },
-                    status_code=200
-                )
-            
-            # If we got here without waiting status, something went wrong
-            if result.get("status") == "error":
-                raise HTTPException(
-                    status_code=500,
-                    detail=result.get("error", "Error processing question")
-                )
-            
-            # Process the approved/completed result
-            final_answer = f"Based on the confirmed interpretation, here's what I found:\n\n{result.get('parsed_question', {}).get('suggested_approach', '')}"
-            
-            return JSONResponse(
-                content={
-                    "answer": final_answer,
-                    "conversation_id": result.get("conversation_id", ""),
-                    "parsed_question": result.get("parsed_question", {}),
-                    "feedback_required": False,
-                    "feedback_status": "completed"
+        # Process the question
+        result = question_parser_system.parse_question(request.message)
+        
+        # Submit for feedback with original question
+        feedback_request = {
+            "message": request.message,  # Store original message
+            "parsed_question": result.get('parsed_question', {}),
+            "doc_context": result.get('doc_context', {}),
+            "timestamp": datetime.now(),
+            "response": result  # Store full response
+        }
+        
+        conversation_id = feedback_system.submit_for_feedback(feedback_request)
+        
+        # Format initial response while waiting for feedback
+        parsed_question = result.get('parsed_question', {})
+        business_context = parsed_question.get('business_context', {})
+        
+        response_text = f"""**Understanding Your Question:**
+{parsed_question.get('rephrased_question')}
+
+**Business Context:**
+• Domain: {business_context.get('domain')}
+• Focus: {business_context.get('primary_objective')}
+• Key Entities: {', '.join(business_context.get('key_entities', []))}
+
+{format_relevant_sources(result.get('doc_context', {}))}
+
+_Waiting for human feedback to ensure accuracy..._"""
+        
+        return JSONResponse(
+            content={
+                "answer": response_text,
+                "conversation_id": conversation_id,
+                "sources": result.get("doc_context", {}),
+                "analysis": {
+                    "business_context": business_context,
+                    "confidence_score": parsed_question.get("confidence_score", 0.0),
+                    "alternative_interpretations": parsed_question.get("alternative_interpretations", [])
                 },
-                status_code=200
-            )
-        else:
-            # Use the synchronous version without human feedback
-            logger.info("Using question parser without human feedback")
-            result = question_parser_system.parse_question(request.message)
-            
-            final_answer = f"Based on my understanding of your question, here's what I found:\n\n{result.get('parsed_question', {}).get('suggested_approach', '')}"
-            
-            return JSONResponse(
-                content={
-                    "answer": final_answer,
-                    "conversation_id": result.get("conversation_id", ""),
-                    "sources": result.get("doc_context", {}),
-                    "analysis": {
-                        "business_context": result.get("parsed_question", {}).get("business_context", ""),
-                        "tables": result.get("parsed_question", {}).get("relevant_tables", []),
-                        "intent": result.get("parsed_question", {}).get("query_intent", {})
-                    },
-                    "parsed_question": result.get("parsed_question", {}),
-                    "feedback_required": False,
-                    "feedback_status": "auto_approved"
-                },
-                status_code=200
-            )
+                "parsed_question": parsed_question,
+                "feedback_required": True,
+                "feedback_status": "pending",
+                "suggested_questions": generate_follow_up_questions(parsed_question, business_context, as_list=True)
+            },
+            status_code=200
+        )
             
     except Exception as e:
         logger.error(f"Error in chat endpoint: {str(e)}", exc_info=True)
@@ -403,14 +379,78 @@ async def chat(request: ChatRequest):
             status_code=500
         )
 
-@app.post("/feedback/")
-async def provide_feedback(request: FeedbackRequest):
-    """Provide feedback for a parsed question."""
-    try:
-        # Get the feedback system
-        feedback_system = HumanFeedbackSystem()
+def format_relevant_sources(doc_context: Dict) -> str:
+    """Format relevant source information concisely."""
+    sections = []
+    
+    # Format SQL results
+    if sql_results := doc_context.get('sql_results', []):
+        table_info = []
+        for result in sql_results[:2]:
+            content = result.get('content', '').strip()
+            if content:
+                table_match = re.search(r'CREATE TABLE (\w+)', content)
+                if table_match:
+                    table_name = table_match.group(1)
+                    columns = re.findall(r'(\w+)\s+(?:VARCHAR|CHAR|BIGINT|INTEGER|DECIMAL|DATE|SERIAL).*?,', content)
+                    if columns:
+                        table_info.append(f"• {table_name} ({', '.join(columns[:3])}...)")
+                    else:
+                        table_info.append(f"• {table_name}")
         
-        # Provide feedback
+        if table_info:
+            sections.append("**Relevant Tables:**\n" + "\n".join(table_info))
+    
+    # Format relationships
+    if doc_results := doc_context.get('doc_results', []):
+        relationships = []
+        for result in doc_results[:2]:
+            content = result.get('content', '').strip()
+            if content and ('relationship' in content.lower() or 'key' in content.lower()):
+                # Extract meaningful relationship information
+                clean_content = re.sub(r'\s+', ' ', content).strip()
+                relationships.append(f"• {clean_content[:100]}...")
+        
+        if relationships:
+            sections.append("**Key Relationships:**\n" + "\n".join(relationships))
+    
+    return "\n\n".join(sections) if sections else ""
+
+def generate_follow_up_questions(parsed_question: Dict, business_context: Dict, as_list: bool = False) -> Union[str, List[str]]:
+    """Generate relevant follow-up questions based on the context."""
+    entities = business_context.get('key_entities', [])
+    domain = business_context.get('domain', '')
+    
+    follow_up_questions = []
+    
+    # Add entity-specific questions
+    for entity in entities:
+        follow_up_questions.append(f"What are the key metrics for {entity}?")
+        follow_up_questions.append(f"How is {entity} related to other business entities?")
+    
+    # Add domain-specific questions
+    if domain:
+        follow_up_questions.append(f"What are the common reporting needs for {domain}?")
+        follow_up_questions.append(f"What are the best practices for {domain} analysis?")
+    
+    # Add general follow-up questions
+    follow_up_questions.extend([
+        "Would you like to see the detailed schema for these tables?",
+        "Should I explain the relationships between these entities?",
+        "Would you like to see example queries for this analysis?"
+    ])
+    
+    # Return as list or formatted string
+    if as_list:
+        return follow_up_questions[:5]  # Limit to 5 questions
+    else:
+        return "\n".join(f"• {q}" for q in follow_up_questions[:5])
+
+@app.post("/feedback/")
+async def submit_feedback(request: FeedbackRequest):
+    """Submit feedback for a conversation."""
+    try:
+        # Store the feedback
         success = feedback_system.provide_feedback(
             request.conversation_id,
             {
@@ -423,36 +463,109 @@ async def provide_feedback(request: FeedbackRequest):
         if not success:
             return JSONResponse(
                 status_code=404,
+                content={"status": "error", "message": "No pending feedback request found"}
+            )
+
+        # If not approved, process with LLM to get improved response
+        if not request.approved and request.comments:
+            # Get original request and context
+            original_request = feedback_system.get_original_request(request.conversation_id)
+            if not original_request:
+                raise ValueError("Original request not found")
+
+            # Get the original question
+            original_question = original_request.get("message", "")
+            if not original_question:
+                raise ValueError("Original question not found")
+
+            # Create focused feedback context
+            feedback_context = {
+                "previous_summary": {
+                    "interpretation": original_request.get("parsed_question", {}).get("rephrased_question", ""),
+                    "key_entities": original_request.get("parsed_question", {}).get("business_context", {}).get("key_entities", []),
+                    "tables": [table.get("name") for table in original_request.get("doc_context", {}).get("sql_results", [])]
+                },
+                "feedback": request.comments,
+                "improvement_needed": True
+            }
+
+            # Process with LLM using focused context
+            result = question_parser_system.parse_question(
+                original_question,
+                feedback_context=feedback_context
+            )
+
+            # Format the improved response
+            business_context = result.get('parsed_question', {}).get('business_context', {})
+            response_text = f"""**Understanding Your Question (Improved based on feedback):**
+{result.get('parsed_question', {}).get('rephrased_question')}
+
+**Business Context:**
+• Domain: {business_context.get('domain')}
+• Focus: {business_context.get('primary_objective')}
+• Key Entities: {', '.join(business_context.get('key_entities', []))}
+
+**Implementation Details:**
+{format_sql_solution(result.get('doc_context', {}))}
+
+_This response has been improved based on your feedback._
+"""
+            return JSONResponse(
                 content={
-                    "status": "error",
-                    "message": f"No pending feedback request found for conversation {request.conversation_id}"
+                    "status": "success",
+                    "message": "Feedback processed",
+                    "answer": response_text,
+                    "conversation_id": str(uuid.uuid4()),
+                    "doc_context": result.get("doc_context", {}),
+                    "analysis": {
+                        "business_context": business_context,
+                        "confidence_score": result.get('parsed_question', {}).get("confidence_score", 0.0),
+                        "alternative_interpretations": result.get('parsed_question', {}).get("alternative_interpretations", [])
+                    },
+                    "parsed_question": result.get("parsed_question", {}),
+                    "feedback_required": True
                 }
             )
-        
-        return JSONResponse(
-            content={
-                "status": "success",
-                "message": "Feedback received"
-            }
-        )
+
+        return JSONResponse(content={"status": "success", "message": "Feedback received"})
         
     except Exception as e:
-        logger.error(f"Error providing feedback: {str(e)}", exc_info=True)
+        logger.error(f"Error submitting feedback: {str(e)}", exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={
-                "status": "error",
-                "message": str(e)
-            }
+            content={"status": "error", "message": str(e)}
         )
+
+def format_sql_solution(doc_context: Dict) -> str:
+    """Format SQL solution with relevant tables and example query."""
+    if not doc_context:
+        return ""
+
+    # Extract relevant tables and their key columns
+    tables = []
+    for result in doc_context.get('sql_results', []):
+        content = result.get('content', '')
+        table_match = re.search(r'CREATE TABLE (\w+)', content)
+        if table_match:
+            table_name = table_match.group(1)
+            columns = re.findall(r'(\w+)\s+(?:VARCHAR|CHAR|BIGINT|INTEGER|DECIMAL|DATE|SERIAL).*?,', content)
+            if columns:
+                tables.append(f"• {table_name}: {', '.join(columns[:3])}...")
+
+    # Format example query if available
+    example_query = ""
+    for result in doc_context.get('doc_results', []):
+        if 'select' in result.get('content', '').lower():
+            example_query = f"\nExample Query:\n```sql\n{result.get('content', '')}\n```"
+
+    return f"""**Relevant Tables:**
+{chr(10).join(tables)}
+{example_query}"""
 
 @app.get("/pending-feedback/")
 async def get_pending_feedback():
     """Get all pending feedback requests."""
     try:
-        # Get the feedback system
-        feedback_system = HumanFeedbackSystem()
-        
         # Get pending feedback requests
         pending = feedback_system.get_pending_feedback_requests()
         

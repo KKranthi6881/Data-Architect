@@ -131,15 +131,37 @@ class SearchTools:
             # Get the SQL schema collection
             collection = self.db_manager.get_or_create_collection("sql_documents")
             
-            # Search for documents
-            results = collection.query(
-                query_texts=[query],
+            # Search for documents using hybrid search for better results
+            results = self.db_manager.hybrid_search(
+                collection_name="sql_documents",
+                query=query,
                 n_results=limit
             )
             
+            if not results or not results.get('results', []):
+                # Try fallback to regular search if hybrid search returns no results
+                results = collection.query(
+                    query_texts=[query],
+                    n_results=limit
+                )
+                
+                if not results or not results['documents'] or len(results['documents'][0]) == 0:
+                    return {
+                        "status": "success",
+                        "results": [],
+                        "message": "No SQL schema information found matching your query."
+                    }
+                
+                # Format regular search results
+                return {
+                    "status": "success",
+                    "results": self._format_results(results)
+                }
+            
+            # Return hybrid search results
             return {
                 "status": "success",
-                "results": self._format_results(results)
+                "results": results.get('results', [])
             }
             
         except Exception as e:

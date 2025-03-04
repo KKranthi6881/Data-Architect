@@ -31,13 +31,91 @@ class FeedbackResponse(BaseModel):
     suggested_changes: Optional[Dict[str, Any]] = Field(description="Suggested changes to the parsed question", default=None)
 
 class HumanFeedbackSystem:
-    def __init__(self, timeout_seconds: int = 600):  # Increased timeout to 10 minutes
+    def __init__(self, timeout_seconds: int = 600):
         self.db = ChatDatabase()
         self._lock = Lock()
         self.pending_feedback = {}
-        self.feedback_status = {}  # Store feedback status
+        self.feedback_status = {}
+        self.original_requests = {}  # Store original requests
         self.timeout_seconds = timeout_seconds
         self.feedback_callbacks = {}
+
+    def submit_for_feedback(self, feedback_request: Dict) -> str:
+        """Submit a request for human feedback."""
+        conversation_id = str(uuid.uuid4())
+        
+        with self._lock:
+            # Store the original request
+            self.original_requests[conversation_id] = feedback_request
+            
+            self.pending_feedback[conversation_id] = {
+                "parsed_question": feedback_request.get("parsed_question", {}),
+                "doc_context": feedback_request.get("doc_context", {}),
+                "timestamp": feedback_request.get("timestamp", datetime.now()),
+                "status": "waiting",
+                "message": feedback_request.get("message", ""),  # Store original message
+                "response": feedback_request.get("response", "")  # Store response
+            }
+            self.feedback_status[conversation_id] = {
+                "status": "pending",
+                "feedback": None,
+                "timestamp": datetime.now()
+            }
+        
+        return conversation_id
+
+    def provide_feedback(self, conversation_id: str, feedback: Dict) -> bool:
+        """Provide feedback for a conversation."""
+        with self._lock:
+            if conversation_id not in self.pending_feedback:
+                return False
+            
+            self.feedback_status[conversation_id] = {
+                "status": "completed" if feedback.get("approved") else "rejected",
+                "feedback": feedback,
+                "timestamp": datetime.now()
+            }
+            
+            # If there's a callback waiting, resolve it
+            if conversation_id in self.feedback_callbacks:
+                future = self.feedback_callbacks[conversation_id]
+                if not future.done():
+                    future.set_result(feedback)
+            
+            return True
+
+    def get_feedback_status(self, conversation_id: str) -> Optional[Dict]:
+        """Get the current status of feedback for a conversation."""
+        return self.feedback_status.get(conversation_id)
+
+    async def wait_for_feedback(self, conversation_id: str) -> Dict:
+        """Wait for feedback to be provided."""
+        if conversation_id not in self.pending_feedback:
+            raise ValueError(f"No pending feedback request for conversation {conversation_id}")
+        
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        self.feedback_callbacks[conversation_id] = future
+        
+        try:
+            return await asyncio.wait_for(future, timeout=self.timeout_seconds)
+        except asyncio.TimeoutError:
+            return {
+                "approved": True,
+                "comments": "Auto-approved due to timeout",
+                "suggested_changes": None
+            }
+        finally:
+            if conversation_id in self.feedback_callbacks:
+                del self.feedback_callbacks[conversation_id]
+
+    def get_pending_feedback_requests(self) -> Dict[str, Dict]:
+        """Get all pending feedback requests."""
+        with self._lock:
+            return {
+                conv_id: data for conv_id, data in self.pending_feedback.items()
+                if self.feedback_status.get(conv_id, {}).get("status") == "pending"
+            }
 
     def create_feedback_graph(self):
         """Create a graph for the human feedback process."""
@@ -283,143 +361,7 @@ class HumanFeedbackSystem:
                 del self.feedback_callbacks[conversation_id]
             if conversation_id in self.pending_feedback:
                 del self.pending_feedback[conversation_id]
-    
-    def get_feedback_status(self, conversation_id: str) -> Optional[Dict]:
-        """Get the status of a feedback request."""
-        return self.feedback_status.get(conversation_id)
 
-    def provide_feedback(self, conversation_id: str, feedback: Dict) -> bool:
-        """Provide feedback for a pending conversation."""
-        if conversation_id not in self.pending_feedback:
-            logger.warning(f"No pending feedback request for conversation {conversation_id}")
-            return False
-        
-        if conversation_id not in self.feedback_callbacks:
-            logger.warning(f"No callback registered for conversation {conversation_id}")
-            return False
-        
-        try:
-            # Update the pending feedback status immediately
-            self.pending_feedback[conversation_id]["status"] = "processed"
-            
-            # Store feedback status
-            self.feedback_status[conversation_id] = {
-                "status": "processing",
-                "message": "Processing feedback"
-            }
-            
-            # Create a FeedbackResponse object
-            feedback_response = {
-                "approved": feedback.get("approved", False),
-                "comments": feedback.get("comments", ""),
-                "suggested_changes": feedback.get("suggested_changes", {}),
-                "alternative_selection": feedback.get("alternative_selection", "")
-            }
-            
-            # Set the result for the future
-            callback = self.feedback_callbacks[conversation_id]
-            if not callback.done():
-                callback.set_result(feedback_response)
-            
-            # Process the feedback asynchronously
-            async def process_feedback():
-                try:
-                    # Simulate processing time
-                    await asyncio.sleep(2)
-                    
-                    # Update status with final result
-                    self.feedback_status[conversation_id] = {
-                        "status": "completed",
-                        "answer": "Based on your feedback, here's what I found...",
-                        "parsed_question": self.pending_feedback[conversation_id].get("parsed_question"),
-                        "sources": {},
-                        "analysis": {}
-                    }
-                    
-                    # Clean up pending feedback
-                    if conversation_id in self.pending_feedback:
-                        del self.pending_feedback[conversation_id]
-                    if conversation_id in self.feedback_callbacks:
-                        del self.feedback_callbacks[conversation_id]
-                    
-                    # Keep status for a while before cleaning up
-                    await asyncio.sleep(60)
-                    if conversation_id in self.feedback_status:
-                        del self.feedback_status[conversation_id]
-                        
-                except Exception as e:
-                    logger.error(f"Error processing feedback: {str(e)}", exc_info=True)
-                    self.feedback_status[conversation_id] = {
-                        "status": "error",
-                        "message": str(e)
-                    }
-            
-            # Start processing
-            asyncio.create_task(process_feedback())
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error providing feedback: {str(e)}", exc_info=True)
-            return False
-    
-    def get_pending_feedback_requests(self) -> Dict[str, Dict]:
-        """Get all pending feedback requests."""
-        # Clean up expired requests
-        now = datetime.now()
-        expired = [
-            conv_id for conv_id, data in self.pending_feedback.items()
-            if (now - data["timestamp"]).total_seconds() > self.timeout_seconds
-        ]
-        
-        for conv_id in expired:
-            if conv_id in self.pending_feedback:
-                del self.pending_feedback[conv_id]
-        
-        return {k: v for k, v in self.pending_feedback.items() if v["status"] == "waiting"}
-
-    async def wait_for_feedback(self, conversation_id: str, parsed_question: Dict) -> Dict:
-        """Wait for human feedback on a parsed question."""
-        try:
-            # Create a future to wait for feedback
-            loop = asyncio.get_running_loop()
-            future = loop.create_future()
-            
-            # Store the callback and pending feedback
-            self.feedback_callbacks[conversation_id] = future
-            self.pending_feedback[conversation_id] = {
-                "parsed_question": parsed_question,
-                "timestamp": datetime.now(),
-                "status": "waiting"
-            }
-            
-            # Wait for feedback with timeout
-            try:
-                result = await asyncio.wait_for(future, timeout=self.timeout_seconds)
-                return {
-                    "status": "completed",
-                    "feedback": result,
-                    "conversation_id": conversation_id
-                }
-            except asyncio.TimeoutError:
-                logger.warning(f"Feedback timeout for conversation {conversation_id}")
-                # Auto-approve after timeout
-                return {
-                    "status": "auto_approved",
-                    "feedback": {"approved": True, "comments": "Auto-approved due to timeout"},
-                    "conversation_id": conversation_id
-                }
-            
-        except Exception as e:
-            logger.error(f"Error waiting for feedback: {str(e)}", exc_info=True)
-            return {
-                "status": "error",
-                "error": str(e),
-                "conversation_id": conversation_id
-            }
-        finally:
-            # Clean up
-            if conversation_id in self.feedback_callbacks:
-                del self.feedback_callbacks[conversation_id]
-            if conversation_id in self.pending_feedback:
-                del self.pending_feedback[conversation_id] 
+    def get_original_request(self, conversation_id: str) -> Optional[Dict]:
+        """Get the original request for a conversation."""
+        return self.original_requests.get(conversation_id) 

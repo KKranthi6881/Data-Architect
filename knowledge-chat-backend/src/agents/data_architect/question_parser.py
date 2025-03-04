@@ -52,33 +52,20 @@ class QueryIntent(BaseModel):
         description="Dimensions to group by if any", default=None
     )
 
+class BusinessContext(BaseModel):
+    primary_objective: str = Field(description="The core business goal this question addresses")
+    key_entities: List[str] = Field(description="Main business entities and concepts")
+    business_assumptions: List[str] = Field(description="Key business assumptions")
+    domain: str = Field(description="Business domain or process area")
+    business_impact: str = Field(description="Business impact and decision support")
+
 class ParsedQuestion(BaseModel):
-    original_question: str = Field(
-        description="The original question asked by the user"
-    )
-    rephrased_question: str = Field(
-        description="The question rephrased for clarity"
-    )
-    alternative_interpretations: List[str] = Field(
-        description="Alternative ways to interpret the question",
-        default_factory=list
-    )
-    business_context: str = Field(
-        description="Business context relevant to the question"
-    )
-    relevant_tables: List[TableInfo] = Field(
-        description="Tables relevant to answering the question"
-    )
-    query_intent: QueryIntent = Field(
-        description="The intent and parameters of the query"
-    )
-    suggested_approach: str = Field(
-        description="Suggested approach to answer the question"
-    )
-    confidence_score: float = Field(
-        description="Confidence score of the interpretation (0-1)",
-        default=0.0
-    )
+    original_question: str = Field(description="Original user question")
+    rephrased_question: str = Field(description="Business-focused restatement")
+    business_context: BusinessContext = Field(description="Business context information")
+    data_points: List[str] = Field(description="Key metrics and data elements needed")
+    confidence_score: float = Field(description="Confidence score (0-1)")
+    alternative_interpretations: List[str] = Field(description="Alternative business perspectives")
 
 def create_question_parser(tools: SearchTools):
     # Initialize model
@@ -89,51 +76,101 @@ def create_question_parser(tools: SearchTools):
         timeout=120,
     )
     
-    # Create a simpler prompt that directly asks for JSON
+    # Update the prompt to be more focused on available context
     parser_prompt = PromptTemplate(
         template="""
-        You are an expert data analyst and SQL specialist. Parse the following user question 
-        and provide a structured analysis based on the available documentation context.
-        
+        You are an expert data analyst who helps users understand their data questions by analyzing available documentation and schema information.
+        Your task is to understand the user's question and provide insights based ONLY on the available context provided.
+
         USER QUESTION:
         {query}
-        
-        DOCUMENTATION CONTEXT:
+
+        AVAILABLE CONTEXT:
         {doc_context}
-        
-        Guidelines:
-        - Identify the business context of the question
-        - Determine which tables and columns are relevant
-        - Understand the metrics and dimensions needed
-        - Identify any filters or time periods mentioned
-        - Rephrase the question for clarity if needed
-        - Suggest an approach to answer the question
-        
+
+        IMPORTANT INSTRUCTIONS:
+        1. ONLY use information from the provided context
+        2. DO NOT make assumptions beyond what's in the documentation
+        3. If specific information is not in the context, acknowledge the limitation
+        4. Focus on the actual data structures and relationships present in the schema
+        5. Be precise and specific to our data model
+
+        When analyzing:
+        - First identify relevant tables and columns from the schema
+        - Look for business definitions in the documentation
+        - Connect technical schema elements to business concepts
+        - Only include relationships that are explicitly defined
+
         Return your response as a valid JSON object with the following structure:
-        
+
         ```json
         {{
             "original_question": "The original question asked by the user",
-            "rephrased_question": "The question rephrased for clarity",
-            "business_context": "Business context relevant to the question",
-            "relevant_tables": [
-                {{
-                    "name": "table_name",
-                    "columns": ["column1", "column2"],
-                    "description": "Description of the table's purpose"
-                }}
-            ],
-            "query_intent": {{
-                "primary_intent": "data retrieval/analysis/comparison",
-                "time_period": "Time period mentioned if any",
-                "filters": {{"field": "value"}},
-                "metrics": ["metric1", "metric2"],
-                "grouping": ["dimension1", "dimension2"]
+            "rephrased_question": "Question rephrased in terms of our actual data model",
+            "business_context": {{
+                "primary_objective": "The specific business goal based on available data",
+                "key_entities": [
+                    "Only entities found in our schema",
+                    "Include actual table names where relevant"
+                ],
+                "business_assumptions": [
+                    "Only assumptions supported by documentation",
+                    "Limitations in current data model"
+                ],
+                "domain": "Business domain based on available context",
+                "business_impact": "How this data is used according to documentation"
             }},
-            "suggested_approach": "Suggested approach to answer the question"
+            "data_points": [
+                "Specific columns and metrics available in our schema",
+                "Actual table.column references where relevant"
+            ],
+            "confidence_score": 0.95,
+            "alternative_interpretations": [
+                "Other ways to use our available data",
+                "Alternative approaches with current schema"
+            ]
         }}
         ```
-        
+
+        EXAMPLE RESPONSE for "How do I find the base price?":
+        ```json
+        {{
+            "original_question": "How do I find the base price?",
+            "rephrased_question": "How is base price stored and calculated in the LINEITEM table?",
+            "business_context": {{
+                "primary_objective": "Understanding price components in line items",
+                "key_entities": [
+                    "LINEITEM table",
+                    "L_EXTENDEDPRICE column",
+                    "L_DISCOUNT column"
+                ],
+                "business_assumptions": [
+                    "Base price is derived from L_EXTENDEDPRICE and L_DISCOUNT",
+                    "Price information is stored at line item level"
+                ],
+                "domain": "Order pricing",
+                "business_impact": "Used for order value calculation and pricing analysis"
+            }},
+            "data_points": [
+                "L_EXTENDEDPRICE - extended price",
+                "L_DISCOUNT - discount percentage",
+                "L_TAX - tax rate"
+            ],
+            "confidence_score": 0.95,
+            "alternative_interpretations": [
+                "Calculate net price after discounts",
+                "Analyze price variations across orders"
+            ]
+        }}
+        ```
+
+        CRITICAL REMINDERS:
+        - Only reference tables and columns that exist in our schema
+        - Only make statements supported by the provided documentation
+        - If information is missing, state that explicitly
+        - Be specific to our data model rather than making general statements
+        - Focus on what's actually available in our system
+
         Make sure your response is a valid JSON object that follows this exact structure.
         """,
         input_variables=["query", "doc_context"]
@@ -149,22 +186,48 @@ def create_question_parser(tools: SearchTools):
             query = messages[-1].content if isinstance(messages[-1], BaseMessage) else str(messages[-1])
             
             # Search documentation for context
-            search_results = tools.search_documentation(query)
+            doc_search_results = tools.search_documentation(query)
+            
+            # Search SQL code for context
+            logger.info(f"Searching SQL schema for query: {query}")
+            sql_search_results = tools.search_sql_schema(query)
+            logger.info(f"SQL search results: {sql_search_results}")
             
             # Format doc context
             doc_snippets = []
-            for result in search_results.get('results', []):
+            for result in doc_search_results.get('results', []):
                 doc_snippets.append(
                     f"Content:\n{result.get('content', '')}\n"
                     f"Metadata: {result.get('metadata', {})}\n"
                 )
             
-            doc_context = "\n".join(doc_snippets)
+            # Format SQL context
+            sql_snippets = []
+            if sql_search_results.get('status') == 'success':
+                for result in sql_search_results.get('results', []):
+                    content = result.get('content', '')
+                    metadata = result.get('metadata', {})
+                    if content:
+                        sql_snippets.append(
+                            f"SQL Schema/Code:\n{content}\n"
+                            f"Metadata: {metadata}\n"
+                        )
+                        logger.info(f"Added SQL snippet: {content[:100]}...")
+            else:
+                logger.warning(f"SQL search failed: {sql_search_results.get('error', 'Unknown error')}")
+            
+            # Combine both contexts
+            combined_context = (
+                "Documentation Context:\n" + 
+                "\n".join(doc_snippets) +
+                "\n\nSQL Schema Context:\n" +
+                "\n".join(sql_snippets)
+            )
             
             # Format the prompt
             formatted_prompt = parser_prompt.format(
                 query=query,
-                doc_context=doc_context
+                doc_context=combined_context
             )
             
             # Get response from the model
@@ -210,17 +273,22 @@ def create_question_parser(tools: SearchTools):
                 parsed_dict = {
                     "original_question": query,
                     "rephrased_question": query,
-                    "business_context": "Error occurred during parsing",
-                    "relevant_tables": [{"name": "unknown", "columns": []}],
-                    "query_intent": {
-                        "primary_intent": "unknown",
-                        "metrics": []
+                    "business_context": {
+                        "primary_objective": "Error occurred during parsing",
+                        "key_entities": [],
+                        "business_assumptions": [],
+                        "domain": "unknown"
                     },
-                    "suggested_approach": f"Error during question parsing: {str(parse_error)}"
+                    "confidence_score": 0.0,
+                    "alternative_interpretations": []
                 }
             
             return {
-                "doc_context": {"query": query, "results": search_results.get('results', [])},
+                "doc_context": {
+                    "query": query, 
+                    "doc_results": doc_search_results.get('results', []),
+                    "sql_results": sql_search_results.get('results', [])
+                },
                 "parsed_question": parsed_dict
             }
             
@@ -260,159 +328,248 @@ def create_question_parser(tools: SearchTools):
     return graph.compile(checkpointer=checkpointer)
 
 class QuestionParserSystem:
-    def __init__(self, tools: SearchTools, feedback_timeout: int = 300):
-        self.app = create_question_parser(tools)
+    def __init__(self, tools: SearchTools, feedback_timeout: int = 120):
+        """Initialize the question parser system.
+        
+        Args:
+            tools: SearchTools instance for documentation and schema search
+            feedback_timeout: Timeout in seconds for feedback requests
+        """
         self.db = ChatDatabase()
-        self._lock = Lock()  # Add thread lock for thread safety
+        self._lock = Lock()
+        self.tools = tools  # Store the tools instance
+        self.feedback_timeout = feedback_timeout
+        
+        # Initialize the parser model
+        self.parser_model = ChatOllama(
+            model="llama3.2:latest",
+            temperature=0.1,
+            base_url="http://localhost:11434",
+            timeout=120,
+        )
+
+        # Create feedback system
         self.feedback_system = HumanFeedbackSystem(timeout_seconds=feedback_timeout)
 
-    async def parse_question_with_feedback(self, query: str) -> Dict[str, Any]:
-        """Process a query through the question parser system with human feedback."""
+        # Initialize the output parser
+        self.output_parser = PydanticOutputParser(pydantic_object=ParsedQuestion)
+
+    def _create_base_prompt(self, question: str, doc_search_results: Dict, sql_search_results: Dict) -> str:
+        """Create the base prompt for question parsing."""
+        context = self._format_context(doc_search_results, sql_search_results)
+        
+        return f"""You are an expert data analyst. Please analyze this question about calculating discounted sales amounts.
+
+Question: {question}
+
+Available Context:
+{context}
+
+Please provide a detailed analysis in this exact JSON format:
+
+```json
+{{
+    "original_question": "{question}",
+    "rephrased_question": "How to calculate the discounted sales amount using L_EXTENDEDPRICE and L_DISCOUNT from LINEITEM table",
+    "business_context": {{
+        "domain": "Order Pricing and Revenue Analysis",
+        "primary_objective": "Calculate discounted sales amount for line items",
+        "key_entities": [
+            "LINEITEM table",
+            "L_EXTENDEDPRICE - Extended price before discount",
+            "L_DISCOUNT - Discount percentage"
+        ],
+        "business_assumptions": [
+            "Discounted amount = L_EXTENDEDPRICE * (1 - L_DISCOUNT)",
+            "Prices are stored at line item level"
+        ],
+        "business_impact": "Accurate revenue reporting and discount analysis"
+    }},
+    "data_points": [
+        "L_EXTENDEDPRICE - Base extended price",
+        "L_DISCOUNT - Discount rate",
+        "Calculation: L_EXTENDEDPRICE * (1 - L_DISCOUNT)"
+    ],
+    "confidence_score": 0.95,
+    "alternative_interpretations": [
+        "Calculate total discounted revenue across all orders",
+        "Analyze discount patterns and impact on revenue"
+    ]
+}}
+```
+
+Focus on:
+1. Precise calculation method using available columns
+2. Clear explanation of the business context
+3. Specific table and column references
+4. Implementation details with SQL examples
+
+Use ONLY information from the provided context and schema.
+"""
+
+    def parse_question(self, question: str, feedback_context: Optional[Dict] = None) -> Dict:
+        """Parse a question and generate appropriate response."""
         try:
-            # Generate unique ID for the conversation
-            conversation_id = str(uuid.uuid4())
-            
-            # First, parse the question
-            with self._lock:  # Use lock for thread safety
-                result = self.app.invoke({
-                    "messages": [HumanMessage(content=query)],
-                    "doc_context": {},
-                    "parsed_question": {},
-                    "feedback_status": None
+            # Initialize default response structure
+            response = {
+                'parsed_question': {
+                    'original_question': question,
+                    'rephrased_question': question,
+                    'business_context': {
+                        'domain': '',
+                        'primary_objective': '',
+                        'key_entities': []
+                    }
                 },
-                {"configurable": {"thread_id": conversation_id}}
-                )
-            
-            # Get the parsed question
-            parsed_question = result.get("parsed_question", {})
-            
-            # Now, get human feedback on the parsed question
-            feedback_result = await self.feedback_system.process_with_feedback(
-                conversation_id,
-                parsed_question,
-                [HumanMessage(content=query)]
+                'doc_context': {}
+            }
+
+            # Search documentation for context
+            doc_search_results = self.tools.search_documentation(question)
+            sql_search_results = self.tools.search_sql_schema(question)
+
+            # Create prompt based on context
+            system_prompt = (
+                self._create_base_prompt(question, doc_search_results, sql_search_results)
+                if not feedback_context
+                else self._create_feedback_prompt(question, feedback_context, doc_search_results, sql_search_results)
             )
+
+            # Get response from the model
+            model_response = self.parser_model.invoke(system_prompt)
+            response_text = model_response.content if hasattr(model_response, 'content') else str(model_response)
+
+            # Extract JSON from the response
+            json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+                parsed_dict = json.loads(json_str)
+                response.update({
+                    'parsed_question': parsed_dict,
+                    'doc_context': {
+                        'query': question,
+                        'doc_results': doc_search_results.get('results', []),
+                        'sql_results': sql_search_results.get('results', [])
+                    }
+                })
             
-            # If feedback was rejected, re-parse with the feedback
-            if feedback_result.get("status") == "rejected":
-                # Extract feedback comments
-                feedback = feedback_result.get("feedback", {})
-                comments = feedback.get("comments", "")
-                
-                # Create a new query with the feedback
-                enhanced_query = f"{query}\n\nAdditional context: {comments}"
-                
-                # Re-parse with the enhanced query
-                with self._lock:
-                    result = self.app.invoke({
-                        "messages": [HumanMessage(content=enhanced_query)],
-                        "doc_context": {},
-                        "parsed_question": {},
-                        "feedback_status": "reparsing"
-                    },
-                    {"configurable": {"thread_id": conversation_id}}
+            return response
+
+        except Exception as e:
+            logger.error(f"Error parsing question: {str(e)}", exc_info=True)
+            return {
+                'parsed_question': {
+                    'original_question': question,
+                    'rephrased_question': question,
+                    'business_context': {
+                        'domain': 'Error occurred',
+                        'primary_objective': f'Error: {str(e)}',
+                        'key_entities': []
+                    }
+                },
+                'doc_context': {},
+                'analysis': {
+                    'error': str(e)
+                }
+            }
+
+    def _format_context(self, doc_search_results: Dict, sql_search_results: Dict) -> str:
+        """Format the context for the prompt."""
+        doc_snippets = []
+        for result in doc_search_results.get('results', []):
+            doc_snippets.append(
+                f"Content:\n{result.get('content', '')}\n"
+                f"Metadata: {result.get('metadata', {})}\n"
+            )
+        
+        sql_snippets = []
+        if sql_search_results.get('status') == 'success':
+            for result in sql_search_results.get('results', []):
+                content = result.get('content', '')
+                metadata = result.get('metadata', {})
+                if content:
+                    sql_snippets.append(
+                        f"SQL Schema/Code:\n{content}\n"
+                        f"Metadata: {metadata}\n"
                     )
-                
-                # Get the updated parsed question
-                parsed_question = result.get("parsed_question", {})
-                
-                # Update the feedback result
-                feedback_result["parsed_question"] = parsed_question
-                feedback_result["status"] = "reparsed"
-            
-            # Prepare response data
-            response_data = {
-                "parsed_question": feedback_result.get("parsed_question", {}),
-                "doc_context": result.get("doc_context", {}),
-                "feedback": feedback_result.get("feedback", {}),
-                "status": feedback_result.get("status", "unknown"),
-                "query": query,
-                "messages": feedback_result.get("messages", []),
-                "conversation_id": conversation_id  # Add conversation_id to response
-            }
-            
-            # Save conversation to database
-            with self._lock:  # Use lock for database operations
-                self.db.save_conversation(conversation_id, response_data)
-            
-            return response_data
-            
-        except Exception as e:
-            logger.error(f"Error in question parsing with feedback: {str(e)}", exc_info=True)
-            error_response = {
-                "parsed_question": {
-                    "original_question": query,
-                    "rephrased_question": query,
-                    "business_context": "Error occurred during parsing",
-                    "relevant_tables": [{"name": "unknown", "columns": []}],
-                    "query_intent": {
-                        "primary_intent": "unknown",
-                        "metrics": []
-                    },
-                    "suggested_approach": f"Error during question parsing: {str(e)}"
-                },
-                "doc_context": {},
-                "feedback": None,
-                "status": "error",
-                "query": query,
-                "messages": [HumanMessage(content=query)],
-                "conversation_id": str(uuid.uuid4())
-            }
-            return error_response
-    
-    def parse_question(self, query: str) -> Dict[str, Any]:
-        """
-        Synchronous version of parse_question for backward compatibility.
-        This will auto-approve without waiting for human feedback.
-        """
-        try:
-            # Generate unique ID for the conversation
-            conversation_id = str(uuid.uuid4())
-            
-            with self._lock:  # Use lock for thread safety
-                result = self.app.invoke({
-                    "messages": [HumanMessage(content=query)],
-                    "doc_context": {},
-                    "parsed_question": {},
-                    "feedback_status": "auto_approved"
-                },
-                {"configurable": {"thread_id": conversation_id}}
-                )
-            
-            # Prepare response data
-            response_data = {
-                "parsed_question": result.get("parsed_question", {}),
-                "doc_context": result.get("doc_context", {}),
-                "feedback": {"approved": True, "comments": "Auto-approved"},
-                "status": "approved",
-                "query": query,
-                "conversation_id": conversation_id
-            }
-            
-            # Save conversation to database
-            with self._lock:  # Use lock for database operations
-                self.db.save_conversation(conversation_id, response_data)
-            
-            return response_data
-            
-        except Exception as e:
-            logger.error(f"Error in question parsing: {str(e)}", exc_info=True)
-            error_response = {
-                "parsed_question": {
-                    "original_question": query,
-                    "rephrased_question": query,
-                    "business_context": "Error occurred during parsing",
-                    "relevant_tables": [{"name": "unknown", "columns": []}],
-                    "query_intent": {
-                        "primary_intent": "unknown",
-                        "metrics": []
-                    },
-                    "suggested_approach": f"Error during question parsing: {str(e)}"
-                },
-                "doc_context": {},
-                "feedback": None,
-                "status": "error",
-                "query": query,
-                "conversation_id": str(uuid.uuid4())
-            }
-            return error_response
+
+        return (
+            "Documentation Context:\n" + 
+            "\n".join(doc_snippets) +
+            "\n\nSQL Schema Context:\n" +
+            "\n".join(sql_snippets)
+        )
+
+    def _create_feedback_prompt(self, question: str, feedback_context: Dict, doc_search_results: Dict, sql_search_results: Dict) -> str:
+        """Create a feedback-based prompt for question parsing."""
+        prev = feedback_context.get("previous_summary", {})
+        
+        # Ensure tables is a list of strings
+        tables = prev.get('tables', [])
+        if not isinstance(tables, list):
+            tables = []
+        tables = [str(t) for t in tables if t is not None]
+        
+        # Ensure key_entities is a list of strings
+        key_entities = prev.get('key_entities', [])
+        if not isinstance(key_entities, list):
+            key_entities = []
+        key_entities = [str(e) for e in key_entities if e is not None]
+        
+        context = self._format_context(doc_search_results, sql_search_results)
+        
+        return f"""You are an expert data analyst. Please analyze this question with the feedback provided.
+
+Previous interpretation: {prev.get('interpretation', 'No previous interpretation')}
+Key entities identified: {', '.join(key_entities)}
+Relevant tables: {', '.join(tables)}
+
+User feedback: {feedback_context.get('feedback', 'No feedback provided')}
+
+Question: {question}
+
+Available Context:
+{context}
+
+Please provide a detailed analysis in this exact JSON format:
+
+```json
+{{
+    "original_question": "{question}",
+    "rephrased_question": "How to calculate the discounted sales amount using L_EXTENDEDPRICE and L_DISCOUNT from LINEITEM table",
+    "business_context": {{
+        "domain": "Order Pricing and Revenue Analysis",
+        "primary_objective": "Calculate discounted sales amount for line items",
+        "key_entities": [
+            "LINEITEM table",
+            "L_EXTENDEDPRICE - Extended price before discount",
+            "L_DISCOUNT - Discount percentage"
+        ],
+        "business_assumptions": [
+            "Discounted amount = L_EXTENDEDPRICE * (1 - L_DISCOUNT)",
+            "Prices are stored at line item level"
+        ],
+        "business_impact": "Accurate revenue reporting and discount analysis"
+    }},
+    "data_points": [
+        "L_EXTENDEDPRICE - Base extended price",
+        "L_DISCOUNT - Discount rate",
+        "Calculation: L_EXTENDEDPRICE * (1 - L_DISCOUNT)"
+    ],
+    "confidence_score": 0.95,
+    "alternative_interpretations": [
+        "Calculate total discounted revenue across all orders",
+        "Analyze discount patterns and impact on revenue"
+    ]
+}}
+```
+
+Focus on:
+1. Addressing the user's feedback
+2. Precise calculation method using available columns
+3. Clear explanation of the business context
+4. Specific table and column references
+5. Implementation details with SQL examples
+
+Use ONLY information from the provided context and schema.
+"""
