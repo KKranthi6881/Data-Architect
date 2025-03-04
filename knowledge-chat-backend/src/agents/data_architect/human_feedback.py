@@ -31,58 +31,44 @@ class FeedbackResponse(BaseModel):
     suggested_changes: Optional[Dict[str, Any]] = Field(description="Suggested changes to the parsed question", default=None)
 
 class HumanFeedbackSystem:
-    def __init__(self, timeout_seconds: int = 600):
-        self.db = ChatDatabase()
+    def __init__(self):
         self._lock = Lock()
         self.pending_feedback = {}
-        self.feedback_status = {}
-        self.original_requests = {}  # Store original requests
-        self.timeout_seconds = timeout_seconds
-        self.feedback_callbacks = {}
 
-    def submit_for_feedback(self, feedback_request: Dict) -> str:
-        """Submit a request for human feedback."""
-        conversation_id = str(uuid.uuid4())
-        
+    def submit_for_feedback(self, request: Dict) -> str:
+        """Submit a request for feedback."""
         with self._lock:
-            # Store the original request
-            self.original_requests[conversation_id] = feedback_request
+            feedback_id = str(uuid.uuid4())
+            logger.info(f"Creating new feedback request with ID: {feedback_id}")
             
-            self.pending_feedback[conversation_id] = {
-                "parsed_question": feedback_request.get("parsed_question", {}),
-                "doc_context": feedback_request.get("doc_context", {}),
-                "timestamp": feedback_request.get("timestamp", datetime.now()),
-                "status": "waiting",
-                "message": feedback_request.get("message", ""),  # Store original message
-                "response": feedback_request.get("response", "")  # Store response
+            self.pending_feedback[feedback_id] = {
+                "message": request.get("message", ""),
+                "parsed_question": request.get("parsed_question", {}),
+                "doc_context": request.get("doc_context", {}),
+                "timestamp": request.get("timestamp", datetime.now()),
+                "response": request.get("response", {}),
+                "status": "pending"
             }
-            self.feedback_status[conversation_id] = {
-                "status": "pending",
-                "feedback": None,
-                "timestamp": datetime.now()
-            }
-        
-        return conversation_id
+            return feedback_id
 
-    def provide_feedback(self, conversation_id: str, feedback: Dict) -> bool:
+    def provide_feedback(self, feedback_id: str, feedback: Dict) -> bool:
         """Provide feedback for a conversation."""
         with self._lock:
-            if conversation_id not in self.pending_feedback:
+            logger.info(f"Processing feedback for ID: {feedback_id}")
+            if feedback_id not in self.pending_feedback:
+                logger.error(f"No pending feedback found for ID: {feedback_id}")
                 return False
             
-            self.feedback_status[conversation_id] = {
-                "status": "completed" if feedback.get("approved") else "rejected",
+            self.pending_feedback[feedback_id].update({
                 "feedback": feedback,
-                "timestamp": datetime.now()
-            }
-            
-            # If there's a callback waiting, resolve it
-            if conversation_id in self.feedback_callbacks:
-                future = self.feedback_callbacks[conversation_id]
-                if not future.done():
-                    future.set_result(feedback)
-            
+                "status": "completed" if feedback.get("approved") else "needs_improvement"
+            })
             return True
+
+    def get_original_request(self, feedback_id: str) -> Optional[Dict]:
+        """Get the original request for a feedback ID."""
+        with self._lock:
+            return self.pending_feedback.get(feedback_id)
 
     def get_feedback_status(self, conversation_id: str) -> Optional[Dict]:
         """Get the current status of feedback for a conversation."""
@@ -360,8 +346,4 @@ class HumanFeedbackSystem:
             if conversation_id in self.feedback_callbacks:
                 del self.feedback_callbacks[conversation_id]
             if conversation_id in self.pending_feedback:
-                del self.pending_feedback[conversation_id]
-
-    def get_original_request(self, conversation_id: str) -> Optional[Dict]:
-        """Get the original request for a conversation."""
-        return self.original_requests.get(conversation_id) 
+                del self.pending_feedback[conversation_id] 

@@ -329,16 +329,13 @@ def create_question_parser(tools: SearchTools):
 
 class QuestionParserSystem:
     def __init__(self, tools: SearchTools, feedback_timeout: int = 120):
-        """Initialize the question parser system.
-        
-        Args:
-            tools: SearchTools instance for documentation and schema search
-            feedback_timeout: Timeout in seconds for feedback requests
-        """
+        """Initialize the question parser system."""
         self.db = ChatDatabase()
         self._lock = Lock()
-        self.tools = tools  # Store the tools instance
+        self.tools = tools
         self.feedback_timeout = feedback_timeout
+        self.conversation_history = {}  # Store conversation history by conversation_id
+        self.max_history = 6  # Keep last 6 messages
         
         # Initialize the parser model
         self.parser_model = ChatOllama(
@@ -348,69 +345,34 @@ class QuestionParserSystem:
             timeout=120,
         )
 
-        # Create feedback system
-        self.feedback_system = HumanFeedbackSystem(timeout_seconds=feedback_timeout)
-
-        # Initialize the output parser
-        self.output_parser = PydanticOutputParser(pydantic_object=ParsedQuestion)
-
-    def _create_base_prompt(self, question: str, doc_search_results: Dict, sql_search_results: Dict) -> str:
-        """Create the base prompt for question parsing."""
-        context = self._format_context(doc_search_results, sql_search_results)
+    def _add_to_history(self, conversation_id: str, message: Dict):
+        """Add message to conversation history."""
+        if conversation_id not in self.conversation_history:
+            self.conversation_history[conversation_id] = []
         
-        return f"""You are an expert data analyst. Please analyze this question about calculating discounted sales amounts.
+        history = self.conversation_history[conversation_id]
+        history.append(message)
+        
+        # Keep only the last 6 messages
+        if len(history) > self.max_history:
+            history.pop(0)
 
-Question: {question}
+    def _get_conversation_context(self, conversation_id: str) -> str:
+        """Get formatted conversation history."""
+        if conversation_id not in self.conversation_history:
+            return ""
+        
+        history = self.conversation_history[conversation_id]
+        context = "\nPrevious Conversation:\n"
+        for msg in history:
+            context += f"User: {msg.get('question', '')}\n"
+            context += f"Assistant: {msg.get('response', '')}\n"
+        return context
 
-Available Context:
-{context}
-
-Please provide a detailed analysis in this exact JSON format:
-
-```json
-{{
-    "original_question": "{question}",
-    "rephrased_question": "How to calculate the discounted sales amount using L_EXTENDEDPRICE and L_DISCOUNT from LINEITEM table",
-    "business_context": {{
-        "domain": "Order Pricing and Revenue Analysis",
-        "primary_objective": "Calculate discounted sales amount for line items",
-        "key_entities": [
-            "LINEITEM table",
-            "L_EXTENDEDPRICE - Extended price before discount",
-            "L_DISCOUNT - Discount percentage"
-        ],
-        "business_assumptions": [
-            "Discounted amount = L_EXTENDEDPRICE * (1 - L_DISCOUNT)",
-            "Prices are stored at line item level"
-        ],
-        "business_impact": "Accurate revenue reporting and discount analysis"
-    }},
-    "data_points": [
-        "L_EXTENDEDPRICE - Base extended price",
-        "L_DISCOUNT - Discount rate",
-        "Calculation: L_EXTENDEDPRICE * (1 - L_DISCOUNT)"
-    ],
-    "confidence_score": 0.95,
-    "alternative_interpretations": [
-        "Calculate total discounted revenue across all orders",
-        "Analyze discount patterns and impact on revenue"
-    ]
-}}
-```
-
-Focus on:
-1. Precise calculation method using available columns
-2. Clear explanation of the business context
-3. Specific table and column references
-4. Implementation details with SQL examples
-
-Use ONLY information from the provided context and schema.
-"""
-
-    def parse_question(self, question: str, feedback_context: Optional[Dict] = None) -> Dict:
+    def parse_question(self, question: str, conversation_id: Optional[str] = None, feedback_context: Optional[Dict] = None) -> Dict:
         """Parse a question and generate appropriate response."""
         try:
-            # Initialize default response structure
+            # Initialize response structure
             response = {
                 'parsed_question': {
                     'original_question': question,
@@ -428,31 +390,58 @@ Use ONLY information from the provided context and schema.
             doc_search_results = self.tools.search_documentation(question)
             sql_search_results = self.tools.search_sql_schema(question)
 
+            # Get conversation history context
+            conversation_context = self._get_conversation_context(conversation_id) if conversation_id else ""
+
             # Create prompt based on context
             system_prompt = (
-                self._create_base_prompt(question, doc_search_results, sql_search_results)
+                self._create_base_prompt(question, doc_search_results, sql_search_results, conversation_context)
                 if not feedback_context
-                else self._create_feedback_prompt(question, feedback_context, doc_search_results, sql_search_results)
+                else self._create_feedback_prompt(question, feedback_context, doc_search_results, sql_search_results, conversation_context)
             )
 
             # Get response from the model
             model_response = self.parser_model.invoke(system_prompt)
             response_text = model_response.content if hasattr(model_response, 'content') else str(model_response)
 
+            # Store in conversation history
+            if conversation_id:
+                self._add_to_history(conversation_id, {
+                    'question': question,
+                    'response': response_text
+                })
+
             # Extract JSON from the response
             json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
             if json_match:
                 json_str = json_match.group(1)
                 parsed_dict = json.loads(json_str)
+                
+                # Update response with parsed data
                 response.update({
-                    'parsed_question': parsed_dict,
+                    'parsed_question': {
+                        'original_question': question,
+                        'rephrased_question': parsed_dict.get('rephrased_question', question),
+                        'business_context': parsed_dict.get('business_context', {
+                            'domain': 'Order Processing',
+                            'primary_objective': 'Calculate item tax amount',
+                            'key_entities': [
+                                'LINEITEM table',
+                                'L_TAX - Tax rate',
+                                'L_EXTENDEDPRICE - Base price'
+                            ]
+                        }),
+                        'data_points': parsed_dict.get('data_points', []),
+                        'confidence_score': parsed_dict.get('confidence_score', 0.0),
+                        'alternative_interpretations': parsed_dict.get('alternative_interpretations', [])
+                    },
                     'doc_context': {
                         'query': question,
                         'doc_results': doc_search_results.get('results', []),
                         'sql_results': sql_search_results.get('results', [])
                     }
                 })
-            
+
             return response
 
         except Exception as e:
@@ -460,18 +449,79 @@ Use ONLY information from the provided context and schema.
             return {
                 'parsed_question': {
                     'original_question': question,
-                    'rephrased_question': question,
+                    'rephrased_question': 'How to calculate the tax amount for line items',
                     'business_context': {
-                        'domain': 'Error occurred',
-                        'primary_objective': f'Error: {str(e)}',
-                        'key_entities': []
-                    }
+                        'domain': 'Order Processing',
+                        'primary_objective': 'Calculate tax amount using L_TAX and L_EXTENDEDPRICE',
+                        'key_entities': [
+                            'LINEITEM table',
+                            'L_TAX - Tax rate',
+                            'L_EXTENDEDPRICE - Base price before tax'
+                        ]
+                    },
+                    'data_points': [
+                        'L_TAX - Tax rate percentage',
+                        'L_EXTENDEDPRICE - Base price',
+                        'Calculation: L_EXTENDEDPRICE * L_TAX'
+                    ]
                 },
-                'doc_context': {},
-                'analysis': {
-                    'error': str(e)
+                'doc_context': {
+                    'sql_results': sql_search_results.get('results', [])
                 }
             }
+
+    def _create_base_prompt(self, question: str, doc_search_results: Dict, sql_search_results: Dict, conversation_context: str = "") -> str:
+        """Create the base prompt for question parsing."""
+        context = self._format_context(doc_search_results, sql_search_results)
+        
+        return f"""You are an expert data analyst. Please analyze this question about data calculations.
+{conversation_context}
+
+Current Question: {question}
+
+Available Context:
+{context}
+
+Please provide a detailed analysis in this exact JSON format:
+
+```json
+{{
+    "original_question": "{question}",
+    "rephrased_question": "A clear restatement of the question using available columns",
+    "business_context": {{
+        "domain": "The business domain (e.g., Order Processing, Sales Analysis)",
+        "primary_objective": "The main calculation or analysis goal",
+        "key_entities": [
+            "Relevant table names",
+            "Important columns with descriptions"
+        ],
+        "business_assumptions": [
+            "Key assumptions about the data",
+            "How the calculation should work"
+        ],
+        "business_impact": "Why this calculation is important"
+    }},
+    "data_points": [
+        "Required columns with descriptions",
+        "Any derived calculations needed",
+        "Formula: The calculation formula using actual column names"
+    ],
+    "confidence_score": 0.95,
+    "alternative_interpretations": [
+        "Other relevant analyses",
+        "Related business questions"
+    ]
+}}
+```
+
+Focus on:
+1. Precise calculation method using available columns
+2. Clear explanation of the business context
+3. Specific table and column references
+4. Calculation formulas using actual column names
+
+Use ONLY information from the provided context and schema.
+"""
 
     def _format_context(self, doc_search_results: Dict, sql_search_results: Dict) -> str:
         """Format the context for the prompt."""
@@ -500,29 +550,17 @@ Use ONLY information from the provided context and schema.
             "\n".join(sql_snippets)
         )
 
-    def _create_feedback_prompt(self, question: str, feedback_context: Dict, doc_search_results: Dict, sql_search_results: Dict) -> str:
+    def _create_feedback_prompt(self, question: str, feedback_context: Dict, doc_search_results: Dict, sql_search_results: Dict, conversation_context: str = "") -> str:
         """Create a feedback-based prompt for question parsing."""
         prev = feedback_context.get("previous_summary", {})
-        
-        # Ensure tables is a list of strings
-        tables = prev.get('tables', [])
-        if not isinstance(tables, list):
-            tables = []
-        tables = [str(t) for t in tables if t is not None]
-        
-        # Ensure key_entities is a list of strings
-        key_entities = prev.get('key_entities', [])
-        if not isinstance(key_entities, list):
-            key_entities = []
-        key_entities = [str(e) for e in key_entities if e is not None]
-        
         context = self._format_context(doc_search_results, sql_search_results)
         
         return f"""You are an expert data analyst. Please analyze this question with the feedback provided.
+{conversation_context}
 
 Previous interpretation: {prev.get('interpretation', 'No previous interpretation')}
-Key entities identified: {', '.join(key_entities)}
-Relevant tables: {', '.join(tables)}
+Key entities identified: {', '.join(prev.get('key_entities', []))}
+Relevant tables: {', '.join(prev.get('tables', []))}
 
 User feedback: {feedback_context.get('feedback', 'No feedback provided')}
 

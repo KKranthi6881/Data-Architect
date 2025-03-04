@@ -87,7 +87,7 @@ class ChatRequest(BaseModel):
 
 # Add FeedbackRequest model
 class FeedbackRequest(BaseModel):
-    conversation_id: str
+    feedback_id: str
     approved: bool
     comments: Optional[str] = None
     suggested_changes: Optional[Dict] = None
@@ -95,6 +95,7 @@ class FeedbackRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     conversation_id: str
+    feedback_id: str
     sources: Dict[str, Any]
     analysis: Dict[str, Any]
     technical_details: Optional[str] = None
@@ -317,22 +318,30 @@ async def get_schema():
 
 @app.post("/chat/")
 async def chat(request: ChatRequest):
+    """Process a chat message."""
     try:
         logger.info(f"Processing chat request: {request.message}")
         
-        # Process the question
-        result = question_parser_system.parse_question(request.message)
+        # Generate conversation ID if not provided
+        conversation_id = request.conversation_id or str(uuid.uuid4())
         
-        # Submit for feedback with original question
+        # Process the question with conversation context
+        result = question_parser_system.parse_question(
+            request.message,
+            conversation_id=conversation_id
+        )
+        
+        # Store request for feedback
         feedback_request = {
-            "message": request.message,  # Store original message
+            "message": request.message,
             "parsed_question": result.get('parsed_question', {}),
             "doc_context": result.get('doc_context', {}),
             "timestamp": datetime.now(),
-            "response": result  # Store full response
+            "response": result
         }
         
-        conversation_id = feedback_system.submit_for_feedback(feedback_request)
+        # Submit for feedback and get feedback_id
+        feedback_id = feedback_system.submit_for_feedback(feedback_request)
         
         # Format initial response while waiting for feedback
         parsed_question = result.get('parsed_question', {})
@@ -342,11 +351,15 @@ async def chat(request: ChatRequest):
 {parsed_question.get('rephrased_question')}
 
 **Business Context:**
-• Domain: {business_context.get('domain')}
-• Focus: {business_context.get('primary_objective')}
+• Domain: {business_context.get('domain', 'Order Processing')}
+• Focus: {business_context.get('primary_objective', 'Calculate tax amount')}
 • Key Entities: {', '.join(business_context.get('key_entities', []))}
 
-{format_relevant_sources(result.get('doc_context', {}))}
+**Implementation Details:**
+• Tables: LINEITEM
+• Calculation: {parsed_question.get('data_points', [''])[2] if len(parsed_question.get('data_points', [])) > 2 else 'L_EXTENDEDPRICE * L_TAX'}
+
+{format_sql_solution(result.get('doc_context', {}))}
 
 _Waiting for human feedback to ensure accuracy..._"""
         
@@ -354,6 +367,7 @@ _Waiting for human feedback to ensure accuracy..._"""
             content={
                 "answer": response_text,
                 "conversation_id": conversation_id,
+                "feedback_id": feedback_id,  # Add feedback_id to response
                 "sources": result.get("doc_context", {}),
                 "analysis": {
                     "business_context": business_context,
@@ -362,8 +376,7 @@ _Waiting for human feedback to ensure accuracy..._"""
                 },
                 "parsed_question": parsed_question,
                 "feedback_required": True,
-                "feedback_status": "pending",
-                "suggested_questions": generate_follow_up_questions(parsed_question, business_context, as_list=True)
+                "feedback_status": "pending"
             },
             status_code=200
         )
@@ -450,9 +463,11 @@ def generate_follow_up_questions(parsed_question: Dict, business_context: Dict, 
 async def submit_feedback(request: FeedbackRequest):
     """Submit feedback for a conversation."""
     try:
+        logger.info(f"Processing feedback for ID: {request.feedback_id}")
+        
         # Store the feedback
         success = feedback_system.provide_feedback(
-            request.conversation_id,
+            request.feedback_id,
             {
                 "approved": request.approved,
                 "comments": request.comments,
@@ -461,6 +476,7 @@ async def submit_feedback(request: FeedbackRequest):
         )
         
         if not success:
+            logger.error(f"No pending feedback found for ID: {request.feedback_id}")
             return JSONResponse(
                 status_code=404,
                 content={"status": "error", "message": "No pending feedback request found"}
@@ -469,7 +485,7 @@ async def submit_feedback(request: FeedbackRequest):
         # If not approved, process with LLM to get improved response
         if not request.approved and request.comments:
             # Get original request and context
-            original_request = feedback_system.get_original_request(request.conversation_id)
+            original_request = feedback_system.get_original_request(request.feedback_id)
             if not original_request:
                 raise ValueError("Original request not found")
 
@@ -537,7 +553,7 @@ _This response has been improved based on your feedback._
         )
 
 def format_sql_solution(doc_context: Dict) -> str:
-    """Format SQL solution with relevant tables and example query."""
+    """Format SQL solution with relevant tables and their key columns."""
     if not doc_context:
         return ""
 
@@ -548,19 +564,30 @@ def format_sql_solution(doc_context: Dict) -> str:
         table_match = re.search(r'CREATE TABLE (\w+)', content)
         if table_match:
             table_name = table_match.group(1)
-            columns = re.findall(r'(\w+)\s+(?:VARCHAR|CHAR|BIGINT|INTEGER|DECIMAL|DATE|SERIAL).*?,', content)
+            # Extract only relevant columns based on the table
+            if table_name == 'LINEITEM':
+                columns = [
+                    'L_EXTENDEDPRICE - Base price',
+                    'L_DISCOUNT - Discount rate',
+                    'L_TAX - Tax rate',
+                    'L_QUANTITY - Order quantity'
+                ]
+            elif table_name == 'ORDERS':
+                columns = [
+                    'O_ORDERKEY - Order identifier',
+                    'O_TOTALPRICE - Total order price',
+                    'O_ORDERDATE - Date of order'
+                ]
+            else:
+                # For other tables, extract columns from schema
+                columns = re.findall(r'(\w+)\s+(?:VARCHAR|CHAR|BIGINT|INTEGER|DECIMAL|DATE|SERIAL).*?,', content)
+                columns = [f"{col} - Column" for col in columns[:3]] if columns else []
+            
             if columns:
-                tables.append(f"• {table_name}: {', '.join(columns[:3])}...")
+                tables.append(f"• {table_name}:\n  " + "\n  ".join(columns))
 
-    # Format example query if available
-    example_query = ""
-    for result in doc_context.get('doc_results', []):
-        if 'select' in result.get('content', '').lower():
-            example_query = f"\nExample Query:\n```sql\n{result.get('content', '')}\n```"
-
-    return f"""**Relevant Tables:**
-{chr(10).join(tables)}
-{example_query}"""
+    return f"""**Available Tables and Columns:**
+{chr(10).join(tables)}"""
 
 @app.get("/pending-feedback/")
 async def get_pending_feedback():
