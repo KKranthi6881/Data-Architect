@@ -14,19 +14,7 @@ class ChatDatabase:
     def _init_db(self):
         """Initialize database tables"""
         with sqlite3.connect(self.db_path) as conn:
-            # Create messages table
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    metadata TEXT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # Create conversations table
+            # Create conversations table with feedback fields
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
@@ -34,7 +22,9 @@ class ChatDatabase:
                     query TEXT,
                     output TEXT,
                     code_context TEXT,
-                    technical_details TEXT
+                    technical_details TEXT,
+                    feedback_status TEXT,
+                    feedback_comments TEXT
                 )
             """)
             
@@ -96,7 +86,7 @@ class ChatDatabase:
             conn.commit()
 
     def get_conversation(self, conversation_id: str):
-        """Retrieve a conversation from the database"""
+        """Retrieve a conversation from the database with better output handling"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -106,34 +96,68 @@ class ChatDatabase:
             row = cursor.fetchone()
             
             if row:
-                return {
-                    'id': row[0],
-                    'created_at': row[1],
-                    'query': row[2],
-                    'output': json.loads(row[3]),
-                    'code_context': json.loads(row[4]),
-                    'technical_details': json.loads(row[5])
-                }
+                # Get column names
+                column_names = [description[0] for description in cursor.description]
+                
+                # Create a dictionary with column names as keys
+                result = {}
+                for i, column in enumerate(column_names):
+                    result[column] = row[i]
+                
+                # Handle JSON fields
+                for field in ['output', 'code_context', 'technical_details']:
+                    if field in result and result[field]:
+                        try:
+                            if isinstance(result[field], str):
+                                result[field] = json.loads(result[field])
+                        except json.JSONDecodeError:
+                            # Keep as string if not valid JSON
+                            pass
+                
+                return result
             return None
 
-    def get_recent_conversations(self, limit: int = 10):
-        """Get recent conversations"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM conversations ORDER BY created_at DESC LIMIT ?",
-                (limit,)
-            )
+    def get_recent_conversations(self, limit=10):
+        """Get recent conversations with safe handling of missing columns"""
+        try:
+            cursor = self._get_connection().cursor()
+            
+            # Check if feedback_status column exists
+            cursor.execute("PRAGMA table_info(conversations)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            # Build query based on available columns
+            select_columns = "id, query, output, created_at, technical_details, code_context"
+            if "feedback_status" in columns:
+                select_columns += ", feedback_status"
+            if "feedback_comments" in columns:
+                select_columns += ", feedback_comments"
+            
+            query = f"SELECT {select_columns} FROM conversations ORDER BY created_at DESC LIMIT ?"
+            
+            cursor.execute(query, (limit,))
             rows = cursor.fetchall()
             
-            return [{
-                'id': row[0],
-                'created_at': row[1],
-                'query': row[2],
-                'output': json.loads(row[3]),
-                'code_context': json.loads(row[4]),
-                'technical_details': json.loads(row[5])
-            } for row in rows]
+            # Create column names list based on selected columns
+            column_names = ["id", "query", "output", "created_at", "technical_details", "code_context"]
+            if "feedback_status" in columns:
+                column_names.append("feedback_status")
+            if "feedback_comments" in columns:
+                column_names.append("feedback_comments")
+            
+            # Convert to list of dictionaries
+            conversations = []
+            for row in rows:
+                conversation = {}
+                for i, column in enumerate(column_names):
+                    if i < len(row):
+                        conversation[column] = row[i]
+                conversations.append(conversation)
+            
+            return conversations
+        except Exception as e:
+            print(f"Error getting recent conversations: {e}")
+            return []
 
     def get_conversation_history(self):
         """Fetch all conversations formatted for history display"""
@@ -385,3 +409,26 @@ class ChatDatabase:
                 })
             
             return chat_history 
+
+    def ensure_feedback_columns(self):
+        """Ensure feedback columns exist in the conversations table"""
+        try:
+            cursor = self._get_connection().cursor()
+            
+            # Check if feedback_status column exists
+            cursor.execute("PRAGMA table_info(conversations)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            # Add feedback_status column if it doesn't exist
+            if "feedback_status" not in columns:
+                cursor.execute("ALTER TABLE conversations ADD COLUMN feedback_status TEXT")
+                print("Added feedback_status column to conversations table")
+            
+            # Add feedback_comments column if it doesn't exist
+            if "feedback_comments" not in columns:
+                cursor.execute("ALTER TABLE conversations ADD COLUMN feedback_comments TEXT")
+                print("Added feedback_comments column to conversations table")
+            
+            self._get_connection().commit()
+        except Exception as e:
+            print(f"Error ensuring feedback columns: {e}") 

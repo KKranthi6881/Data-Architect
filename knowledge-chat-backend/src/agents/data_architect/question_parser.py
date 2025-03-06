@@ -254,7 +254,7 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
     conn = connect(db_path, check_same_thread=False)
     checkpointer = SqliteSaver(conn)
 
-    return graph.compile(checkpointer=checkpointer)
+    return graph.compile()
 
 class QuestionParserSystem:
     def __init__(self, tools: SearchTools):
@@ -284,11 +284,25 @@ class QuestionParserSystem:
                     {"configurable": {"thread_id": conversation_id}}
                 )
             
-            return result.get("business_analysis", {})
+            # Save conversation to database - similar to code_research.py
+            business_analysis = result.get("business_analysis", {})
+            response_data = {
+                "query": question,
+                "output": business_analysis.get("rephrased_question", "No response available"),
+                "technical_details": json.dumps(business_analysis),
+                "code_context": json.dumps(doc_results)
+            }
+            
+            # Save to database using the conversations table
+            with self._lock:
+                self.db.save_conversation(conversation_id, response_data)
+            
+            return business_analysis
             
         except Exception as e:
             logger.error(f"Error in parser system: {e}")
-            return {
+            error_analysis = DEFAULT_ANALYSIS.copy()
+            error_analysis.update({
                 "rephrased_question": "Error analyzing question",
                 "key_points": ["Unable to analyze business requirements"],
                 "business_context": {
@@ -300,4 +314,18 @@ class QuestionParserSystem:
                 "assumptions": ["Please try again"],
                 "clarifying_questions": ["Could you rephrase your question?"],
                 "confidence_score": 0.0
+            })
+            
+            # Save error to database using conversations table
+            error_conversation_id = str(uuid.uuid4())
+            error_response = {
+                "query": question,
+                "output": "Error analyzing question",
+                "technical_details": json.dumps(error_analysis),
+                "code_context": "{}"
             }
+            
+            with self._lock:
+                self.db.save_conversation(error_conversation_id, error_response)
+                
+            return error_analysis

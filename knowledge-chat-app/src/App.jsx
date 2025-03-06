@@ -6,6 +6,7 @@ import HomePage from './pages/HomePage'
 import AboutPage from './pages/AboutPage'
 import ChatPage from './pages/ChatPage'
 import FileUploadPage from './pages/knowledge/FileUploadPage'
+import ChatHistoryPage from './pages/ChatHistoryPage'
 import './App.css'
 
 function App() {
@@ -21,6 +22,8 @@ function App() {
               <Route path="/about" element={<AboutPage />} />
               <Route path="/upload" element={<FileUploadPage />} />
               <Route path="/chat" element={<ChatPage />} />
+              <Route path="/chat/:conversationId" element={<ChatPage />} />
+              <Route path="/history" element={<ChatHistoryPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Box>

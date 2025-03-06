@@ -36,6 +36,10 @@ class HumanFeedbackSystem:
         self.pending_feedback = {}
         self.processed_feedback = {}
         self.logger = logging.getLogger(__name__)
+        self.db = ChatDatabase()
+        self._lock = Lock()
+        self.feedback_callbacks = {}
+        self.timeout_seconds = 300  # 5 minutes timeout
 
     async def process_feedback(self, feedback_id: str, approved: bool, comments: str = None) -> Dict:
         """Process feedback for business analysis"""
@@ -53,17 +57,43 @@ class HumanFeedbackSystem:
             if feedback_id in self.pending_feedback:
                 # Get original business analysis
                 original_analysis = self.pending_feedback[feedback_id].get("business_analysis", {})
+                conversation_id = self.pending_feedback[feedback_id].get("conversation_id")
                 
                 if approved:
                     feedback_result["final_analysis"] = original_analysis
+                    feedback_status = "approved"
                 else:
                     # Store feedback for improvement
                     feedback_result["needs_improvement"] = True
                     feedback_result["improvement_comments"] = comments
+                    feedback_status = "needs_improvement"
+                
+                # Save feedback to database if conversation_id exists
+                if conversation_id:
+                    with self._lock:
+                        # Get the existing conversation
+                        conversation = self.db.get_conversation(conversation_id)
+                        if conversation:
+                            # Update with feedback information
+                            conversation_data = {
+                                "query": conversation.get('query', ''),
+                                "output": conversation.get('output', ''),
+                                "technical_details": conversation.get('technical_details', ''),
+                                "code_context": conversation.get('code_context', ''),
+                                "feedback_status": feedback_status,
+                                "feedback_comments": comments
+                            }
+                            # Save back to database
+                            self.db.save_conversation(conversation_id, conversation_data)
                 
                 del self.pending_feedback[feedback_id]
             
             self.processed_feedback[feedback_id] = feedback_result
+            
+            # Resolve any waiting futures
+            if feedback_id in self.feedback_callbacks and not self.feedback_callbacks[feedback_id].done():
+                self.feedback_callbacks[feedback_id].set_result(feedback_result)
+            
             return feedback_result
             
         except Exception as e:
@@ -82,14 +112,20 @@ class HumanFeedbackSystem:
             return self.pending_feedback[feedback_id]
         return None
 
-    def add_feedback_request(self, feedback_id: str, business_analysis: Dict):
+    def add_feedback_request(self, feedback_id: str, business_analysis: Dict, conversation_id: str = None):
         """Add new business analysis feedback request"""
         self.pending_feedback[feedback_id] = {
             "business_analysis": business_analysis,
+            "conversation_id": conversation_id,
             "timestamp": datetime.now().isoformat(),
             "status": "pending",
             "confidence_score": business_analysis.get("confidence_score", 0.0)
         }
+        
+        # Create a future for this feedback request
+        if feedback_id not in self.feedback_callbacks:
+            loop = asyncio.get_event_loop()
+            self.feedback_callbacks[feedback_id] = loop.create_future()
 
     def submit_for_feedback(self, request: Dict) -> str:
         """Submit a request for feedback."""
@@ -126,17 +162,17 @@ class HumanFeedbackSystem:
         with self._lock:
             return self.pending_feedback.get(feedback_id)
 
-    async def wait_for_feedback(self, conversation_id: str) -> Dict:
+    async def wait_for_feedback(self, feedback_id: str) -> Dict:
         """Wait for feedback to be provided."""
-        if conversation_id not in self.pending_feedback:
-            raise ValueError(f"No pending feedback request for conversation {conversation_id}")
+        if feedback_id not in self.pending_feedback:
+            raise ValueError(f"No pending feedback request for ID {feedback_id}")
         
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        self.feedback_callbacks[conversation_id] = future
+        if feedback_id not in self.feedback_callbacks:
+            loop = asyncio.get_event_loop()
+            self.feedback_callbacks[feedback_id] = loop.create_future()
         
         try:
-            return await asyncio.wait_for(future, timeout=self.timeout_seconds)
+            return await asyncio.wait_for(self.feedback_callbacks[feedback_id], timeout=self.timeout_seconds)
         except asyncio.TimeoutError:
             return {
                 "approved": True,
@@ -144,8 +180,8 @@ class HumanFeedbackSystem:
                 "suggested_changes": None
             }
         finally:
-            if conversation_id in self.feedback_callbacks:
-                del self.feedback_callbacks[conversation_id]
+            if feedback_id in self.feedback_callbacks:
+                del self.feedback_callbacks[feedback_id]
 
     def create_feedback_graph(self):
         """Create a graph for the human feedback process."""
@@ -275,7 +311,7 @@ class HumanFeedbackSystem:
         checkpointer = SqliteSaver(conn)
         
         # Compile graph with SQLite checkpointer
-        return graph.compile(checkpointer=checkpointer)
+        return graph.compile()
     
     async def process_with_feedback(self, conversation_id: str, parsed_question: Dict, 
                                    original_messages: List[BaseMessage]) -> Dict[str, Any]:

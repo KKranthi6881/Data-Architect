@@ -58,6 +58,7 @@ code_search_tools = SearchTools(db_manager)
 question_parser_system = QuestionParserSystem(tools=code_search_tools)
 feedback_system = HumanFeedbackSystem()
 chat_db = ChatDatabase()
+chat_db.ensure_feedback_columns()  # Add this line to ensure columns exist
 
 # Initialize tools and analysis system
 analysis_system = SimpleAnalysisSystem(code_search_tools)
@@ -322,8 +323,8 @@ async def chat(request: ChatRequest):
         # Get business analysis
         result = await question_parser_system.parse_question(request.message)
         
-        # Add to feedback system for review
-        feedback_system.add_feedback_request(feedback_id, result)
+        # Add to feedback system for review with conversation_id
+        feedback_system.add_feedback_request(feedback_id, result, conversation_id)
         
         # Format response text - Include full analysis
         response_text = f"""I've analyzed your question from a business perspective. Please review my understanding below and let me know if any adjustments are needed.
@@ -334,22 +335,36 @@ Business Understanding:
 Key Points:
 {chr(10).join([f"• {point}" for point in result['key_points']])}"""
 
-        # Store in chat database
-        await chat_db.save_message(
-            session_id=conversation_id,
-            role="assistant",
-            content=response_text,
-            metadata={
-                "feedback_id": feedback_id,
-                "business_analysis": result,
-                "confidence_score": result.get("confidence_score", 0.0),
-                "full_details": {  # Include full details for history
-                    "business_context": result["business_context"],
-                    "assumptions": result["assumptions"],
-                    "clarifying_questions": result["clarifying_questions"]
-                }
-            }
-        )
+        # Save to conversation table
+        conversation_data = {
+            "query": request.message,
+            "output": response_text,
+            "technical_details": json.dumps(result),
+            "code_context": json.dumps(request.context) if request.context else "{}"
+        }
+        chat_db.save_conversation(conversation_id, conversation_data)
+        
+        # If wait_for_feedback is true, wait for feedback before responding
+        feedback_status = "pending"
+        if request.wait_for_feedback:
+            try:
+                feedback = await feedback_system.wait_for_feedback(feedback_id)
+                feedback_status = "approved" if feedback.get("approved", False) else "needs_improvement"
+                
+                # If feedback indicates changes needed, update the response
+                if not feedback.get("approved", False):
+                    response_text += f"\n\nNote: This analysis needs improvement based on feedback: {feedback.get('comments', 'No specific comments')}"
+                    
+                    # Update the conversation with the new response
+                    conversation_data["output"] = response_text
+                    conversation_data["feedback_status"] = feedback_status
+                    conversation_data["feedback_comments"] = feedback.get("comments", "")
+                    chat_db.save_conversation(conversation_id, conversation_data)
+            except Exception as feedback_error:
+                logger.error(f"Error waiting for feedback: {feedback_error}")
+                feedback_status = "error"
+        else:
+            feedback_status = "pending"
 
         return JSONResponse(
             content={
@@ -358,7 +373,7 @@ Key Points:
                 "feedback_id": feedback_id,
                 "parsed_question": result,
                 "requires_confirmation": True,
-                "feedback_status": "pending",
+                "feedback_status": feedback_status,
                 "confidence_score": result.get("confidence_score", 0.0),
                 "details": result  # Include full details in response
             },
@@ -367,10 +382,23 @@ Key Points:
             
     except Exception as e:
         logger.error(f"Error in chat endpoint: {e}", exc_info=True)
+        error_conversation_id = request.conversation_id or str(uuid.uuid4())
+        
+        # Save error to conversation table
+        error_message = f"I apologize, but I encountered an error analyzing your question: {str(e)}"
+        error_data = {
+            "query": request.message if hasattr(request, 'message') else "Unknown query",
+            "output": error_message,
+            "technical_details": json.dumps({"error": str(e)}),
+            "code_context": "{}"
+        }
+        chat_db.save_conversation(error_conversation_id, error_data)
+        
         return JSONResponse(
             content={
                 "answer": "I apologize, but I encountered an error analyzing your question. Could you please rephrase it?",
                 "error": str(e),
+                "conversation_id": error_conversation_id,
                 "requires_confirmation": False
             },
             status_code=200
@@ -432,25 +460,39 @@ async def submit_feedback(feedback: FeedbackRequest):
         if not feedback.conversation_id:
             raise HTTPException(status_code=422, detail="conversation_id is required")
 
+        # Get existing conversation
+        conversation = chat_db.get_conversation(feedback.conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+            
+        # Update with feedback information
+        feedback_status = "approved" if feedback.approved else "needs_improvement"
+        
+        # Get the existing data
+        conversation_data = {
+            "query": conversation.get('query', ''),
+            "output": conversation.get('output', ''),
+            "technical_details": conversation.get('technical_details', ''),
+            "code_context": conversation.get('code_context', ''),
+            "feedback_status": feedback_status,
+            "feedback_comments": feedback.comments
+        }
+        
+        # If not approved, add a note to the output
+        if not feedback.approved:
+            output = conversation.get('output', '')
+            output += f"\n\nFeedback: This analysis needs improvement - {feedback.comments if feedback.comments else 'No specific comments'}"
+            conversation_data["output"] = output
+        
+        # Save back to database
+        chat_db.save_conversation(feedback.conversation_id, conversation_data)
+
         # Process the feedback
         feedback_result = await feedback_system.process_feedback(
             feedback_id=feedback.feedback_id,
             approved=feedback.approved,
             comments=feedback.comments
         )
-        
-        # If feedback indicates improvements needed, queue for reanalysis
-        if not feedback.approved:
-            await chat_db.save_message(
-                session_id=feedback.conversation_id,  # Use the provided conversation_id
-                role="system",
-                content="Reanalyzing based on feedback...",
-                metadata={
-                    "feedback_id": feedback.feedback_id,
-                    "improvement_needed": True,
-                    "feedback_comments": feedback.comments
-                }
-            )
 
         return JSONResponse(
             content={
@@ -775,6 +817,151 @@ async def get_chat_session(session_id: str):
     except Exception as e:
         logger.error(f"Error fetching chat session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/conversation/{conversation_id}")
+async def get_conversation_details(conversation_id: str):
+    """Get detailed information about a specific conversation"""
+    try:
+        # Get the conversation from the database
+        logger.info(f"Fetching conversation with ID: {conversation_id}")
+        conversation = chat_db.get_conversation(conversation_id)
+        
+        if not conversation:
+            logger.warning(f"Conversation not found: {conversation_id}")
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        logger.info(f"Raw conversation data: {conversation}")
+        
+        # Format the response with safe access to fields
+        formatted_conversation = {
+            "id": conversation.get("id", conversation_id),
+            "timestamp": conversation.get("created_at", ""),
+            "query": conversation.get("query", ""),
+            "response": "",  # Initialize with empty string
+            "technical_details": {},
+            "context": {},
+            "feedback": {
+                "status": conversation.get("feedback_status", "pending"),
+                "comments": conversation.get("feedback_comments", "")
+            }
+        }
+        
+        # Handle output field - ensure it's a string
+        try:
+            output = conversation.get("output", "")
+            logger.info(f"Output type: {type(output)}, value: {output}")
+            
+            if isinstance(output, dict):
+                formatted_conversation["response"] = output.get("output", "")
+            elif isinstance(output, str):
+                # Try to parse as JSON first
+                try:
+                    output_json = json.loads(output)
+                    if isinstance(output_json, dict):
+                        formatted_conversation["response"] = output_json.get("output", output)
+                    else:
+                        formatted_conversation["response"] = output
+                except json.JSONDecodeError:
+                    # Not JSON, use as is
+                    formatted_conversation["response"] = output
+            else:
+                formatted_conversation["response"] = str(output)
+        except Exception as e:
+            logger.error(f"Error processing output: {e}")
+            formatted_conversation["response"] = "Error processing response"
+        
+        # Parse technical details if available
+        try:
+            if conversation.get("technical_details"):
+                if isinstance(conversation["technical_details"], str):
+                    formatted_conversation["technical_details"] = json.loads(conversation["technical_details"])
+                else:
+                    formatted_conversation["technical_details"] = conversation["technical_details"]
+        except json.JSONDecodeError:
+            formatted_conversation["technical_details"] = {"raw": conversation.get("technical_details", "")}
+        
+        # Parse context if available
+        try:
+            if conversation.get("code_context"):
+                if isinstance(conversation["code_context"], str):
+                    formatted_conversation["context"] = json.loads(conversation["code_context"])
+                else:
+                    formatted_conversation["context"] = conversation["code_context"]
+        except json.JSONDecodeError:
+            formatted_conversation["context"] = {"raw": conversation.get("code_context", "")}
+        
+        logger.info(f"Returning formatted conversation: {formatted_conversation}")
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "conversation": formatted_conversation
+            }
+        )
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Error getting conversation details: {e}", exc_info=True)
+        return JSONResponse(
+            content={
+                "status": "error",
+                "message": str(e)
+            },
+            status_code=500
+        )
+
+@app.get("/api/conversations")
+async def get_conversations(limit: int = 10, offset: int = 0):
+    """Get a list of recent conversations"""
+    try:
+        # Get recent conversations
+        conversations = chat_db.get_recent_conversations(limit=limit)
+        
+        # Format the response
+        formatted_conversations = []
+        for conv in conversations:
+            # Extract a preview of the conversation
+            query = conv.get("query", "")
+            query_preview = query[:100] + "..." if len(query) > 100 else query
+            
+            # Format the conversation with safe access to feedback_status
+            formatted_conv = {
+                "id": conv.get("id", ""),
+                "timestamp": conv.get("created_at", ""),
+                "preview": query_preview,
+                "feedback_status": conv.get("feedback_status", "pending"),  # Default to 'pending' if not found
+                "has_response": bool(conv.get("output"))
+            }
+            
+            formatted_conversations.append(formatted_conv)
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "conversations": formatted_conversations,
+                "total": len(formatted_conversations)
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error getting conversations: {e}")
+        # Return empty list instead of error to avoid breaking the UI
+        return JSONResponse(
+            content={
+                "status": "success",
+                "conversations": [],
+                "total": 0,
+                "error": str(e)
+            },
+            status_code=200  # Return 200 even with error to avoid breaking UI
+        )
+
+@app.get("/history", response_class=HTMLResponse)
+async def conversation_history(request: Request):
+    """Render the conversation history page"""
+    return templates.TemplateResponse(
+        "conversation_history.html", 
+        {"request": request}
+    )
 
 if __name__ == "__main__":
     main() 

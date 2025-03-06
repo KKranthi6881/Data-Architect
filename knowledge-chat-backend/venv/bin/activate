@@ -37,7 +37,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="/Users/Kranthi_1/Data-Architect/knowledge-chat-backend/venv"
+VIRTUAL_ENV="/Users/Kranthi/Data-Architect/knowledge-chat-backend/venv"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"

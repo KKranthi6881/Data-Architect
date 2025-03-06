@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import {
   Box,
   Flex,
@@ -69,6 +69,7 @@ import {
   IoCheckmark,
   IoClose
 } from 'react-icons/io5'
+import { useParams, useNavigate } from 'react-router-dom'
 
 // Sample chat history data
 const chatHistory = [
@@ -126,8 +127,22 @@ const sampleConversation = [
   }
 ];
 
-// Update the FormattedMessage component to properly handle Business Context
+// Update the FormattedMessage component to handle different content types
 const FormattedMessage = ({ content }) => {
+  // Handle case where content is not a string
+  if (typeof content !== 'string') {
+    try {
+      content = JSON.stringify(content, null, 2);
+    } catch (e) {
+      content = "Error displaying content";
+    }
+  }
+  
+  // Check if content is empty
+  if (!content || content.trim() === '') {
+    return <Text color="gray.500">No content available</Text>;
+  }
+  
   // Check if content contains sections we want to hide in accordions
   const hasImplementationDetails = content.includes('**Implementation Details:**');
   const hasAvailableTables = content.includes('**Available Tables and Columns:**');
@@ -209,414 +224,101 @@ const FormattedMessage = ({ content }) => {
     }
   }
   
-  // Format the main content
-  const formattedMainContent = mainContent.split('**').map((part, idx) => {
-    if (idx % 2 === 0) {
-      // Regular text
-      return (
-        <Text 
-          key={idx} 
-          fontSize="16px"
-          fontFamily="'Merriweather', Georgia, serif"
-          lineHeight="1.7"
-          color="gray.800"
-          mb={3}
-          letterSpacing="0.01em"
-        >
-          {part}
-        </Text>
-      );
-    } else {
-      // This is a section title
-      const isUnderstanding = part.includes('Based on your question and available content, I assume:');
-      
-      return (
-        <Box key={idx} width="100%" mt={5} mb={4}>
-          <Heading 
-            size="md" 
-            color={isUnderstanding ? "purple.700" : "gray.800"}
-            fontWeight="600"
-            fontFamily="'Playfair Display', Georgia, serif"
-            pb={2}
-            borderBottom="2px solid"
-            borderColor={isUnderstanding ? "purple.200" : "gray.200"}
-            width="fit-content"
-            fontSize={isUnderstanding ? "20px" : "18px"}
-            letterSpacing="0.02em"
+  // Check if the content has markdown formatting
+  const hasMarkdown = mainContent.includes('**') || mainContent.includes('##');
+  
+  if (hasMarkdown) {
+    // Format the main content with markdown
+    const formattedMainContent = mainContent.split('**').map((part, idx) => {
+      if (idx % 2 === 0) {
+        // Regular text
+        return (
+          <Text 
+            key={idx} 
+            fontSize="16px"
+            fontFamily="'Merriweather', Georgia, serif"
+            lineHeight="1.7"
+            color="gray.800"
+            mb={3}
+            letterSpacing="0.01em"
           >
             {part}
-          </Heading>
-        </Box>
-      );
-    }
-  });
-  
-  // Format bullet points for Business Context
-  const formatBusinessContext = () => {
-    if (!businessContent) return null;
-    
-    // Check if content has bullet points
-    const hasBullets = businessContent.includes('•');
+          </Text>
+        );
+      } else {
+        // This is a section title
+        const isUnderstanding = part.includes('Based on your question and available content, I assume:');
+        
+        return (
+          <Box key={idx} width="100%" mt={5} mb={4}>
+            <Heading 
+              size="md" 
+              color={isUnderstanding ? "purple.700" : "gray.800"}
+              fontWeight="600"
+              fontFamily="'Playfair Display', Georgia, serif"
+              pb={2}
+              borderBottom="2px solid"
+              borderColor={isUnderstanding ? "purple.200" : "gray.200"}
+              width="fit-content"
+              fontSize={isUnderstanding ? "20px" : "18px"}
+              letterSpacing="0.02em"
+            >
+              {part}
+            </Heading>
+          </Box>
+        );
+      }
+    });
     
     return (
-      <Box width="100%" mt={5} mb={4}>
-        <Heading 
-          size="md" 
-          color="blue.700"
-          fontWeight="600"
-          fontFamily="'Playfair Display', Georgia, serif"
-          pb={2}
-          borderBottom="2px solid"
-          borderColor="blue.200"
-          width="fit-content"
-          fontSize="18px"
-          letterSpacing="0.02em"
-        >
-          Business Context
-        </Heading>
+      <>
+        {formattedMainContent}
         
-        <VStack align="start" spacing={2} mt={3} pl={2}>
-          {hasBullets ? (
-            // Format as bullet points
-            businessContent.split('•').filter(Boolean).map((bullet, bulletIdx) => (
-              <HStack 
-                key={bulletIdx} 
-                spacing={3} 
-                pl={2} 
-                py={1}
-                align="start"
-                width="100%"
-              >
-                <Box 
-                  w="6px" 
-                  h="6px" 
-                  bg="blue.500" 
-                  borderRadius="full" 
-                  mt={3}
-                  flexShrink={0}
-                />
-                <Text 
-                  color="gray.700"
-                  fontSize="16px"
-                  lineHeight="1.7"
-                  fontFamily="'Merriweather', Georgia, serif"
-                  fontWeight="400"
-                >
-                  {bullet.trim()}
-                </Text>
-              </HStack>
-            ))
-          ) : (
-            // Format as regular text
+        {/* Business Context Section if available */}
+        {businessContent && (
+          <Box width="100%" mt={5} mb={4}>
+            <Heading 
+              size="md" 
+              color="blue.700"
+              fontWeight="600"
+              fontFamily="'Playfair Display', Georgia, serif"
+              pb={2}
+              borderBottom="2px solid"
+              borderColor="blue.200"
+              width="fit-content"
+              fontSize="18px"
+              letterSpacing="0.02em"
+            >
+              Business Context
+            </Heading>
+            
             <Text 
-              color="gray.700"
+              mt={3}
               fontSize="16px"
-              lineHeight="1.7"
               fontFamily="'Merriweather', Georgia, serif"
-              fontWeight="400"
-              pl={2}
+              lineHeight="1.7"
+              color="gray.800"
             >
               {businessContent}
             </Text>
-          )}
-        </VStack>
-      </Box>
+          </Box>
+        )}
+      </>
     );
-  };
-  
-  // Format section content for accordions with modern table display
-  const formatSectionContent = (content) => {
-    // Check if this is the Available Tables section
-    if (content.includes('LINEITEM:') || content.includes('ORDERS:') || content.includes('PART:') || 
-        content.includes('SUPPLIER:') || content.includes('PARTSUPP:') || content.includes('NATION:')) {
-      
-      // This is a tables and columns section, format it as a structured display
-      const tables = {};
-      let currentTable = null;
-      
-      // Parse the content into a structured format
-      content.split('\n').forEach(line => {
-        const trimmedLine = line.trim();
-        
-        // Check if this is a table header (ends with a colon)
-        if (trimmedLine.endsWith(':') && !trimmedLine.startsWith('•')) {
-          currentTable = trimmedLine.replace(':', '');
-          tables[currentTable] = [];
-        } 
-        // If it's a column definition (starts with spaces or tabs)
-        else if (currentTable && trimmedLine.length > 0) {
-          // Extract column name and description
-          const columnMatch = trimmedLine.match(/([A-Z_]+)\s*-\s*(.*)/);
-          if (columnMatch) {
-            tables[currentTable].push({
-              name: columnMatch[1],
-              description: columnMatch[2]
-            });
-          } else {
-            // Just add as a description line if it doesn't match the pattern
-            tables[currentTable].push({
-              name: '',
-              description: trimmedLine
-            });
-          }
-        }
-      });
-      
-      // Check if we actually parsed any tables
-      if (Object.keys(tables).length === 0) {
-        // Fallback to regular formatting
-        return content.split('\n').map((line, idx) => (
-          <Text 
-            key={idx} 
-            color="gray.700"
-            fontSize="16px"
-            lineHeight="1.7"
-            py={1}
-            pl={2}
-            fontFamily="'Merriweather', Georgia, serif"
-          >
-            {line.trim()}
-          </Text>
-        ));
-      }
-      
-      // Render the structured tables with a modern design
-      return (
-        <VStack align="stretch" spacing={8} width="100%" mt={4}>
-          {Object.keys(tables).map((tableName, tableIdx) => (
-            <Box 
-              key={tableIdx} 
-              borderRadius="xl"
-              overflow="hidden"
-              boxShadow="0 4px 12px rgba(0, 0, 0, 0.08)"
-              bg="white"
-              position="relative"
-            >
-              {/* Table Header - Modern Design */}
-              <Box 
-                bg="blue.600" 
-                color="white"
-                p={4} 
-                position="relative"
-                overflow="hidden"
-              >
-                <Box 
-                  position="absolute" 
-                  top="0" 
-                  right="0" 
-                  bottom="0" 
-                  left="0" 
-                  bg="blue.500" 
-                  opacity="0.3"
-                  transform="skewX(-15deg) translateX(-10%)"
-                />
-                <Heading 
-                  size="md" 
-                  fontFamily="'Playfair Display', Georgia, serif"
-                  color="white"
-                  position="relative"
-                  zIndex="1"
-                >
-                  {tableName}
-                </Heading>
-                <Text 
-                  fontSize="sm" 
-                  color="blue.100" 
-                  mt={1}
-                  position="relative"
-                  zIndex="1"
-                >
-                  Database Table Schema
-                </Text>
-              </Box>
-              
-              {/* Columns - Modern Design */}
-              <Box>
-                {tables[tableName].map((column, colIdx) => (
-                  <Box 
-                    key={colIdx} 
-                    p={4} 
-                    borderBottomWidth={colIdx < tables[tableName].length - 1 ? "1px" : "0"}
-                    borderColor="gray.100"
-                    transition="all 0.2s"
-                    _hover={{ bg: "gray.50" }}
-                    display="flex"
-                    flexDirection={["column", "row"]}
-                    alignItems={["flex-start", "center"]}
-                  >
-                    {column.name ? (
-                      <>
-                        <Box 
-                          width={["100%", "30%"]} 
-                          mb={[2, 0]}
-                          pr={4}
-                        >
-                          <HStack spacing={2} align="center">
-                            <Box 
-                              w="8px" 
-                              h="8px" 
-                              bg="blue.500" 
-                              borderRadius="full" 
-                            />
-                            <Text 
-                              fontFamily="'Courier New', monospace" 
-                              fontWeight="600" 
-                              color="blue.700"
-                              fontSize="16px"
-                              letterSpacing="0.02em"
-                            >
-                              {column.name}
-                            </Text>
-                          </HStack>
-                        </Box>
-                        <Box width={["100%", "70%"]}>
-                          <Text 
-                            fontFamily="'Merriweather', Georgia, serif"
-                            fontSize="15px"
-                            color="gray.700"
-                            lineHeight="1.6"
-                          >
-                            {column.description}
-                          </Text>
-                        </Box>
-                      </>
-                    ) : (
-                      <Box width="100%">
-                        <Text 
-                          fontFamily="'Merriweather', Georgia, serif"
-                          fontSize="15px"
-                          color="gray.600"
-                          fontStyle="italic"
-                        >
-                          {column.description}
-                        </Text>
-                      </Box>
-                    )}
-                  </Box>
-                ))}
-              </Box>
-            </Box>
-          ))}
-        </VStack>
-      );
-    } else {
-      // For non-table content, use the existing formatting
-      return content.split('\n').map((line, idx) => {
-        if (line.trim().startsWith('•')) {
-          return (
-            <HStack 
-              key={idx} 
-              spacing={3} 
-              pl={2} 
-              py={1}
-              align="start"
-            >
-              <Box 
-                w="6px" 
-                h="6px" 
-                bg="blue.500" 
-                borderRadius="full" 
-                mt={3}
-                flexShrink={0}
-              />
-              <Text 
-                color="gray.700"
-                fontSize="16px"
-                lineHeight="1.7"
-                fontFamily="'Merriweather', Georgia, serif"
-                fontWeight="400"
-              >
-                {line.replace('•', '').trim()}
-              </Text>
-            </HStack>
-          );
-        } else {
-          return (
-            <Text 
-              key={idx} 
-              color="gray.700"
-              fontSize="16px"
-              lineHeight="1.7"
-              py={1}
-              pl={2}
-              fontFamily="'Merriweather', Georgia, serif"
-              letterSpacing="0.01em"
-            >
-              {line.trim()}
-            </Text>
-          );
-        }
-      });
-    }
-  };
-  
-  return (
-    <VStack align="start" spacing={4} width="100%">
-      {/* Main content */}
-      {formattedMainContent}
-      
-      {/* Business Context section */}
-      {hasBusinessContext && formatBusinessContext()}
-      
-      {/* Implementation Details accordion */}
-      {hasImplementationDetails && (
-        <Accordion allowToggle width="100%" mt={3}>
-          <AccordionItem border="none" borderTop="1px solid" borderColor="gray.200">
-            <AccordionButton 
-              px={0} 
-              py={3}
-              _hover={{ bg: 'transparent', color: 'blue.500' }}
-            >
-              <Heading 
-                size="sm" 
-                color="blue.600"
-                fontWeight="600"
-                fontFamily="'Playfair Display', Georgia, serif"
-                fontSize="16px"
-                flex="1"
-                textAlign="left"
-              >
-                Implementation Details
-              </Heading>
-              <AccordionIcon />
-            </AccordionButton>
-            <AccordionPanel pb={4} pl={3}>
-              {formatSectionContent(implementationContent)}
-            </AccordionPanel>
-          </AccordionItem>
-        </Accordion>
-      )}
-      
-      {/* Available Tables accordion */}
-      {hasAvailableTables && (
-        <Accordion allowToggle width="100%" mt={2}>
-          <AccordionItem border="none" borderTop="1px solid" borderColor="gray.200">
-            <AccordionButton 
-              px={0} 
-              py={3}
-              _hover={{ bg: 'transparent', color: 'blue.500' }}
-            >
-              <Heading 
-                size="sm" 
-                color="blue.600"
-                fontWeight="600"
-                fontFamily="'Playfair Display', Georgia, serif"
-                fontSize="16px"
-                flex="1"
-                textAlign="left"
-              >
-                Available Tables and Columns
-              </Heading>
-              <AccordionIcon />
-            </AccordionButton>
-            <AccordionPanel pb={4} pl={3}>
-              {formatSectionContent(tablesContent)}
-            </AccordionPanel>
-          </AccordionItem>
-        </Accordion>
-      )}
-    </VStack>
-  );
+  } else {
+    // Simple text display for non-markdown content
+    return (
+      <Text 
+        fontSize="16px"
+        fontFamily="'Merriweather', Georgia, serif"
+        lineHeight="1.7"
+        color="gray.800"
+        whiteSpace="pre-wrap"
+      >
+        {content}
+      </Text>
+    );
+  }
 };
 
 const ChatMessage = ({ message, onFeedbackSubmit }) => {
@@ -719,95 +421,70 @@ const InlineFeedback = ({ message, onFeedbackSubmit }) => {
   const [comments, setComments] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = async (isApproved) => {
+  const handleSubmit = async (approved) => {
+    if (isSubmitting) return;
+    
+    setIsSubmitting(true);
     try {
-      setIsSubmitting(true);
       await onFeedbackSubmit({
-        feedback_id: message.details.feedback_id,
-        conversation_id: message.details.conversation_id,
-        approved: isApproved,
-        comments: comments,
-        suggested_changes: null
+        feedback_id: message.details?.feedback_id,
+        conversation_id: message.details?.conversation_id,
+        approved,
+        comments: comments
       });
+      
+      // Clear comments after submission
+      setComments('');
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error submitting feedback:', error);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const confidence = message.details.parsed_question.confidence_score || 0;
-  const confidenceColor = confidence > 0.8 ? "green" : confidence > 0.5 ? "orange" : "red";
-
   return (
-    <VStack align="stretch" spacing={4} bg="gray.50" p={4} borderRadius="lg">
-      <HStack justify="space-between" align="center">
-        <Text fontSize="lg" fontWeight="medium" color="blue.700">
-          Business Analysis Review
-        </Text>
-        <Tag colorScheme={confidenceColor}>
-          Confidence: {Math.round(confidence * 100)}%
-        </Tag>
-      </HStack>
-
-      {/* Business Understanding */}
-      <Box bg="white" p={4} borderRadius="md" shadow="sm">
-        <Text fontWeight="medium" mb={2}>
-          Business Understanding:
-        </Text>
-        <Text color="gray.700">
-          {message.details.parsed_question.rephrased_question}
-        </Text>
-      </Box>
-
-      {/* Business Context */}
-      <Box bg="white" p={4} borderRadius="md" shadow="sm">
-        <Text fontWeight="medium" mb={2}>
-          Business Context:
-        </Text>
-        <VStack align="start" spacing={2}>
-          <Text><strong>Domain:</strong> {message.details.parsed_question.business_context.domain}</Text>
-          <Text><strong>Objective:</strong> {message.details.parsed_question.business_context.primary_objective}</Text>
-          <Text><strong>Key Entities:</strong> {message.details.parsed_question.business_context.key_entities.join(', ')}</Text>
-          <Text><strong>Impact:</strong> {message.details.parsed_question.business_context.business_impact}</Text>
-        </VStack>
-      </Box>
-
+    <VStack align="stretch" spacing={3}>
       {/* Key Points */}
-      <Box bg="white" p={4} borderRadius="md" shadow="sm">
-        <Text fontWeight="medium" mb={2}>
-          Key Business Points:
-        </Text>
-        <UnorderedList spacing={1}>
-          {message.details.parsed_question.key_points.map((point, idx) => (
-            <ListItem key={idx}>{point}</ListItem>
-          ))}
-        </UnorderedList>
-      </Box>
+      {message.details?.parsed_question?.key_points && (
+        <Box bg="white" p={4} borderRadius="md" shadow="sm">
+          <Text fontWeight="medium" mb={2}>
+            Key Business Points:
+          </Text>
+          <UnorderedList spacing={1}>
+            {message.details.parsed_question.key_points.map((point, idx) => (
+              <ListItem key={idx}>{point}</ListItem>
+            ))}
+          </UnorderedList>
+        </Box>
+      )}
 
       {/* Assumptions */}
-      <Box bg="white" p={4} borderRadius="md" shadow="sm">
-        <Text fontWeight="medium" mb={2}>
-          Assumptions to Verify:
-        </Text>
-        <UnorderedList spacing={1}>
-          {message.details.parsed_question.assumptions.map((assumption, idx) => (
-            <ListItem key={idx}>{assumption}</ListItem>
-          ))}
-        </UnorderedList>
-      </Box>
+      {message.details?.parsed_question?.assumptions && (
+        <Box bg="white" p={4} borderRadius="md" shadow="sm">
+          <Text fontWeight="medium" mb={2}>
+            Assumptions to Verify:
+          </Text>
+          <UnorderedList spacing={1}>
+            {message.details.parsed_question.assumptions.map((assumption, idx) => (
+              <ListItem key={idx}>{assumption}</ListItem>
+            ))}
+          </UnorderedList>
+        </Box>
+      )}
 
       {/* Clarifying Questions */}
-      <Box bg="white" p={4} borderRadius="md" shadow="sm">
-        <Text fontWeight="medium" mb={2}>
-          Clarifying Questions:
-        </Text>
-        <UnorderedList spacing={1}>
-          {message.details.parsed_question.clarifying_questions.map((question, idx) => (
-            <ListItem key={idx}>{question}</ListItem>
-          ))}
-        </UnorderedList>
-      </Box>
+      {message.details?.parsed_question?.clarifying_questions && (
+        <Box bg="white" p={4} borderRadius="md" shadow="sm">
+          <Text fontWeight="medium" mb={2}>
+            Clarifying Questions:
+          </Text>
+          <UnorderedList spacing={1}>
+            {message.details.parsed_question.clarifying_questions.map((question, idx) => (
+              <ListItem key={idx}>{question}</ListItem>
+            ))}
+          </UnorderedList>
+        </Box>
+      )}
 
       {/* Feedback Section */}
       <Textarea
@@ -846,7 +523,146 @@ const ChatPage = () => {
   const [loading, setLoading] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
   const [processingStep, setProcessingStep] = useState('');
+  const [conversations, setConversations] = useState([]);
+  const [activeConversationId, setActiveConversationId] = useState(null);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const { isOpen, onOpen, onClose } = useDisclosure();
   const toast = useToast();
+  const navigate = useNavigate();
+  const { conversationId } = useParams();
+  const messagesEndRef = useRef(null);
+
+  // Add this to the top of the component
+  useEffect(() => {
+    console.log("Current messages:", messages);
+  }, [messages]);
+
+  // Fetch conversation history
+  const fetchConversations = async () => {
+    try {
+      setIsHistoryLoading(true);
+      const response = await fetch('http://localhost:8000/api/conversations');
+      if (!response.ok) {
+        throw new Error('Failed to fetch conversations');
+      }
+      const data = await response.json();
+      if (data.status === 'success') {
+        setConversations(data.conversations);
+      }
+    } catch (error) {
+      console.error('Error fetching conversations:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load conversation history',
+        status: 'error',
+        duration: 3000,
+      });
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
+
+  // Fetch a specific conversation
+  const fetchConversation = async (id) => {
+    try {
+      setLoading(true);
+      const response = await fetch(`http://localhost:8000/api/conversation/${id}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch conversation');
+      }
+      const data = await response.json();
+      console.log("API Response:", data); // Log the full API response
+      
+      if (data.status === 'success') {
+        const conversation = data.conversation;
+        console.log("Conversation data:", conversation); // Log the conversation data
+        
+        // Check if we have the required fields
+        if (!conversation.query) {
+          console.warn("Missing query in conversation data");
+        }
+        if (!conversation.response) {
+          console.warn("Missing response in conversation data");
+        }
+        
+        // Clear existing messages
+        setMessages([]);
+        
+        // Add user message
+        const userMessage = {
+          type: 'user',
+          content: conversation.query || "No query available",
+          id: `${id}-query`
+        };
+        console.log("Adding user message:", userMessage);
+        setMessages(prev => [...prev, userMessage]);
+        
+        // Add assistant response with proper formatting
+        const assistantMessage = {
+          type: 'assistant',
+          content: typeof conversation.response === 'string' 
+            ? conversation.response 
+            : JSON.stringify(conversation.response),
+          id: `${id}-response`,
+          details: {
+            conversation_id: id,
+            feedback_status: conversation.feedback?.status || 'pending',
+            parsed_question: conversation.technical_details, // Use technical_details for parsed_question
+            sources: conversation.context
+          }
+        };
+        console.log("Adding assistant message:", assistantMessage);
+        setMessages(prev => [...prev, assistantMessage]);
+        
+        setActiveConversationId(id);
+        
+        // Update URL without reloading
+        navigate(`/chat/${id}`, { replace: true });
+      }
+    } catch (error) {
+      console.error('Error fetching conversation:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load conversation',
+        status: 'error',
+        duration: 3000,
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Load conversation from URL parameter
+  useEffect(() => {
+    if (conversationId) {
+      fetchConversation(conversationId);
+    }
+  }, [conversationId]);
+
+  // Fetch conversation history on component mount
+  useEffect(() => {
+    fetchConversations();
+  }, []);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
+
+  // Start a new conversation
+  const startNewConversation = () => {
+    setMessages([]);
+    setActiveConversationId(null);
+    navigate('/chat', { replace: true });
+  };
+
+  // Handle conversation selection
+  const handleConversationSelect = (id) => {
+    fetchConversation(id);
+    onClose(); // Close the drawer on mobile
+  };
 
   const analyzeQuestion = async (question) => {
     try {
@@ -965,12 +781,19 @@ const ChatPage = () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          message: userMessage
+          message: userMessage,
+          conversation_id: activeConversationId // Include existing conversation ID if available
         })
       })
 
       const data = await response.json()
       console.log("Response from server:", data)
+
+      // Set the active conversation ID from the response
+      setActiveConversationId(data.conversation_id);
+      
+      // Update URL without reloading
+      navigate(`/chat/${data.conversation_id}`, { replace: true });
 
       // Add assistant response
       const assistantMessage = {
@@ -986,6 +809,9 @@ const ChatPage = () => {
       }
       
       setMessages(prev => [...prev, assistantMessage])
+      
+      // Refresh conversation list
+      fetchConversations();
 
     } catch (error) {
       console.error('Error:', error)
@@ -1109,249 +935,345 @@ const ChatPage = () => {
   };
 
   // Update message display with wider boxes
-  const renderMessage = (message) => (
-    <Box 
-      key={message.id}
-      bg={message.type === 'user' ? 'blue.50' : 'white'}
-      p={5}
-      borderRadius="lg"
-      alignSelf="flex-start"  // Always align to the left
-      width={["98%", "95%", "90%"]}  // Increased width for all messages
-      boxShadow="0 2px 8px rgba(0, 0, 0, 0.08)"
-      borderWidth="1px"
-      borderColor={message.type === 'user' ? 'blue.100' : 'gray.100'}
-      mb={5}
-      transition="all 0.2s"
-      _hover={{ boxShadow: "0 4px 12px rgba(0, 0, 0, 0.1)" }}
-    >
-      {message.type === 'user' ? (
-        <VStack align="stretch" spacing={3} width="100%">
-          <Box>
-            <Text 
-              fontSize="xs" 
-              color="blue.600" 
-              fontWeight="600" 
-              mb={1}
-              textTransform="uppercase"
-              letterSpacing="0.05em"
-            >
-              You
-            </Text>
-            <Text 
-              fontFamily="'Merriweather', Georgia, serif"
-              fontSize="16px"
-              fontWeight="500"
-              lineHeight="1.7"
-              color="gray.800"
-              whiteSpace="pre-wrap"  // Preserve line breaks in user messages
-            >
-              {message.content}
-            </Text>
-          </Box>
-        </VStack>
-      ) : (
-        <VStack align="stretch" spacing={5} width="100%">
-          <Box>
-            <Text 
-              fontSize="xs" 
-              color="purple.600" 
-              fontWeight="600" 
-              mb={1}
-              textTransform="uppercase"
-              letterSpacing="0.05em"
-            >
-              Assistant
-            </Text>
-            {/* Main content with formatting */}
-            <FormattedMessage content={message.content} />
-          </Box>
-
-          {/* Feedback Section */}
-          {message.details?.feedback_status === 'pending' && (
-            <Box 
-              bg="gray.50" 
-              p={4}
-              borderRadius="md"
-              borderWidth="1px"
-              borderColor="gray.200"
-              mt={2}
-            >
+  const renderMessage = (message) => {
+    console.log("Rendering message:", message); // Add this for debugging
+    
+    return (
+      <Box 
+        key={message.id}
+        bg={message.type === 'user' ? 'blue.50' : 'white'}
+        p={5}
+        borderRadius="lg"
+        alignSelf="flex-start"  // Always align to the left
+        width={["98%", "95%", "90%"]}  // Increased width for all messages
+        boxShadow="0 2px 8px rgba(0, 0, 0, 0.08)"
+        borderWidth="1px"
+        borderColor={message.type === 'user' ? 'blue.100' : 'gray.100'}
+        mb={5}
+        transition="all 0.2s"
+        _hover={{ boxShadow: "0 4px 12px rgba(0, 0, 0, 0.1)" }}
+      >
+        {message.type === 'user' ? (
+          <VStack align="stretch" spacing={3} width="100%">
+            <Box>
               <Text 
-                fontSize="15px" 
-                color="gray.600" 
-                fontWeight="500"
-                mb={3}
-                fontFamily="Georgia, serif"
-              >
-                Waiting for review...
-              </Text>
-              <InlineFeedback 
-                message={message}
-                onFeedbackSubmit={handleFeedbackSubmit}
-              />
-            </Box>
-          )}
-
-          {/* Show suggested questions with improved styling */}
-          {message.details?.suggested_questions && (
-            <VStack align="stretch" mt={3} spacing={3}>
-              <Text 
+                fontSize="xs" 
+                color="blue.600" 
                 fontWeight="600" 
-                color="blue.700" 
-                fontSize="15px"
-                borderBottom="2px solid"
-                borderColor="blue.100"
-                pb={1}
-                width="fit-content"
+                mb={1}
+                textTransform="uppercase"
+                letterSpacing="0.05em"
               >
-                Related Questions
+                You
               </Text>
-              <SimpleGrid columns={[1, null, 2]} spacing={3}>
-                {message.details.suggested_questions.map((question, idx) => (
-                  <Button
-                    key={idx}
-                    variant="outline"
-                    size="md"
-                    colorScheme="blue"
-                    leftIcon={<IoAdd />}
-                    onClick={() => setInput(question)}
-                    justifyContent="flex-start"
-                    whiteSpace="normal"
-                    textAlign="left"
-                    height="auto"
-                    py={3}
-                    px={4}
-                    borderRadius="md"
-                    fontWeight="500"
-                    fontSize="15px"
-                    transition="all 0.2s"
-                    _hover={{
-                      bg: "blue.50",
-                      transform: "translateY(-2px)",
-                      boxShadow: "0 4px 8px rgba(0, 0, 0, 0.1)"
-                    }}
-                  >
-                    {question}
-                  </Button>
-                ))}
-              </SimpleGrid>
-            </VStack>
-          )}
+              <Text 
+                fontFamily="'Merriweather', Georgia, serif"
+                fontSize="16px"
+                fontWeight="500"
+                lineHeight="1.7"
+                color="gray.800"
+                whiteSpace="pre-wrap"  // Preserve line breaks in user messages
+              >
+                {message.content}
+              </Text>
+            </Box>
+          </VStack>
+        ) : (
+          <VStack align="stretch" spacing={5} width="100%">
+            <Box>
+              <Text 
+                fontSize="xs" 
+                color="purple.600" 
+                fontWeight="600" 
+                mb={1}
+                textTransform="uppercase"
+                letterSpacing="0.05em"
+              >
+                Assistant
+              </Text>
+              {/* Main content with formatting */}
+              <FormattedMessage content={message.content} />
+            </Box>
 
-          {/* Analysis Details with improved styling */}
-          <Accordion allowToggle>
-            <AccordionItem border="none" borderTop="1px solid" borderColor="gray.200">
-              <AccordionButton py={3} _hover={{ bg: "gray.50" }}>
-                <Box flex="1" textAlign="left">
-                  <Text fontSize="15px" color="blue.600" fontWeight="500">
-                    View Analysis Details
-                  </Text>
-                </Box>
-                <AccordionIcon />
-              </AccordionButton>
-              <AccordionPanel pb={4} pt={2}>
-                <VStack align="stretch" spacing={4}>
-                  {message.details?.analysis && (
-                    <Box>
-                      <Text fontWeight="bold" mb={2} color="gray.700">Business Analysis:</Text>
-                      <VStack align="start" spacing={2} pl={4}>
-                        <Text>Primary Objective: {message.details.analysis.business_context?.primary_objective}</Text>
-                        <Text>Domain: {message.details.analysis.business_context?.domain}</Text>
-                        <Text>Key Entities:</Text>
-                        <UnorderedList>
-                          {message.details.analysis.business_context?.key_entities?.map((entity, idx) => (
-                            <ListItem key={idx}>{entity}</ListItem>
+            {/* Feedback Section */}
+            {message.details?.feedback_status === 'pending' && (
+              <Box 
+                bg="gray.50" 
+                p={4}
+                borderRadius="md"
+                borderWidth="1px"
+                borderColor="gray.200"
+                mt={2}
+              >
+                <Text 
+                  fontSize="15px" 
+                  color="gray.600" 
+                  fontWeight="500"
+                  mb={3}
+                  fontFamily="Georgia, serif"
+                >
+                  Waiting for review...
+                </Text>
+                <InlineFeedback 
+                  message={message}
+                  onFeedbackSubmit={handleFeedbackSubmit}
+                />
+              </Box>
+            )}
+
+            {/* Analysis Details with improved styling */}
+            <Accordion allowToggle>
+              <AccordionItem border="none" borderTop="1px solid" borderColor="gray.200">
+                <AccordionButton py={3} _hover={{ bg: "gray.50" }}>
+                  <Box flex="1" textAlign="left">
+                    <Text fontSize="15px" color="blue.600" fontWeight="500">
+                      View Analysis Details
+                    </Text>
+                  </Box>
+                  <AccordionIcon />
+                </AccordionButton>
+                <AccordionPanel pb={4} pt={2}>
+                  <VStack align="stretch" spacing={4}>
+                    {message.details?.parsed_question && (
+                      <Box>
+                        <Text fontWeight="bold" mb={2} color="gray.700">Business Analysis:</Text>
+                        <VStack align="start" spacing={2} pl={4}>
+                          <Text>Rephrased Question: {message.details.parsed_question.rephrased_question}</Text>
+                          {message.details.parsed_question.business_context && (
+                            <>
+                              <Text>Domain: {message.details.parsed_question.business_context.domain}</Text>
+                              <Text>Primary Objective: {message.details.parsed_question.business_context.primary_objective}</Text>
+                              <Text>Key Entities:</Text>
+                              <UnorderedList>
+                                {message.details.parsed_question.business_context.key_entities?.map((entity, idx) => (
+                                  <ListItem key={idx}>{entity}</ListItem>
+                                ))}
+                              </UnorderedList>
+                            </>
+                          )}
+                        </VStack>
+                      </Box>
+                    )}
+                    {message.details?.sources && (
+                      <Box>
+                        <Text fontWeight="bold" mb={2} color="gray.700">Source Documents:</Text>
+                        <VStack align="start" spacing={3} pl={4}>
+                          {message.details.sources.results?.map((doc, idx) => (
+                            <Box key={idx} p={3} bg="gray.50" borderRadius="md" w="100%">
+                              <Text fontSize="15px">{doc.content}</Text>
+                            </Box>
                           ))}
-                        </UnorderedList>
-                      </VStack>
-                    </Box>
-                  )}
-                  {message.details?.sources && (
-                    <Box>
-                      <Text fontWeight="bold" mb={2} color="gray.700">Source Documents:</Text>
-                      <VStack align="start" spacing={3} pl={4}>
-                        {message.details.sources.doc_results?.map((doc, idx) => (
-                          <Box key={idx} p={3} bg="gray.50" borderRadius="md" w="100%">
-                            <Text fontSize="15px">{doc.content}</Text>
-                          </Box>
-                        ))}
-                      </VStack>
-                    </Box>
-                  )}
-                </VStack>
-              </AccordionPanel>
-            </AccordionItem>
-          </Accordion>
+                        </VStack>
+                      </Box>
+                    )}
+                  </VStack>
+                </AccordionPanel>
+              </AccordionItem>
+            </Accordion>
+          </VStack>
+        )}
+      </Box>
+    );
+  };
+
+  // Render conversation history sidebar
+  const renderConversationHistory = () => (
+    <VStack align="stretch" spacing={3} w="100%" p={3}>
+      <Button 
+        leftIcon={<IoAdd />} 
+        colorScheme="blue" 
+        onClick={startNewConversation}
+        mb={4}
+      >
+        New Conversation
+      </Button>
+      
+      <Divider mb={2} />
+      
+      {isHistoryLoading ? (
+        <Progress size="xs" isIndeterminate colorScheme="blue" />
+      ) : conversations.length === 0 ? (
+        <Text color="gray.500" textAlign="center" py={4}>No conversation history</Text>
+      ) : (
+        <VStack align="stretch" spacing={2}>
+          {conversations.map((conv) => (
+            <Box 
+              key={conv.id}
+              p={3}
+              borderRadius="md"
+              bg={activeConversationId === conv.id ? "blue.50" : "white"}
+              borderWidth="1px"
+              borderColor={activeConversationId === conv.id ? "blue.200" : "gray.200"}
+              cursor="pointer"
+              onClick={() => handleConversationSelect(conv.id)}
+              _hover={{ bg: activeConversationId === conv.id ? "blue.50" : "gray.50" }}
+              transition="all 0.2s"
+            >
+              <HStack justify="space-between" mb={1}>
+                <Text 
+                  fontSize="sm" 
+                  color="gray.500"
+                  isTruncated
+                >
+                  {new Date(conv.timestamp).toLocaleString()}
+                </Text>
+                <Badge 
+                  colorScheme={
+                    conv.feedback_status === 'approved' ? 'green' : 
+                    conv.feedback_status === 'needs_improvement' ? 'orange' : 'blue'
+                  }
+                  fontSize="xs"
+                >
+                  {
+                    conv.feedback_status === 'approved' ? 'Approved' : 
+                    conv.feedback_status === 'needs_improvement' ? 'Needs Review' : 'Pending'
+                  }
+                </Badge>
+              </HStack>
+              <Text 
+                fontWeight="medium" 
+                isTruncated
+                color={activeConversationId === conv.id ? "blue.700" : "gray.800"}
+              >
+                {conv.preview}
+              </Text>
+            </Box>
+          ))}
         </VStack>
       )}
-    </Box>
+    </VStack>
   );
 
   return (
-    <Box p={6} maxW="1400px" mx="auto">
-      <VStack spacing={6} mb={8} align="stretch">
-        {messages.map((message, index) => renderMessage({ ...message, id: index }))}
+    <Box height="100vh" overflow="hidden">
+      {/* Mobile drawer for conversation history */}
+      <Drawer isOpen={isOpen} placement="left" onClose={onClose}>
+        <DrawerOverlay />
+        <DrawerContent>
+          <DrawerCloseButton />
+          <DrawerHeader borderBottomWidth="1px">Conversation History</DrawerHeader>
+          <DrawerBody>
+            {renderConversationHistory()}
+          </DrawerBody>
+        </DrawerContent>
+      </Drawer>
+      
+      <Flex h="100%">
+        {/* Desktop sidebar */}
+        <Box 
+          w="300px" 
+          h="100%" 
+          borderRightWidth="1px" 
+          borderColor="gray.200"
+          display={{ base: "none", md: "block" }}
+          overflowY="auto"
+        >
+          {renderConversationHistory()}
+        </Box>
         
-        {analysisResult && renderAnalysisConfirmation()}
-        
-        {processingStep && (
+        {/* Main chat area */}
+        <Box flex="1" h="100%" display="flex" flexDirection="column">
+          {/* Header with mobile menu */}
+          <Flex 
+            p={4} 
+            borderBottomWidth="1px" 
+            borderColor="gray.200" 
+            align="center"
+            bg="white"
+          >
+            <IconButton
+              icon={<IoMenu />}
+              aria-label="Open menu"
+              display={{ base: "flex", md: "none" }}
+              mr={3}
+              onClick={onOpen}
+            />
+            <Heading size="md">
+              {activeConversationId ? 'Conversation' : 'New Chat'}
+            </Heading>
+            {activeConversationId && (
+              <Button 
+                ml="auto" 
+                leftIcon={<IoAdd />} 
+                colorScheme="blue" 
+                size="sm"
+                onClick={startNewConversation}
+              >
+                New Chat
+              </Button>
+            )}
+          </Flex>
+          
+          {/* Messages area */}
+          <Box 
+            flex="1" 
+            overflowY="auto" 
+            p={6} 
+            bg="gray.50"
+          >
+            <VStack spacing={6} mb={8} align="stretch">
+              {messages.map((message, index) => renderMessage({ ...message, id: index }))}
+              
+              {analysisResult && renderAnalysisConfirmation()}
+              
+              {processingStep && (
+                <Box 
+                  p={4} 
+                  bg="blue.50" 
+                  borderRadius="md" 
+                  width={["98%", "95%", "90%"]}
+                  alignSelf="flex-start"
+                  boxShadow="0 2px 8px rgba(0, 0, 0, 0.05)"
+                  borderWidth="1px"
+                  borderColor="blue.100"
+                >
+                  <HStack>
+                    <Box as={IoAnalytics} color="blue.500" boxSize={5} mr={2} />
+                    <Text fontWeight="500" color="blue.700">{processingStep}</Text>
+                  </HStack>
+                  <Progress size="xs" colorScheme="blue" isIndeterminate mt={3} />
+                </Box>
+              )}
+              <div ref={messagesEndRef} />
+            </VStack>
+          </Box>
+          
+          {/* Input area */}
           <Box 
             p={4} 
-            bg="blue.50" 
-            borderRadius="md" 
-            width={["98%", "95%", "90%"]}  // Increased width to match messages
-            alignSelf="flex-start"
-            boxShadow="0 2px 8px rgba(0, 0, 0, 0.05)"
-            borderWidth="1px"
-            borderColor="blue.100"
+            borderTopWidth="1px" 
+            borderColor="gray.200"
+            bg="white"
           >
             <HStack>
-              <Box as={IoAnalytics} color="blue.500" boxSize={5} mr={2} />
-              <Text fontWeight="500" color="blue.700">{processingStep}</Text>
+              <Input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Ask about database schemas, data models, or SQL queries..."
+                onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                disabled={loading}
+                size="lg"
+                py={6}
+                borderRadius="md"
+                _focus={{
+                  borderColor: "blue.400",
+                  boxShadow: "0 0 0 1px blue.400"
+                }}
+              />
+              <Button 
+                onClick={sendMessage} 
+                isLoading={loading}
+                colorScheme="blue"
+                size="lg"
+                px={8}
+                height="56px"
+              >
+                Send
+              </Button>
             </HStack>
-            <Progress size="xs" colorScheme="blue" isIndeterminate mt={3} />
           </Box>
-        )}
-      </VStack>
-
-      <Box 
-        maxW="1200px" 
-        mx="auto" 
-        p={4} 
-        borderRadius="lg" 
-        borderWidth="1px" 
-        borderColor="gray.200"
-        bg="white"
-        boxShadow="0 2px 10px rgba(0, 0, 0, 0.05)"
-        width={["98%", "95%", "90%"]}  // Match the width of messages
-      >
-        <HStack>
-          <Input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask about database schemas, data models, or SQL queries..."
-            onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-            disabled={loading}
-            size="lg"
-            py={6}
-            borderRadius="md"
-            _focus={{
-              borderColor: "blue.400",
-              boxShadow: "0 0 0 1px blue.400"
-            }}
-          />
-          <Button 
-            onClick={sendMessage} 
-            isLoading={loading}
-            colorScheme="blue"
-            size="lg"
-            px={8}
-            height="56px"
-          >
-            Send
-          </Button>
-        </HStack>
-      </Box>
+        </Box>
+      </Flex>
     </Box>
   )
 }
