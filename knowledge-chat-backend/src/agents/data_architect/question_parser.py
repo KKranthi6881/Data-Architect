@@ -19,7 +19,7 @@ from src.tools import SearchTools
 from src.db.database import ChatDatabase
 from src.agents.data_architect.human_feedback import HumanFeedbackSystem
 
-# Set up logger
+
 logger = logging.getLogger(__name__)
 
 # Define state type
@@ -67,6 +67,16 @@ class ParsedQuestion(BaseModel):
     confidence_score: float = Field(description="Confidence score (0-1)")
     alternative_interpretations: List[str] = Field(description="Alternative business perspectives")
 
+class QuestionAnalysis(BaseModel):
+    """Structured output for question analysis"""
+    original_question: str = Field(description="The original user question")
+    analysis_steps: Dict[str, Any] = Field(description="Step-by-step analysis details")
+    interpretation: Dict[str, Any] = Field(description="Interpreted question details")
+    data_requirements: Dict[str, Any] = Field(description="Required data elements")
+    validation_points: List[str] = Field(description="Points requiring validation")
+    next_steps: List[str] = Field(description="Suggested next steps")
+    confidence_score: float = Field(description="Analysis confidence (0-1)")
+
 def create_question_parser(tools: SearchTools):
     # Initialize model
     parser_model = ChatOllama(
@@ -79,7 +89,7 @@ def create_question_parser(tools: SearchTools):
     # Update the prompt to be more focused on available context
     parser_prompt = PromptTemplate(
         template="""
-        You are an expert data analyst who helps users understand their data questions by analyzing available documentation and schema information.
+        You are an expert data architect who helps users understand their data questions by analyzing available documentation and schema information.
         Your task is to understand the user's question and provide insights based ONLY on the available context provided.
 
         USER QUESTION:
@@ -165,9 +175,11 @@ def create_question_parser(tools: SearchTools):
         ```
 
         CRITICAL REMINDERS:
+
         - Only reference tables and columns that exist in our schema
         - Only make statements supported by the provided documentation
         - If information is missing, state that explicitly
+        - Never user or display the example response to user. 
         - Be specific to our data model rather than making general statements
         - Focus on what's actually available in our system
 
@@ -328,286 +340,101 @@ def create_question_parser(tools: SearchTools):
     return graph.compile(checkpointer=checkpointer)
 
 class QuestionParserSystem:
-    def __init__(self, tools: SearchTools, feedback_timeout: int = 120):
-        """Initialize the question parser system."""
-        self.db = ChatDatabase()
-        self._lock = Lock()
-        self.tools = tools
+    def __init__(self, tools=None, feedback_timeout=120):
+        self.parser = QuestionParser(tools=tools)
         self.feedback_timeout = feedback_timeout
-        self.conversation_history = {}  # Store conversation history by conversation_id
-        self.max_history = 6  # Keep last 6 messages
-        
-        # Initialize the parser model
-        self.parser_model = ChatOllama(
+
+    async def parse_question(self, question: str, conversation_id: str = None) -> Dict:
+        """Parse a question and return the analysis"""
+        try:
+            # Parse the question
+            result = await self.parser.parse_question(question)
+            return result
+        except Exception as e:
+            logger.error(f"Error in question parser system: {e}")
+            raise
+
+class QuestionParser:
+    def __init__(self, llm=None, tools=None):
+        self.llm = llm or ChatOllama(
             model="llama3.2:latest",
             temperature=0.1,
             base_url="http://localhost:11434",
             timeout=120,
         )
+        self.tools = tools
 
-    def _add_to_history(self, conversation_id: str, message: Dict):
-        """Add message to conversation history."""
-        if conversation_id not in self.conversation_history:
-            self.conversation_history[conversation_id] = []
-        
-        history = self.conversation_history[conversation_id]
-        history.append(message)
-        
-        # Keep only the last 6 messages
-        if len(history) > self.max_history:
-            history.pop(0)
-
-    def _get_conversation_context(self, conversation_id: str) -> str:
-        """Get formatted conversation history."""
-        if conversation_id not in self.conversation_history:
-            return ""
-        
-        history = self.conversation_history[conversation_id]
-        context = "\nPrevious Conversation:\n"
-        for msg in history:
-            context += f"User: {msg.get('question', '')}\n"
-            context += f"Assistant: {msg.get('response', '')}\n"
-        return context
-
-    def parse_question(self, question: str, conversation_id: Optional[str] = None, feedback_context: Optional[Dict] = None) -> Dict:
-        """Parse a question and generate appropriate response."""
+    async def parse_question(self, question: str) -> dict:
+        """Parse and rephrase the user's question"""
         try:
-            # Initialize response structure
-            response = {
-                'parsed_question': {
-                    'original_question': question,
-                    'rephrased_question': question,
-                    'business_context': {
-                        'domain': '',
-                        'primary_objective': '',
-                        'key_entities': []
-                    }
-                },
-                'doc_context': {}
-            }
+            # Search for relevant context
+            doc_results = self.tools.search_documentation(question)
+            context = self._format_context(doc_results)
+            
+            prompt = f"""
+            You are a data analysis expert. Help me understand this business question.
+            
+            Question: {question}
+            
+            Available Context:
+            {context}
+            
+            Provide a clear analysis in this JSON format:
+            {{
+                "rephrased_question": "A clear, business-focused version of the question",
+                "key_points": [
+                    "Main business objective of the question",
+                    "Important criteria or conditions",
+                    "Expected output or insights"
+                ],
+                "similar_questions": [
+                    "A related business question that explores similar data",
+                    "An alternative analysis approach",
+                    "A follow-up question that builds on this analysis"
+                ]
+            }}
 
-            # Search documentation for context
-            doc_search_results = self.tools.search_documentation(question)
-            sql_search_results = self.tools.search_sql_schema(question)
+            Focus on the business meaning, not technical details.
+            Make similar questions relevant to the same business domain.
+            """
 
-            # Get conversation history context
-            conversation_context = self._get_conversation_context(conversation_id) if conversation_id else ""
-
-            # Create prompt based on context
-            system_prompt = (
-                self._create_base_prompt(question, doc_search_results, sql_search_results, conversation_context)
-                if not feedback_context
-                else self._create_feedback_prompt(question, feedback_context, doc_search_results, sql_search_results, conversation_context)
-            )
-
-            # Get response from the model
-            model_response = self.parser_model.invoke(system_prompt)
-            response_text = model_response.content if hasattr(model_response, 'content') else str(model_response)
-
-            # Store in conversation history
-            if conversation_id:
-                self._add_to_history(conversation_id, {
-                    'question': question,
-                    'response': response_text
-                })
-
-            # Extract JSON from the response
-            json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                parsed_dict = json.loads(json_str)
-                
-                # Update response with parsed data
-                response.update({
-                    'parsed_question': {
-                        'original_question': question,
-                        'rephrased_question': parsed_dict.get('rephrased_question', question),
-                        'business_context': parsed_dict.get('business_context', {
-                            'domain': 'Order Processing',
-                            'primary_objective': 'Calculate item tax amount',
-                            'key_entities': [
-                                'LINEITEM table',
-                                'L_TAX - Tax rate',
-                                'L_EXTENDEDPRICE - Base price'
-                            ]
-                        }),
-                        'data_points': parsed_dict.get('data_points', []),
-                        'confidence_score': parsed_dict.get('confidence_score', 0.0),
-                        'alternative_interpretations': parsed_dict.get('alternative_interpretations', [])
-                    },
-                    'doc_context': {
-                        'query': question,
-                        'doc_results': doc_search_results.get('results', []),
-                        'sql_results': sql_search_results.get('results', [])
-                    }
-                })
-
-            return response
-
+            messages = [
+                {"role": "system", "content": "You are a business analyst helping to clarify data requirements."},
+                {"role": "user", "content": prompt}
+            ]
+            response = self.llm.invoke(messages).content
+            
+            # Parse response
+            json_match = re.search(r'{[\s\S]*}', response)
+            if not json_match:
+                raise ValueError("No JSON found in response")
+            
+            json_str = json_match.group(0)
+            json_str = json_str.replace("'", '"')
+            parsed_response = json.loads(json_str)
+            
+            return parsed_response
+            
         except Exception as e:
-            logger.error(f"Error parsing question: {str(e)}", exc_info=True)
+            logger.error(f"Error in question parsing: {e}")
             return {
-                'parsed_question': {
-                    'original_question': question,
-                    'rephrased_question': 'How to calculate the tax amount for line items',
-                    'business_context': {
-                        'domain': 'Order Processing',
-                        'primary_objective': 'Calculate tax amount using L_TAX and L_EXTENDEDPRICE',
-                        'key_entities': [
-                            'LINEITEM table',
-                            'L_TAX - Tax rate',
-                            'L_EXTENDEDPRICE - Base price before tax'
-                        ]
-                    },
-                    'data_points': [
-                        'L_TAX - Tax rate percentage',
-                        'L_EXTENDEDPRICE - Base price',
-                        'Calculation: L_EXTENDEDPRICE * L_TAX'
-                    ]
-                },
-                'doc_context': {
-                    'sql_results': sql_search_results.get('results', [])
-                }
+                "rephrased_question": question,
+                "key_points": [
+                    "Could not analyze the question properly",
+                    "Please provide more business context"
+                ],
+                "similar_questions": [
+                    "Could you clarify your business objective?",
+                    "What specific insights are you looking for?",
+                    "How will this information be used?"
+                ]
             }
 
-    def _create_base_prompt(self, question: str, doc_search_results: Dict, sql_search_results: Dict, conversation_context: str = "") -> str:
-        """Create the base prompt for question parsing."""
-        context = self._format_context(doc_search_results, sql_search_results)
-        
-        return f"""You are an expert data analyst. Please analyze this question about data calculations.
-{conversation_context}
-
-Current Question: {question}
-
-Available Context:
-{context}
-
-Please provide a detailed analysis in this exact JSON format:
-
-```json
-{{
-    "original_question": "{question}",
-    "rephrased_question": "A clear restatement of the question using available columns",
-    "business_context": {{
-        "domain": "The business domain (e.g., Order Processing, Sales Analysis)",
-        "primary_objective": "The main calculation or analysis goal",
-        "key_entities": [
-            "Relevant table names",
-            "Important columns with descriptions"
-        ],
-        "business_assumptions": [
-            "Key assumptions about the data",
-            "How the calculation should work"
-        ],
-        "business_impact": "Why this calculation is important"
-    }},
-    "data_points": [
-        "Required columns with descriptions",
-        "Any derived calculations needed",
-        "Formula: The calculation formula using actual column names"
-    ],
-    "confidence_score": 0.95,
-    "alternative_interpretations": [
-        "Other relevant analyses",
-        "Related business questions"
-    ]
-}}
-```
-
-Focus on:
-1. Precise calculation method using available columns
-2. Clear explanation of the business context
-3. Specific table and column references
-4. Calculation formulas using actual column names
-
-Use ONLY information from the provided context and schema.
-"""
-
-    def _format_context(self, doc_search_results: Dict, sql_search_results: Dict) -> str:
-        """Format the context for the prompt."""
-        doc_snippets = []
-        for result in doc_search_results.get('results', []):
-            doc_snippets.append(
-                f"Content:\n{result.get('content', '')}\n"
-                f"Metadata: {result.get('metadata', {})}\n"
-            )
-        
-        sql_snippets = []
-        if sql_search_results.get('status') == 'success':
-            for result in sql_search_results.get('results', []):
-                content = result.get('content', '')
-                metadata = result.get('metadata', {})
-                if content:
-                    sql_snippets.append(
-                        f"SQL Schema/Code:\n{content}\n"
-                        f"Metadata: {metadata}\n"
-                    )
-
-        return (
-            "Documentation Context:\n" + 
-            "\n".join(doc_snippets) +
-            "\n\nSQL Schema Context:\n" +
-            "\n".join(sql_snippets)
-        )
-
-    def _create_feedback_prompt(self, question: str, feedback_context: Dict, doc_search_results: Dict, sql_search_results: Dict, conversation_context: str = "") -> str:
-        """Create a feedback-based prompt for question parsing."""
-        prev = feedback_context.get("previous_summary", {})
-        context = self._format_context(doc_search_results, sql_search_results)
-        
-        return f"""You are an expert data analyst. Please analyze this question with the feedback provided.
-{conversation_context}
-
-Previous interpretation: {prev.get('interpretation', 'No previous interpretation')}
-Key entities identified: {', '.join(prev.get('key_entities', []))}
-Relevant tables: {', '.join(prev.get('tables', []))}
-
-User feedback: {feedback_context.get('feedback', 'No feedback provided')}
-
-Question: {question}
-
-Available Context:
-{context}
-
-Please provide a detailed analysis in this exact JSON format:
-
-```json
-{{
-    "original_question": "{question}",
-    "rephrased_question": "How to calculate the discounted sales amount using L_EXTENDEDPRICE and L_DISCOUNT from LINEITEM table",
-    "business_context": {{
-        "domain": "Order Pricing and Revenue Analysis",
-        "primary_objective": "Calculate discounted sales amount for line items",
-        "key_entities": [
-            "LINEITEM table",
-            "L_EXTENDEDPRICE - Extended price before discount",
-            "L_DISCOUNT - Discount percentage"
-        ],
-        "business_assumptions": [
-            "Discounted amount = L_EXTENDEDPRICE * (1 - L_DISCOUNT)",
-            "Prices are stored at line item level"
-        ],
-        "business_impact": "Accurate revenue reporting and discount analysis"
-    }},
-    "data_points": [
-        "L_EXTENDEDPRICE - Base extended price",
-        "L_DISCOUNT - Discount rate",
-        "Calculation: L_EXTENDEDPRICE * (1 - L_DISCOUNT)"
-    ],
-    "confidence_score": 0.95,
-    "alternative_interpretations": [
-        "Calculate total discounted revenue across all orders",
-        "Analyze discount patterns and impact on revenue"
-    ]
-}}
-```
-
-Focus on:
-1. Addressing the user's feedback
-2. Precise calculation method using available columns
-3. Clear explanation of the business context
-4. Specific table and column references
-5. Implementation details with SQL examples
-
-Use ONLY information from the provided context and schema.
-"""
+    def _format_context(self, doc_results: Dict) -> str:
+        """Format documentation results into context"""
+        context_parts = []
+        if doc_results and doc_results.get('results'):
+            for result in doc_results['results']:
+                if content := result.get('content', '').strip():
+                    context_parts.append(content)
+        return "\n".join(context_parts) if context_parts else "No relevant context found"

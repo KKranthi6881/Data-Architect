@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime
 import json
 from threading import Lock
+from typing import List, Dict
 
 class ChatDatabase:
     def __init__(self, db_path: str = None):
@@ -18,18 +19,20 @@ class ChatDatabase:
         return sqlite3.connect(self.db_path)
 
     def init_db(self):
-        """Initialize the database with conversations table"""
+        """Initialize the database with proper chat history table"""
         with self._lock:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
+                # Create chat_history table if it doesn't exist
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS conversations (
-                        id TEXT PRIMARY KEY,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        query TEXT,
-                        output TEXT,
-                        code_context TEXT,
-                        technical_details TEXT
+                    CREATE TABLE IF NOT EXISTS chat_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT NOT NULL,
+                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        analysis TEXT,
+                        metadata TEXT
                     )
                 """)
                 conn.commit()
@@ -277,4 +280,81 @@ class ChatDatabase:
                     )
                     conn.commit()
                 except json.JSONDecodeError as e:
-                    raise ValueError(f"Invalid JSON format: {str(e)}") 
+                    raise ValueError(f"Invalid JSON format: {str(e)}")
+
+    async def save_message(self, session_id: str, role: str, content: str, analysis: dict = None):
+        """Save a chat message to the database"""
+        with self._lock:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO chat_history (session_id, role, content, analysis)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    session_id,
+                    role,
+                    content,
+                    json.dumps(analysis) if analysis else None
+                ))
+                conn.commit()
+
+    async def get_recent_chats(self, limit: int = 6) -> List[Dict]:
+        """Get recent chat sessions grouped by session_id"""
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.row_factory = sqlite3.Row
+                
+                # Get recent unique sessions
+                cursor = conn.execute("""
+                    SELECT 
+                        session_id,
+                        MIN(timestamp) as start_time,
+                        COUNT(*) as message_count,
+                        GROUP_CONCAT(role) as roles,
+                        GROUP_CONCAT(content) as contents
+                    FROM chat_history 
+                    GROUP BY session_id 
+                    ORDER BY start_time DESC 
+                    LIMIT ?
+                """, (limit,))
+                
+                sessions = cursor.fetchall()
+                chat_history = []
+                
+                for session in sessions:
+                    # Get all messages for this session
+                    cursor = conn.execute("""
+                        SELECT 
+                            role,
+                            content,
+                            timestamp,
+                            analysis
+                        FROM chat_history 
+                        WHERE session_id = ? 
+                        ORDER BY timestamp ASC
+                    """, (session['session_id'],))
+                    
+                    messages = []
+                    for row in cursor:
+                        messages.append({
+                            'role': row['role'],
+                            'content': row['content'],
+                            'timestamp': row['timestamp'],
+                            'analysis': json.loads(row['analysis']) if row['analysis'] else None
+                        })
+                    
+                    # Get the first user message as preview
+                    preview = next(
+                        (msg['content'] for msg in messages if msg['role'] == 'user'),
+                        'Empty conversation'
+                    )
+                    
+                    chat_history.append({
+                        'session_id': session['session_id'],
+                        'start_time': session['start_time'],
+                        'preview': preview[:100] + '...' if len(preview) > 100 else preview,
+                        'message_count': session['message_count'],
+                        'messages': messages
+                    })
+                
+                return chat_history 

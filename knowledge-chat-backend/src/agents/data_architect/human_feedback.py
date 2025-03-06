@@ -32,8 +32,57 @@ class FeedbackResponse(BaseModel):
 
 class HumanFeedbackSystem:
     def __init__(self):
-        self._lock = Lock()
         self.pending_feedback = {}
+        self.processed_feedback = {}
+        self.logger = logging.getLogger(__name__)
+
+    async def process_feedback(self, feedback_id: str, approved: bool, comments: str = None) -> Dict:
+        """
+        Process feedback for a given feedback_id
+        """
+        try:
+            self.logger.info(f"Processing feedback for ID: {feedback_id}")
+            
+            # Store the feedback
+            feedback_result = {
+                "feedback_id": feedback_id,
+                "approved": approved,
+                "comments": comments,
+                "timestamp": datetime.now().isoformat(),
+                "status": "processed"
+            }
+            
+            # Move from pending to processed
+            if feedback_id in self.pending_feedback:
+                del self.pending_feedback[feedback_id]
+            
+            self.processed_feedback[feedback_id] = feedback_result
+            
+            return feedback_result
+            
+        except Exception as e:
+            self.logger.error(f"Error processing feedback: {e}")
+            raise
+
+    def get_pending_feedback_requests(self) -> Dict:
+        """Get all pending feedback requests"""
+        return self.pending_feedback
+
+    def get_feedback_status(self, feedback_id: str) -> Optional[Dict]:
+        """Get status of a specific feedback request"""
+        if feedback_id in self.processed_feedback:
+            return self.processed_feedback[feedback_id]
+        elif feedback_id in self.pending_feedback:
+            return self.pending_feedback[feedback_id]
+        return None
+
+    def add_feedback_request(self, feedback_id: str, request_data: Dict):
+        """Add a new feedback request"""
+        self.pending_feedback[feedback_id] = {
+            **request_data,
+            "timestamp": datetime.now().isoformat(),
+            "status": "pending"
+        }
 
     def submit_for_feedback(self, request: Dict) -> str:
         """Submit a request for feedback."""
@@ -70,10 +119,6 @@ class HumanFeedbackSystem:
         with self._lock:
             return self.pending_feedback.get(feedback_id)
 
-    def get_feedback_status(self, conversation_id: str) -> Optional[Dict]:
-        """Get the current status of feedback for a conversation."""
-        return self.feedback_status.get(conversation_id)
-
     async def wait_for_feedback(self, conversation_id: str) -> Dict:
         """Wait for feedback to be provided."""
         if conversation_id not in self.pending_feedback:
@@ -94,14 +139,6 @@ class HumanFeedbackSystem:
         finally:
             if conversation_id in self.feedback_callbacks:
                 del self.feedback_callbacks[conversation_id]
-
-    def get_pending_feedback_requests(self) -> Dict[str, Dict]:
-        """Get all pending feedback requests."""
-        with self._lock:
-            return {
-                conv_id: data for conv_id, data in self.pending_feedback.items()
-                if self.feedback_status.get(conv_id, {}).get("status") == "pending"
-            }
 
     def create_feedback_graph(self):
         """Create a graph for the human feedback process."""

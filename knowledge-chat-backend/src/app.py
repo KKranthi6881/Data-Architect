@@ -22,6 +22,7 @@ from src.agents.data_architect.human_feedback import HumanFeedbackSystem
 from src.api.feedback_routes import router as feedback_router
 import re
 import uuid
+import json
 
 app = FastAPI(title="Knowledge Chat API")
 
@@ -90,7 +91,9 @@ class FeedbackRequest(BaseModel):
     feedback_id: str
     approved: bool
     comments: Optional[str] = None
-    suggested_changes: Optional[Dict] = None
+    suggested_changes: Optional[Dict[str, Any]] = None
+    conversation_id: Optional[str] = None
+    message_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
     answer: str
@@ -318,239 +321,151 @@ async def get_schema():
 
 @app.post("/chat/")
 async def chat(request: ChatRequest):
-    """Process a chat message."""
     try:
         logger.info(f"Processing chat request: {request.message}")
-        
-        # Generate conversation ID if not provided
         conversation_id = request.conversation_id or str(uuid.uuid4())
+        feedback_id = str(uuid.uuid4())
         
-        # Process the question with conversation context
-        result = question_parser_system.parse_question(
-            request.message,
-            conversation_id=conversation_id
-        )
+        result = await question_parser_system.parse_question(request.message)
         
-        # Store request for feedback
-        feedback_request = {
-            "message": request.message,
-            "parsed_question": result.get('parsed_question', {}),
-            "doc_context": result.get('doc_context', {}),
-            "timestamp": datetime.now(),
-            "response": result
-        }
+        # Safely get and format key points and questions
+        key_points = result.get('key_points', [])
+        similar_questions = result.get('similar_questions', [])
         
-        # Submit for feedback and get feedback_id
-        feedback_id = feedback_system.submit_for_feedback(feedback_request)
-        
-        # Format initial response while waiting for feedback
-        parsed_question = result.get('parsed_question', {})
-        business_context = parsed_question.get('business_context', {})
-        
-        response_text = f"""**Understanding Your Question:**
-{parsed_question.get('rephrased_question')}
+        # Convert any dictionary items to strings
+        formatted_points = []
+        for point in key_points:
+            if isinstance(point, dict):
+                formatted_points.append(str(point))
+            elif isinstance(point, str):
+                formatted_points.append(point.strip())
+            else:
+                formatted_points.append(str(point))
 
-**Business Context:**
-• Domain: {business_context.get('domain', 'Order Processing')}
-• Focus: {business_context.get('primary_objective', 'Calculate tax amount')}
-• Key Entities: {', '.join(business_context.get('key_entities', []))}
+        formatted_questions = []
+        for question in similar_questions:
+            if isinstance(question, dict):
+                formatted_questions.append(str(question))
+            elif isinstance(question, str):
+                formatted_questions.append(question.strip())
+            else:
+                formatted_questions.append(str(question))
 
-**Implementation Details:**
-• Tables: LINEITEM
-• Calculation: {parsed_question.get('data_points', [''])[2] if len(parsed_question.get('data_points', [])) > 2 else 'L_EXTENDEDPRICE * L_TAX'}
+        # Format response with better alignment and spacing
+        response_text = f"""**I understand you want to:**
+{result.get('rephrased_question', '')}
 
-{format_sql_solution(result.get('doc_context', {}))}
+**Key Points:**
+{chr(10).join([f"• {point}" for point in formatted_points])}
 
-_Waiting for human feedback to ensure accuracy..._"""
-        
+**Related Questions to Consider:**
+{chr(10).join([f"• {q}" for q in formatted_questions])}
+
+---
+Would this analysis help you? Let me know if you'd like to adjust the focus."""
+
         return JSONResponse(
             content={
                 "answer": response_text,
                 "conversation_id": conversation_id,
-                "feedback_id": feedback_id,  # Add feedback_id to response
-                "sources": result.get("doc_context", {}),
-                "analysis": {
-                    "business_context": business_context,
-                    "confidence_score": parsed_question.get("confidence_score", 0.0),
-                    "alternative_interpretations": parsed_question.get("alternative_interpretations", [])
-                },
-                "parsed_question": parsed_question,
-                "feedback_required": True,
+                "feedback_id": feedback_id,
+                "parsed_question": result,
+                "requires_confirmation": True,
                 "feedback_status": "pending"
             },
             status_code=200
         )
             
     except Exception as e:
-        logger.error(f"Error in chat endpoint: {str(e)}", exc_info=True)
+        logger.error(f"Error in chat endpoint: {e}", exc_info=True)  # Added exc_info for better error tracking
         return JSONResponse(
             content={
+                "answer": "I apologize, but I encountered an error processing your request. Could you please try rephrasing your question?",
                 "error": str(e),
-                "feedback_required": False,
-                "feedback_status": "error"
+                "requires_confirmation": False
             },
-            status_code=500
+            status_code=200  # Return 200 with error message instead of 500
         )
 
-def format_relevant_sources(doc_context: Dict) -> str:
-    """Format relevant source information concisely."""
-    sections = []
+def format_technical_details(doc_context: Dict) -> str:
+    """Format technical implementation details from the context"""
+    if not doc_context:
+        return "No technical details available"
     
-    # Format SQL results
-    if sql_results := doc_context.get('sql_results', []):
-        table_info = []
-        for result in sql_results[:2]:
-            content = result.get('content', '').strip()
-            if content:
-                table_match = re.search(r'CREATE TABLE (\w+)', content)
-                if table_match:
-                    table_name = table_match.group(1)
-                    columns = re.findall(r'(\w+)\s+(?:VARCHAR|CHAR|BIGINT|INTEGER|DECIMAL|DATE|SERIAL).*?,', content)
-                    if columns:
-                        table_info.append(f"• {table_name} ({', '.join(columns[:3])}...)")
-                    else:
-                        table_info.append(f"• {table_name}")
-        
-        if table_info:
-            sections.append("**Relevant Tables:**\n" + "\n".join(table_info))
+    details = []
     
-    # Format relationships
-    if doc_results := doc_context.get('doc_results', []):
-        relationships = []
-        for result in doc_results[:2]:
-            content = result.get('content', '').strip()
-            if content and ('relationship' in content.lower() or 'key' in content.lower()):
-                # Extract meaningful relationship information
-                clean_content = re.sub(r'\s+', ' ', content).strip()
-                relationships.append(f"• {clean_content[:100]}...")
-        
-        if relationships:
-            sections.append("**Key Relationships:**\n" + "\n".join(relationships))
+    # Add SQL query if available
+    if 'suggested_query' in doc_context:
+        details.append(f"Suggested SQL Query:\n```sql\n{doc_context['suggested_query']}\n```")
     
-    return "\n\n".join(sections) if sections else ""
+    # Add implementation steps if available
+    if 'implementation_steps' in doc_context:
+        details.append("Implementation Steps:")
+        for step in doc_context['implementation_steps']:
+            details.append(f"• {step}")
+    
+    # Add technical considerations
+    if 'technical_considerations' in doc_context:
+        details.append("\nTechnical Considerations:")
+        for consideration in doc_context['technical_considerations']:
+            details.append(f"• {consideration}")
+    
+    return "\n".join(details) if details else "Technical details will be provided after analysis"
 
-def generate_follow_up_questions(parsed_question: Dict, business_context: Dict, as_list: bool = False) -> Union[str, List[str]]:
-    """Generate relevant follow-up questions based on the context."""
-    entities = business_context.get('key_entities', [])
-    domain = business_context.get('domain', '')
+def format_data_sources(doc_context: Dict) -> str:
+    """Format information about available data sources"""
+    if not doc_context or 'data_sources' not in doc_context:
+        return "No specific data sources identified"
     
-    follow_up_questions = []
+    sources = doc_context['data_sources']
+    formatted_sources = []
     
-    # Add entity-specific questions
-    for entity in entities:
-        follow_up_questions.append(f"What are the key metrics for {entity}?")
-        follow_up_questions.append(f"How is {entity} related to other business entities?")
+    for source in sources:
+        if isinstance(source, dict):
+            source_info = [
+                f"• Source: {source.get('name', 'Unnamed source')}",
+                f"  Type: {source.get('type', 'Unknown type')}",
+                f"  Description: {source.get('description', 'No description available')}"
+            ]
+            formatted_sources.append("\n".join(source_info))
     
-    # Add domain-specific questions
-    if domain:
-        follow_up_questions.append(f"What are the common reporting needs for {domain}?")
-        follow_up_questions.append(f"What are the best practices for {domain} analysis?")
-    
-    # Add general follow-up questions
-    follow_up_questions.extend([
-        "Would you like to see the detailed schema for these tables?",
-        "Should I explain the relationships between these entities?",
-        "Would you like to see example queries for this analysis?"
-    ])
-    
-    # Return as list or formatted string
-    if as_list:
-        return follow_up_questions[:5]  # Limit to 5 questions
-    else:
-        return "\n".join(f"• {q}" for q in follow_up_questions[:5])
+    return "\n".join(formatted_sources) if formatted_sources else "Data sources will be analyzed"
 
 @app.post("/feedback/")
-async def submit_feedback(request: FeedbackRequest):
-    """Submit feedback for a conversation."""
+async def submit_feedback(feedback: FeedbackRequest):
+    """Submit feedback for a question analysis"""
     try:
-        logger.info(f"Processing feedback for ID: {request.feedback_id}")
+        logger.info(f"Received feedback: {feedback}")
         
-        # Store the feedback
-        success = feedback_system.provide_feedback(
-            request.feedback_id,
-            {
-                "approved": request.approved,
-                "comments": request.comments,
-                "suggested_changes": request.suggested_changes
-            }
-        )
-        
-        if not success:
-            logger.error(f"No pending feedback found for ID: {request.feedback_id}")
-            return JSONResponse(
-                status_code=404,
-                content={"status": "error", "message": "No pending feedback request found"}
+        if not feedback.feedback_id:
+            raise HTTPException(status_code=422, detail="feedback_id is required")
+
+        # Process the feedback
+        try:
+            feedback_result = await feedback_system.process_feedback(
+                feedback_id=feedback.feedback_id,
+                approved=feedback.approved,
+                comments=feedback.comments
             )
-
-        # If not approved, process with LLM to get improved response
-        if not request.approved and request.comments:
-            # Get original request and context
-            original_request = feedback_system.get_original_request(request.feedback_id)
-            if not original_request:
-                raise ValueError("Original request not found")
-
-            # Get the original question
-            original_question = original_request.get("message", "")
-            if not original_question:
-                raise ValueError("Original question not found")
-
-            # Create focused feedback context
-            feedback_context = {
-                "previous_summary": {
-                    "interpretation": original_request.get("parsed_question", {}).get("rephrased_question", ""),
-                    "key_entities": original_request.get("parsed_question", {}).get("business_context", {}).get("key_entities", []),
-                    "tables": [table.get("name") for table in original_request.get("doc_context", {}).get("sql_results", [])]
-                },
-                "feedback": request.comments,
-                "improvement_needed": True
-            }
-
-            # Process with LLM using focused context
-            result = question_parser_system.parse_question(
-                original_question,
-                feedback_context=feedback_context
-            )
-
-            # Format the improved response
-            business_context = result.get('parsed_question', {}).get('business_context', {})
-            response_text = f"""**Understanding Your Question (Improved based on feedback):**
-{result.get('parsed_question', {}).get('rephrased_question')}
-
-**Business Context:**
-• Domain: {business_context.get('domain')}
-• Focus: {business_context.get('primary_objective')}
-• Key Entities: {', '.join(business_context.get('key_entities', []))}
-
-**Implementation Details:**
-{format_sql_solution(result.get('doc_context', {}))}
-
-_This response has been improved based on your feedback._
-"""
+            
             return JSONResponse(
                 content={
                     "status": "success",
-                    "message": "Feedback processed",
-                    "answer": response_text,
-                    "conversation_id": str(uuid.uuid4()),
-                    "doc_context": result.get("doc_context", {}),
-                    "analysis": {
-                        "business_context": business_context,
-                        "confidence_score": result.get('parsed_question', {}).get("confidence_score", 0.0),
-                        "alternative_interpretations": result.get('parsed_question', {}).get("alternative_interpretations", [])
-                    },
-                    "parsed_question": result.get("parsed_question", {}),
-                    "feedback_required": True
+                    "message": "Feedback processed successfully",
+                    "feedback_id": feedback.feedback_id,
+                    "approved": feedback.approved
                 }
             )
-
-        return JSONResponse(content={"status": "success", "message": "Feedback received"})
-        
+            
+        except Exception as e:
+            logger.error(f"Error processing feedback: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+            
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        logger.error(f"Error submitting feedback: {str(e)}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "message": str(e)}
-        )
+        logger.error(f"Error in feedback endpoint: {e}")
+        raise HTTPException(status_code=422, detail=str(e))
 
 def format_sql_solution(doc_context: Dict) -> str:
     """Format SQL solution with relevant tables and their key columns."""
@@ -731,6 +646,135 @@ def main():
     with tab2:
         # Your existing file upload interface
         file_upload_interface()
+
+@app.get("/api/chat-history")
+async def get_chat_history():
+    """Get chat history with checkpoints"""
+    try:
+        db = ChatDatabase()
+        
+        # Get chat history with checkpoints
+        history = await db.get_conversation_history_with_checkpoints()
+        
+        # Format the response
+        formatted_history = []
+        for chat in history:
+            # Extract messages from checkpoints
+            messages = []
+            for checkpoint in chat.get('checkpoints', []):
+                if isinstance(checkpoint.get('checkpoint'), dict):
+                    checkpoint_data = checkpoint['checkpoint']
+                    
+                    # Extract messages from checkpoint data
+                    if 'messages' in checkpoint_data:
+                        for msg in checkpoint_data['messages']:
+                            messages.append({
+                                'role': msg.get('role', 'unknown'),
+                                'content': msg.get('content', ''),
+                                'timestamp': checkpoint.get('timestamp'),
+                                'analysis': msg.get('analysis', {})
+                            })
+            
+            # Format chat session
+            formatted_chat = {
+                'session_id': chat['id'],
+                'start_time': chat['timestamp'],
+                'preview': chat.get('query', 'No preview available'),
+                'message_count': len(messages),
+                'messages': messages,
+                'metadata': {
+                    'technical_details': chat.get('technical_details', {}),
+                    'code_context': chat.get('code_context', {})
+                }
+            }
+            
+            formatted_history.append(formatted_chat)
+        
+        return {
+            "status": "success",
+            "chat_history": formatted_history
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching chat history: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@app.post("/api/save-message")
+async def save_message(message: dict):
+    """Save a chat message"""
+    try:
+        db = ChatDatabase()
+        await db.save_message(
+            session_id=message['session_id'],
+            role=message['role'],
+            content=message['content'],
+            analysis=message.get('analysis')
+        )
+        
+        # Create a checkpoint for this message
+        checkpoint_data = {
+            'messages': [{
+                'role': message['role'],
+                'content': message['content'],
+                'analysis': message.get('analysis', {})
+            }],
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        db.create_checkpoint(
+            thread_id=message['session_id'],
+            checkpoint_id=str(uuid.uuid4()),
+            checkpoint_type='message',
+            checkpoint_data=json.dumps(checkpoint_data)
+        )
+        
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Error saving message: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@app.get("/api/chat/{session_id}")
+async def get_chat_session(session_id: str):
+    """Get a specific chat session with all its messages"""
+    try:
+        db = ChatDatabase()
+        chat = await db.get_conversation(session_id)
+        
+        if not chat:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+            
+        # Get all checkpoints for this session
+        checkpoints = db.get_conversation_history_with_checkpoints()
+        messages = []
+        
+        # Extract messages from checkpoints
+        for checkpoint in checkpoints:
+            if checkpoint['thread_id'] == session_id:
+                checkpoint_data = json.loads(checkpoint['checkpoint'])
+                if 'messages' in checkpoint_data:
+                    messages.extend(checkpoint_data['messages'])
+        
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "messages": messages,
+            "metadata": {
+                "technical_details": chat.get('technical_details', {}),
+                "code_context": chat.get('code_context', {})
+            }
+        }
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Error fetching chat session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     main() 
