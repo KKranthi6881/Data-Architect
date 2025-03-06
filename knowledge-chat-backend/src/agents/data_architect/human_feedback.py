@@ -18,11 +18,12 @@ logger = logging.getLogger(__name__)
 
 # Define state type for human feedback system
 class FeedbackState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], "The messages in the conversation"]
-    parsed_question: Annotated[Dict, "Structured parsed question output"]
-    feedback: Annotated[Optional[Dict], "Human feedback on the parsed question"]
-    status: Annotated[str, "Current status of the feedback process"]
-    timeout: Annotated[Optional[datetime], "Timeout for waiting for feedback"]
+    """State management for human feedback system"""
+    messages: Annotated[Sequence[BaseMessage], "Conversation messages"]
+    business_analysis: Annotated[Dict, "Business analysis results"]
+    feedback: Annotated[Optional[Dict], "Human feedback"]
+    status: Annotated[str, "Feedback status"]
+    confidence_score: Annotated[float, "Confidence in analysis"]
 
 # Define feedback response model
 class FeedbackResponse(BaseModel):
@@ -37,13 +38,10 @@ class HumanFeedbackSystem:
         self.logger = logging.getLogger(__name__)
 
     async def process_feedback(self, feedback_id: str, approved: bool, comments: str = None) -> Dict:
-        """
-        Process feedback for a given feedback_id
-        """
+        """Process feedback for business analysis"""
         try:
             self.logger.info(f"Processing feedback for ID: {feedback_id}")
             
-            # Store the feedback
             feedback_result = {
                 "feedback_id": feedback_id,
                 "approved": approved,
@@ -51,13 +49,21 @@ class HumanFeedbackSystem:
                 "timestamp": datetime.now().isoformat(),
                 "status": "processed"
             }
-            
-            # Move from pending to processed
+
             if feedback_id in self.pending_feedback:
+                # Get original business analysis
+                original_analysis = self.pending_feedback[feedback_id].get("business_analysis", {})
+                
+                if approved:
+                    feedback_result["final_analysis"] = original_analysis
+                else:
+                    # Store feedback for improvement
+                    feedback_result["needs_improvement"] = True
+                    feedback_result["improvement_comments"] = comments
+                
                 del self.pending_feedback[feedback_id]
             
             self.processed_feedback[feedback_id] = feedback_result
-            
             return feedback_result
             
         except Exception as e:
@@ -76,12 +82,13 @@ class HumanFeedbackSystem:
             return self.pending_feedback[feedback_id]
         return None
 
-    def add_feedback_request(self, feedback_id: str, request_data: Dict):
-        """Add a new feedback request"""
+    def add_feedback_request(self, feedback_id: str, business_analysis: Dict):
+        """Add new business analysis feedback request"""
         self.pending_feedback[feedback_id] = {
-            **request_data,
+            "business_analysis": business_analysis,
             "timestamp": datetime.now().isoformat(),
-            "status": "pending"
+            "status": "pending",
+            "confidence_score": business_analysis.get("confidence_score", 0.0)
         }
 
     def submit_for_feedback(self, request: Dict) -> str:

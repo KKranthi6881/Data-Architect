@@ -1,4 +1,4 @@
 -- SQLite
 .tables
 
-select * from conversations
+select * from checkpoints

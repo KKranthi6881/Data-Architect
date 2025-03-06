@@ -53,18 +53,14 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 # Initialize ChromaDB manager
 db_manager = ChromaDBManager(persist_directory=str(BASE_DIR / "chroma_db"))
 
-# Initialize tools and analysis system
+# Initialize systems
 code_search_tools = SearchTools(db_manager)
-analysis_system = SimpleAnalysisSystem(code_search_tools)
-
-# Initialize question parser system
-question_parser_system = QuestionParserSystem(
-    tools=code_search_tools,
-    feedback_timeout=120
-)
-
-# Initialize database
+question_parser_system = QuestionParserSystem(tools=code_search_tools)
+feedback_system = HumanFeedbackSystem()
 chat_db = ChatDatabase()
+
+# Initialize tools and analysis system
+analysis_system = SimpleAnalysisSystem(code_search_tools)
 
 # Add new model for code analysis requests
 class CodeAnalysisRequest(BaseModel):
@@ -89,10 +85,10 @@ class ChatRequest(BaseModel):
 # Add FeedbackRequest model
 class FeedbackRequest(BaseModel):
     feedback_id: str
+    conversation_id: str  # Make this required
     approved: bool
     comments: Optional[str] = None
     suggested_changes: Optional[Dict[str, Any]] = None
-    conversation_id: Optional[str] = None
     message_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
@@ -110,9 +106,6 @@ class ChatResponse(BaseModel):
 
 # Include feedback routes
 app.include_router(feedback_router, prefix="/feedback-status", tags=["feedback"])
-
-# Initialize feedback system
-feedback_system = HumanFeedbackSystem()
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -326,43 +319,37 @@ async def chat(request: ChatRequest):
         conversation_id = request.conversation_id or str(uuid.uuid4())
         feedback_id = str(uuid.uuid4())
         
+        # Get business analysis
         result = await question_parser_system.parse_question(request.message)
         
-        # Safely get and format key points and questions
-        key_points = result.get('key_points', [])
-        similar_questions = result.get('similar_questions', [])
+        # Add to feedback system for review
+        feedback_system.add_feedback_request(feedback_id, result)
         
-        # Convert any dictionary items to strings
-        formatted_points = []
-        for point in key_points:
-            if isinstance(point, dict):
-                formatted_points.append(str(point))
-            elif isinstance(point, str):
-                formatted_points.append(point.strip())
-            else:
-                formatted_points.append(str(point))
+        # Format response text - Include full analysis
+        response_text = f"""I've analyzed your question from a business perspective. Please review my understanding below and let me know if any adjustments are needed.
 
-        formatted_questions = []
-        for question in similar_questions:
-            if isinstance(question, dict):
-                formatted_questions.append(str(question))
-            elif isinstance(question, str):
-                formatted_questions.append(question.strip())
-            else:
-                formatted_questions.append(str(question))
+Business Understanding:
+{result['rephrased_question']}
 
-        # Format response with better alignment and spacing
-        response_text = f"""**I understand you want to:**
-{result.get('rephrased_question', '')}
+Key Points:
+{chr(10).join([f"• {point}" for point in result['key_points']])}"""
 
-**Key Points:**
-{chr(10).join([f"• {point}" for point in formatted_points])}
-
-**Related Questions to Consider:**
-{chr(10).join([f"• {q}" for q in formatted_questions])}
-
----
-Would this analysis help you? Let me know if you'd like to adjust the focus."""
+        # Store in chat database
+        await chat_db.save_message(
+            session_id=conversation_id,
+            role="assistant",
+            content=response_text,
+            metadata={
+                "feedback_id": feedback_id,
+                "business_analysis": result,
+                "confidence_score": result.get("confidence_score", 0.0),
+                "full_details": {  # Include full details for history
+                    "business_context": result["business_context"],
+                    "assumptions": result["assumptions"],
+                    "clarifying_questions": result["clarifying_questions"]
+                }
+            }
+        )
 
         return JSONResponse(
             content={
@@ -371,20 +358,22 @@ Would this analysis help you? Let me know if you'd like to adjust the focus."""
                 "feedback_id": feedback_id,
                 "parsed_question": result,
                 "requires_confirmation": True,
-                "feedback_status": "pending"
+                "feedback_status": "pending",
+                "confidence_score": result.get("confidence_score", 0.0),
+                "details": result  # Include full details in response
             },
             status_code=200
         )
             
     except Exception as e:
-        logger.error(f"Error in chat endpoint: {e}", exc_info=True)  # Added exc_info for better error tracking
+        logger.error(f"Error in chat endpoint: {e}", exc_info=True)
         return JSONResponse(
             content={
-                "answer": "I apologize, but I encountered an error processing your request. Could you please try rephrasing your question?",
+                "answer": "I apologize, but I encountered an error analyzing your question. Could you please rephrase it?",
                 "error": str(e),
                 "requires_confirmation": False
             },
-            status_code=200  # Return 200 with error message instead of 500
+            status_code=200
         )
 
 def format_technical_details(doc_context: Dict) -> str:
@@ -433,39 +422,50 @@ def format_data_sources(doc_context: Dict) -> str:
 
 @app.post("/feedback/")
 async def submit_feedback(feedback: FeedbackRequest):
-    """Submit feedback for a question analysis"""
+    """Submit feedback for business analysis"""
     try:
         logger.info(f"Received feedback: {feedback}")
         
         if not feedback.feedback_id:
             raise HTTPException(status_code=422, detail="feedback_id is required")
+        
+        if not feedback.conversation_id:
+            raise HTTPException(status_code=422, detail="conversation_id is required")
 
         # Process the feedback
-        try:
-            feedback_result = await feedback_system.process_feedback(
-                feedback_id=feedback.feedback_id,
-                approved=feedback.approved,
-                comments=feedback.comments
-            )
-            
-            return JSONResponse(
-                content={
-                    "status": "success",
-                    "message": "Feedback processed successfully",
+        feedback_result = await feedback_system.process_feedback(
+            feedback_id=feedback.feedback_id,
+            approved=feedback.approved,
+            comments=feedback.comments
+        )
+        
+        # If feedback indicates improvements needed, queue for reanalysis
+        if not feedback.approved:
+            await chat_db.save_message(
+                session_id=feedback.conversation_id,  # Use the provided conversation_id
+                role="system",
+                content="Reanalyzing based on feedback...",
+                metadata={
                     "feedback_id": feedback.feedback_id,
-                    "approved": feedback.approved
+                    "improvement_needed": True,
+                    "feedback_comments": feedback.comments
                 }
             )
+
+        return JSONResponse(
+            content={
+                "status": "success",
+                "message": "Feedback processed successfully",
+                "feedback_id": feedback.feedback_id,
+                "conversation_id": feedback.conversation_id,
+                "approved": feedback.approved,
+                "needs_reanalysis": not feedback.approved
+            }
+        )
             
-        except Exception as e:
-            logger.error(f"Error processing feedback: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-            
-    except HTTPException as he:
-        raise he
     except Exception as e:
-        logger.error(f"Error in feedback endpoint: {e}")
-        raise HTTPException(status_code=422, detail=str(e))
+        logger.error(f"Error processing feedback: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def format_sql_solution(doc_context: Dict) -> str:
     """Format SQL solution with relevant tables and their key columns."""
