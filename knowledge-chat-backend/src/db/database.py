@@ -431,4 +431,25 @@ class ChatDatabase:
             
             self._get_connection().commit()
         except Exception as e:
-            print(f"Error ensuring feedback columns: {e}") 
+            print(f"Error ensuring feedback columns: {e}")
+
+    def ensure_cleared_column(self):
+        """Ensure cleared column exists in conversations table"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Check if cleared column exists
+                cursor.execute("PRAGMA table_info(conversations)")
+                columns = [column[1] for column in cursor.fetchall()]
+                
+                # Add cleared column if it doesn't exist
+                if "cleared" not in columns:
+                    cursor.execute("""
+                        ALTER TABLE conversations 
+                        ADD COLUMN cleared BOOLEAN DEFAULT 0
+                    """)
+                    conn.commit()
+                    print("Added cleared column to conversations table")
+        except Exception as e:
+            print(f"Error ensuring cleared column: {e}") 

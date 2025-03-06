@@ -417,26 +417,112 @@ const ChatMessage = ({ message, onFeedbackSubmit }) => {
   );
 };
 
+// Add a debug function to log message details
+const debugMessageDetails = (message) => {
+  console.log("Message details for debugging:");
+  console.log("- feedback_id:", message.details?.feedback_id);
+  console.log("- conversation_id:", message.details?.conversation_id);
+  console.log("- Full details:", message.details);
+};
+
+// Update the InlineFeedback component
 const InlineFeedback = ({ message, onFeedbackSubmit }) => {
   const [comments, setComments] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const toast = useToast();
 
-  const handleSubmit = async (approved) => {
+  // Debug the message details when component mounts
+  useEffect(() => {
+    debugMessageDetails(message);
+  }, [message]);
+
+  const handleSubmit = async (isApproved) => {
     if (isSubmitting) return;
+    
+    console.log("Feedback button clicked:", isApproved ? "Confirm" : "Need Clarification");
+    debugMessageDetails(message);
+    
+    // Use conversation_id as feedback_id if feedback_id is missing
+    const feedback_id = message.details?.feedback_id || message.details?.conversation_id;
+    const conversation_id = message.details?.conversation_id;
+    
+    // Check if we have the required fields
+    if (!feedback_id) {
+      console.error("Missing feedback_id and no fallback available");
+      toast({
+        title: 'Error',
+        description: 'Missing feedback ID information',
+        status: 'error',
+        duration: 3000,
+      });
+      return;
+    }
+    
+    if (!conversation_id) {
+      console.error("Missing conversation_id in message details");
+      toast({
+        title: 'Error',
+        description: 'Missing conversation ID information',
+        status: 'error',
+        duration: 3000,
+      });
+      return;
+    }
     
     setIsSubmitting(true);
     try {
-      await onFeedbackSubmit({
-        feedback_id: message.details?.feedback_id,
-        conversation_id: message.details?.conversation_id,
-        approved,
+      // Try a direct fetch to the feedback endpoint
+      const feedbackPayload = {
+        feedback_id: feedback_id,
+        conversation_id: conversation_id,
+        approved: isApproved,
+        comments: comments || null
+      };
+      
+      console.log("Sending direct feedback payload:", feedbackPayload);
+      
+      // Make a direct fetch request
+      const response = await fetch('http://localhost:8000/feedback/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(feedbackPayload)
+      });
+      
+      console.log("Direct fetch response status:", response.status);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Error response:", errorText);
+        throw new Error(`Failed to submit feedback: ${errorText}`);
+      }
+      
+      // Success - clear comments and show toast
+      setComments('');
+      toast({
+        title: isApproved ? 'Understanding Confirmed' : 'Clarification Requested',
+        description: 'Your feedback has been submitted',
+        status: 'success',
+        duration: 3000,
+      });
+      
+      // Call the parent handler to update UI
+      onFeedbackSubmit({
+        feedback_id: feedback_id,
+        conversation_id: conversation_id,
+        approved: isApproved,
         comments: comments
       });
       
-      // Clear comments after submission
-      setComments('');
     } catch (error) {
       console.error('Error submitting feedback:', error);
+      toast({
+        title: 'Error',
+        description: error.message,
+        status: 'error',
+        duration: 5000,
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -444,48 +530,16 @@ const InlineFeedback = ({ message, onFeedbackSubmit }) => {
 
   return (
     <VStack align="stretch" spacing={3}>
-      {/* Key Points */}
-      {message.details?.parsed_question?.key_points && (
-        <Box bg="white" p={4} borderRadius="md" shadow="sm">
-          <Text fontWeight="medium" mb={2}>
-            Key Business Points:
-          </Text>
-          <UnorderedList spacing={1}>
-            {message.details.parsed_question.key_points.map((point, idx) => (
-              <ListItem key={idx}>{point}</ListItem>
-            ))}
-          </UnorderedList>
+      {/* Add debug info in development */}
+      {process.env.NODE_ENV !== 'production' && (
+        <Box p={2} bg="gray.100" fontSize="xs" mt={2}>
+          <Text>Debug Info:</Text>
+          <Text>feedback_id: {message.details?.feedback_id || 'missing'}</Text>
+          <Text>conversation_id: {message.details?.conversation_id || 'missing'}</Text>
+          <Text>Using feedback_id: {message.details?.feedback_id || message.details?.conversation_id || 'none available'}</Text>
         </Box>
       )}
-
-      {/* Assumptions */}
-      {message.details?.parsed_question?.assumptions && (
-        <Box bg="white" p={4} borderRadius="md" shadow="sm">
-          <Text fontWeight="medium" mb={2}>
-            Assumptions to Verify:
-          </Text>
-          <UnorderedList spacing={1}>
-            {message.details.parsed_question.assumptions.map((assumption, idx) => (
-              <ListItem key={idx}>{assumption}</ListItem>
-            ))}
-          </UnorderedList>
-        </Box>
-      )}
-
-      {/* Clarifying Questions */}
-      {message.details?.parsed_question?.clarifying_questions && (
-        <Box bg="white" p={4} borderRadius="md" shadow="sm">
-          <Text fontWeight="medium" mb={2}>
-            Clarifying Questions:
-          </Text>
-          <UnorderedList spacing={1}>
-            {message.details.parsed_question.clarifying_questions.map((question, idx) => (
-              <ListItem key={idx}>{question}</ListItem>
-            ))}
-          </UnorderedList>
-        </Box>
-      )}
-
+      
       {/* Feedback Section */}
       <Textarea
         value={comments}
@@ -531,6 +585,7 @@ const ChatPage = () => {
   const navigate = useNavigate();
   const { conversationId } = useParams();
   const messagesEndRef = useRef(null);
+  const [activeTab, setActiveTab] = useState('chat');
 
   // Add this to the top of the component
   useEffect(() => {
@@ -577,14 +632,6 @@ const ChatPage = () => {
         const conversation = data.conversation;
         console.log("Conversation data:", conversation); // Log the conversation data
         
-        // Check if we have the required fields
-        if (!conversation.query) {
-          console.warn("Missing query in conversation data");
-        }
-        if (!conversation.response) {
-          console.warn("Missing response in conversation data");
-        }
-        
         // Clear existing messages
         setMessages([]);
         
@@ -595,7 +642,6 @@ const ChatPage = () => {
           id: `${id}-query`
         };
         console.log("Adding user message:", userMessage);
-        setMessages(prev => [...prev, userMessage]);
         
         // Add assistant response with proper formatting
         const assistantMessage = {
@@ -612,7 +658,9 @@ const ChatPage = () => {
           }
         };
         console.log("Adding assistant message:", assistantMessage);
-        setMessages(prev => [...prev, assistantMessage]);
+        
+        // Update messages state with both messages
+        setMessages([userMessage, assistantMessage]);
         
         setActiveConversationId(id);
         
@@ -759,21 +807,21 @@ const ChatPage = () => {
   };
 
   const sendMessage = async () => {
-    if (!input.trim()) return
+    if (!input.trim()) return;
     
-    setLoading(true)
-    const userMessage = input
-    setInput('')
+    setLoading(true);
+    const userMessage = input;
+    setInput('');
     
     // Add user message
     setMessages(prev => [...prev, { 
       type: 'user', 
       content: userMessage 
-    }])
+    }]);
 
     try {
       // Show processing steps
-      setProcessingStep('Analyzing code and documentation...')
+      setProcessingStep('Analyzing code and documentation...');
       
       const response = await fetch('http://localhost:8000/chat/', {
         method: 'POST',
@@ -782,77 +830,87 @@ const ChatPage = () => {
         },
         body: JSON.stringify({
           message: userMessage,
-          conversation_id: activeConversationId // Include existing conversation ID if available
+          conversation_id: activeConversationId || null
         })
-      })
+      });
 
-      const data = await response.json()
-      console.log("Response from server:", data)
+      const data = await response.json();
+      console.log("Response from server:", data);
 
-      // Set the active conversation ID from the response
-      setActiveConversationId(data.conversation_id);
-      
-      // Update URL without reloading
-      navigate(`/chat/${data.conversation_id}`, { replace: true });
+      // Make sure we have a conversation ID
+      if (data.conversation_id) {
+        setActiveConversationId(data.conversation_id);
+      }
 
-      // Add assistant response
+      // Add assistant response with all required fields
       const assistantMessage = {
         type: 'assistant',
         content: data.answer,
         details: {
           ...data,
           conversation_id: data.conversation_id,
-          feedback_id: data.feedback_id,
-          feedback_required: data.feedback_required,
-          feedback_status: 'pending'
+          feedback_id: data.feedback_id || data.conversation_id, // Use conversation_id as fallback
+          feedback_status: 'pending',
+          requires_confirmation: true // Always show feedback options for new messages
         }
-      }
+      };
       
-      setMessages(prev => [...prev, assistantMessage])
-      
-      // Refresh conversation list
-      fetchConversations();
+      console.log("Adding assistant message with details:", assistantMessage.details);
+      setMessages(prev => [...prev, assistantMessage]);
 
     } catch (error) {
-      console.error('Error:', error)
+      console.error('Error:', error);
       setMessages(prev => [...prev, {
         type: 'error',
         content: 'Error processing your request'
-      }])
+      }]);
     }
 
-    setProcessingStep('')
-    setLoading(false)
-  }
+    setProcessingStep('');
+    setLoading(false);
+  };
 
   const handleFeedbackSubmit = async (feedback) => {
     try {
+      console.log("Submitting feedback:", feedback);
       setLoading(true);
+      
+      const feedbackPayload = {
+        feedback_id: feedback.feedback_id,
+        conversation_id: feedback.conversation_id,
+        approved: feedback.approved,
+        comments: feedback.comments || null,
+        suggested_changes: null,
+        message_id: null
+      };
+      
+      console.log("Sending feedback payload:", feedbackPayload);
+      
       const response = await fetch('http://localhost:8000/feedback/', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(feedback)
+        body: JSON.stringify(feedbackPayload)
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Failed to submit feedback');
-      }
-
-      const data = await response.json();
       
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Feedback submission error:", errorText);
+        throw new Error(`Failed to submit feedback: ${errorText}`);
+      }
+      
+      // Update UI based on feedback result
       if (feedback.approved) {
-        // Update the message to show it's approved
+        // Update the message to show it's approved and hide feedback buttons
         setMessages(prev => prev.map(msg => 
           msg.details?.feedback_id === feedback.feedback_id
             ? {
                 ...msg,
-                content: msg.content.replace('_Waiting for human feedback to ensure accuracy..._', '_Response approved by human reviewer_'),
                 details: {
                   ...msg.details,
-                  feedback_status: 'approved'
+                  feedback_status: 'approved',
+                  requires_confirmation: false  // This will hide the feedback buttons
                 }
               }
             : msg
@@ -864,40 +922,13 @@ const ChatPage = () => {
           status: 'success',
           duration: 3000
         });
+
+        // Move to history tab after approval
+        setActiveTab('history');
+        await fetchConversations();
       } else {
-        // If not approved, send a follow-up request with feedback
-        const followUpResponse = await fetch('http://localhost:8000/chat/', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            message: feedback.feedback_id,
-            feedback: {
-              approved: false,
-              comments: feedback.comments,
-              feedback_id: feedback.feedback_id,
-              request_type: 'feedback_improvement'
-            }
-          })
-        });
-
-        if (!followUpResponse.ok) {
-          throw new Error('Failed to get improved response');
-        }
-
-        const followUpData = await followUpResponse.json();
-        
-        // Add the new response with feedback context
-        setMessages(prev => [...prev, {
-          type: 'assistant',
-          content: followUpData.answer,
-          details: {
-            ...followUpData,
-            feedback_status: 'pending',
-            previous_feedback: feedback.comments
-          }
-        }]);
+        // If not approved, stay in chat tab and process feedback
+        setProcessingStep('Processing your feedback...');
         
         // Update the original message status
         setMessages(prev => prev.map(msg => 
@@ -906,20 +937,76 @@ const ChatPage = () => {
                 ...msg,
                 details: {
                   ...msg.details,
-                  feedback_status: 'rejected',
-                  feedback_comments: feedback.comments
+                  feedback_status: 'needs_improvement',
+                  feedback_comments: feedback.comments,
+                  requires_confirmation: false
                 }
               }
             : msg
         ));
         
+        // Send a follow-up request to get an improved response
+        const followUpPayload = {
+          message: feedback.comments || "Please improve this response",
+          conversation_id: feedback.conversation_id,
+          feedback: {
+            approved: false,
+            comments: feedback.comments,
+            feedback_id: feedback.feedback_id
+          }
+        };
+        
+        console.log("Sending follow-up request:", followUpPayload);
+        
+        const followUpResponse = await fetch('http://localhost:8000/chat/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(followUpPayload)
+        });
+        
+        if (!followUpResponse.ok) {
+          const errorText = await followUpResponse.text();
+          console.error("Follow-up request error:", errorText);
+          throw new Error(`Failed to get improved response: ${errorText}`);
+        }
+        
+        const followUpData = await followUpResponse.json();
+        console.log("Follow-up response:", followUpData);
+        
+        // Add the new response if one was returned
+        if (followUpData.answer) {
+          const assistantMessage = {
+            type: 'assistant',
+            content: followUpData.answer,
+            details: {
+              ...followUpData,
+              conversation_id: feedback.conversation_id,
+              feedback_id: followUpData.feedback_id || followUpData.conversation_id,
+              feedback_status: 'pending',
+              requires_confirmation: true
+            }
+          };
+          
+          console.log("Adding new assistant message:", assistantMessage);
+          setMessages(prev => [...prev, assistantMessage]);
+        }
+        
         toast({
           title: 'Feedback Submitted',
-          description: 'Generating improved response based on your feedback...',
+          description: 'Your feedback has been processed.',
           status: 'info',
           duration: 3000
         });
+
+        // Stay in chat tab for feedback
+        setActiveTab('chat');
       }
+      
+      // Refresh conversations to show updated status
+      await fetchConversations();
+      
     } catch (error) {
       console.error('Error:', error);
       toast({
@@ -931,12 +1018,21 @@ const ChatPage = () => {
       });
     } finally {
       setLoading(false);
+      setProcessingStep('');
     }
   };
 
   // Update message display with wider boxes
   const renderMessage = (message) => {
-    console.log("Rendering message:", message); // Add this for debugging
+    console.log("Rendering message:", message);
+    
+    // Check if the message requires feedback - updated condition
+    const requiresFeedback = message.type === 'assistant' && 
+                            message.details?.requires_confirmation === true && 
+                            message.details?.feedback_status !== 'approved' && 
+                            message.details?.feedback_status !== 'needs_improvement';
+    
+    console.log("Message requires feedback:", requiresFeedback, message.details);
     
     return (
       <Box 
@@ -944,8 +1040,8 @@ const ChatPage = () => {
         bg={message.type === 'user' ? 'blue.50' : 'white'}
         p={5}
         borderRadius="lg"
-        alignSelf="flex-start"  // Always align to the left
-        width={["98%", "95%", "90%"]}  // Increased width for all messages
+        alignSelf="flex-start"
+        width={["98%", "95%", "90%"]}
         boxShadow="0 2px 8px rgba(0, 0, 0, 0.08)"
         borderWidth="1px"
         borderColor={message.type === 'user' ? 'blue.100' : 'gray.100'}
@@ -972,7 +1068,7 @@ const ChatPage = () => {
                 fontWeight="500"
                 lineHeight="1.7"
                 color="gray.800"
-                whiteSpace="pre-wrap"  // Preserve line breaks in user messages
+                whiteSpace="pre-wrap"
               >
                 {message.content}
               </Text>
@@ -991,12 +1087,21 @@ const ChatPage = () => {
               >
                 Assistant
               </Text>
-              {/* Main content with formatting */}
-              <FormattedMessage content={message.content} />
+              {/* Main content */}
+              <Text 
+                fontFamily="'Merriweather', Georgia, serif"
+                fontSize="16px"
+                fontWeight="500"
+                lineHeight="1.7"
+                color="gray.800"
+                whiteSpace="pre-wrap"
+              >
+                {message.content}
+              </Text>
             </Box>
 
-            {/* Feedback Section */}
-            {message.details?.feedback_status === 'pending' && (
+            {/* Feedback Section - Only show if feedback is required and not yet provided */}
+            {requiresFeedback && (
               <Box 
                 bg="gray.50" 
                 p={4}
@@ -1012,7 +1117,7 @@ const ChatPage = () => {
                   mb={3}
                   fontFamily="Georgia, serif"
                 >
-                  Waiting for review...
+                  Please review this understanding:
                 </Text>
                 <InlineFeedback 
                   message={message}
@@ -1021,20 +1126,40 @@ const ChatPage = () => {
               </Box>
             )}
 
-            {/* Analysis Details with improved styling */}
-            <Accordion allowToggle>
-              <AccordionItem border="none" borderTop="1px solid" borderColor="gray.200">
-                <AccordionButton py={3} _hover={{ bg: "gray.50" }}>
-                  <Box flex="1" textAlign="left">
-                    <Text fontSize="15px" color="blue.600" fontWeight="500">
-                      View Analysis Details
-                    </Text>
-                  </Box>
-                  <AccordionIcon />
-                </AccordionButton>
-                <AccordionPanel pb={4} pt={2}>
-                  <VStack align="stretch" spacing={4}>
-                    {message.details?.parsed_question && (
+            {/* Show feedback status badges */}
+            {message.details?.feedback_status === 'approved' && (
+              <Badge colorScheme="green" p={2} borderRadius="md">
+                ✓ Understanding confirmed
+              </Badge>
+            )}
+            
+            {message.details?.feedback_status === 'needs_improvement' && (
+              <Badge colorScheme="orange" p={2} borderRadius="md">
+                Clarification requested: {message.details?.feedback_comments}
+              </Badge>
+            )}
+
+            {/* Show pending status if no feedback given and in history tab */}
+            {!message.details?.feedback_status && activeTab === 'history' && (
+              <Badge colorScheme="blue" p={2} borderRadius="md">
+                ⏳ Pending Review
+              </Badge>
+            )}
+
+            {/* Analysis Details */}
+            {message.details?.parsed_question && (
+              <Accordion allowToggle width="100%">
+                <AccordionItem border="none" borderTop="1px solid" borderColor="gray.200">
+                  <AccordionButton py={3} _hover={{ bg: "gray.50" }}>
+                    <Box flex="1" textAlign="left">
+                      <Text fontSize="15px" color="blue.600" fontWeight="500">
+                        View Analysis Details
+                      </Text>
+                    </Box>
+                    <AccordionIcon />
+                  </AccordionButton>
+                  <AccordionPanel pb={4} pt={2}>
+                    <VStack align="stretch" spacing={4}>
                       <Box>
                         <Text fontWeight="bold" mb={2} color="gray.700">Business Analysis:</Text>
                         <VStack align="start" spacing={2} pl={4}>
@@ -1053,23 +1178,11 @@ const ChatPage = () => {
                           )}
                         </VStack>
                       </Box>
-                    )}
-                    {message.details?.sources && (
-                      <Box>
-                        <Text fontWeight="bold" mb={2} color="gray.700">Source Documents:</Text>
-                        <VStack align="start" spacing={3} pl={4}>
-                          {message.details.sources.results?.map((doc, idx) => (
-                            <Box key={idx} p={3} bg="gray.50" borderRadius="md" w="100%">
-                              <Text fontSize="15px">{doc.content}</Text>
-                            </Box>
-                          ))}
-                        </VStack>
-                      </Box>
-                    )}
-                  </VStack>
-                </AccordionPanel>
-              </AccordionItem>
-            </Accordion>
+                    </VStack>
+                  </AccordionPanel>
+                </AccordionItem>
+              </Accordion>
+            )}
           </VStack>
         )}
       </Box>
@@ -1096,53 +1209,90 @@ const ChatPage = () => {
         <Text color="gray.500" textAlign="center" py={4}>No conversation history</Text>
       ) : (
         <VStack align="stretch" spacing={2}>
-          {conversations.map((conv) => (
-            <Box 
-              key={conv.id}
-              p={3}
-              borderRadius="md"
-              bg={activeConversationId === conv.id ? "blue.50" : "white"}
-              borderWidth="1px"
-              borderColor={activeConversationId === conv.id ? "blue.200" : "gray.200"}
-              cursor="pointer"
-              onClick={() => handleConversationSelect(conv.id)}
-              _hover={{ bg: activeConversationId === conv.id ? "blue.50" : "gray.50" }}
-              transition="all 0.2s"
-            >
-              <HStack justify="space-between" mb={1}>
-                <Text 
-                  fontSize="sm" 
-                  color="gray.500"
-                  isTruncated
-                >
-                  {new Date(conv.timestamp).toLocaleString()}
-                </Text>
-                <Badge 
-                  colorScheme={
-                    conv.feedback_status === 'approved' ? 'green' : 
-                    conv.feedback_status === 'needs_improvement' ? 'orange' : 'blue'
-                  }
-                  fontSize="xs"
-                >
-                  {
-                    conv.feedback_status === 'approved' ? 'Approved' : 
-                    conv.feedback_status === 'needs_improvement' ? 'Needs Review' : 'Pending'
-                  }
-                </Badge>
-              </HStack>
-              <Text 
-                fontWeight="medium" 
-                isTruncated
-                color={activeConversationId === conv.id ? "blue.700" : "gray.800"}
+          {conversations
+            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)) // Sort by timestamp, newest first
+            .map((conv) => (
+              <Box 
+                key={conv.id}
+                p={3}
+                borderRadius="md"
+                bg={activeConversationId === conv.id ? "blue.50" : "white"}
+                borderWidth="1px"
+                borderColor={activeConversationId === conv.id ? "blue.200" : "gray.200"}
+                cursor="pointer"
+                onClick={() => handleConversationSelect(conv.id)}
+                _hover={{ 
+                  bg: activeConversationId === conv.id ? "blue.50" : "gray.50",
+                  borderColor: "blue.300"
+                }}
+                transition="all 0.2s"
               >
-                {conv.preview}
-              </Text>
-            </Box>
-          ))}
+                <HStack justify="space-between" mb={1}>
+                  <Text 
+                    fontSize="sm" 
+                    color="gray.500"
+                    isTruncated
+                  >
+                    {new Date(conv.timestamp).toLocaleString()}
+                  </Text>
+                  {/* Only show badge for approved or needs improvement status */}
+                  {(conv.feedback_status === 'approved' || conv.feedback_status === 'needs_improvement') && (
+                    <Badge 
+                      colorScheme={
+                        conv.feedback_status === 'approved' ? 'green' : 'orange'
+                      }
+                      fontSize="xs"
+                    >
+                      {conv.feedback_status === 'approved' ? 'Approved' : 'Needs Review'}
+                    </Badge>
+                  )}
+                </HStack>
+                <Text 
+                  fontWeight="medium" 
+                  isTruncated
+                  color={activeConversationId === conv.id ? "blue.700" : "gray.800"}
+                >
+                  {conv.preview}
+                </Text>
+              </Box>
+            ))}
         </VStack>
       )}
     </VStack>
   );
+
+  // Update the useEffect hook to prevent auto-approval when switching tabs
+  useEffect(() => {
+    if (activeTab === 'chat') {
+      // Only clear messages if there's no active conversation
+      if (!activeConversationId) {
+        setMessages([]);
+      }
+    } else if (activeTab === 'history') {
+      // Don't auto-approve, just refresh the conversation list
+      fetchConversations();
+    }
+  }, [activeTab]);
+
+  // Add clearChat function
+  const clearChat = () => {
+    // Save current conversation ID before clearing
+    const currentId = activeConversationId;
+    
+    // Clear messages and conversation ID
+    setMessages([]);
+    setActiveConversationId(null);
+    
+    // Refresh conversations to ensure it shows in history
+    fetchConversations();
+    
+    toast({
+      title: 'Chat Cleared',
+      description: 'The chat has been cleared. You can find it in the history tab.',
+      status: 'info',
+      duration: 3000
+    });
+  };
 
   return (
     <Box height="100vh" overflow="hidden">
@@ -1158,121 +1308,243 @@ const ChatPage = () => {
         </DrawerContent>
       </Drawer>
       
-      <Flex h="100%">
-        {/* Desktop sidebar */}
-        <Box 
-          w="300px" 
-          h="100%" 
-          borderRightWidth="1px" 
-          borderColor="gray.200"
-          display={{ base: "none", md: "block" }}
-          overflowY="auto"
+      <Flex h="100%" flexDirection="column">
+        {/* Tab Navigation */}
+        <Tabs 
+          isFitted 
+          variant="enclosed" 
+          colorScheme="blue" 
+          onChange={(index) => {
+            const newTab = index === 0 ? 'chat' : 'history';
+            setActiveTab(newTab);
+          }}
+          defaultIndex={activeTab === 'chat' ? 0 : 1}
         >
-          {renderConversationHistory()}
-        </Box>
-        
-        {/* Main chat area */}
-        <Box flex="1" h="100%" display="flex" flexDirection="column">
-          {/* Header with mobile menu */}
-          <Flex 
-            p={4} 
-            borderBottomWidth="1px" 
-            borderColor="gray.200" 
-            align="center"
-            bg="white"
-          >
-            <IconButton
-              icon={<IoMenu />}
-              aria-label="Open menu"
-              display={{ base: "flex", md: "none" }}
-              mr={3}
-              onClick={onOpen}
-            />
-            <Heading size="md">
-              {activeConversationId ? 'Conversation' : 'New Chat'}
-            </Heading>
-            {activeConversationId && (
-              <Button 
-                ml="auto" 
-                leftIcon={<IoAdd />} 
-                colorScheme="blue" 
-                size="sm"
-                onClick={startNewConversation}
-              >
-                New Chat
-              </Button>
-            )}
-          </Flex>
+          <TabList mb="1em">
+            <Tab>Chat</Tab>
+            <Tab>History</Tab>
+          </TabList>
           
-          {/* Messages area */}
-          <Box 
-            flex="1" 
-            overflowY="auto" 
-            p={6} 
-            bg="gray.50"
-          >
-            <VStack spacing={6} mb={8} align="stretch">
-              {messages.map((message, index) => renderMessage({ ...message, id: index }))}
-              
-              {analysisResult && renderAnalysisConfirmation()}
-              
-              {processingStep && (
-                <Box 
+          <TabPanels height="calc(100vh - 80px)">
+            {/* Chat Tab */}
+            <TabPanel p={0} height="100%">
+              <Flex h="100%" direction="column">
+                {/* Header with mobile menu */}
+                <Flex 
                   p={4} 
-                  bg="blue.50" 
-                  borderRadius="md" 
-                  width={["98%", "95%", "90%"]}
-                  alignSelf="flex-start"
-                  boxShadow="0 2px 8px rgba(0, 0, 0, 0.05)"
-                  borderWidth="1px"
-                  borderColor="blue.100"
+                  borderBottomWidth="1px" 
+                  borderColor="gray.200" 
+                  align="center"
+                  justify="space-between"
+                  bg="white"
                 >
                   <HStack>
-                    <Box as={IoAnalytics} color="blue.500" boxSize={5} mr={2} />
-                    <Text fontWeight="500" color="blue.700">{processingStep}</Text>
+                    <IconButton
+                      icon={<IoMenu />}
+                      aria-label="Open menu"
+                      display={{ base: "flex", md: "none" }}
+                      mr={3}
+                      onClick={onOpen}
+                    />
+                    <Heading size="md">New Chat</Heading>
                   </HStack>
-                  <Progress size="xs" colorScheme="blue" isIndeterminate mt={3} />
+                  
+                  <Button
+                    leftIcon={<IoClose />}
+                    variant="ghost"
+                    colorScheme="blue"
+                    size="sm"
+                    onClick={clearChat}
+                    isDisabled={messages.length === 0}
+                  >
+                    Clear Chat
+                  </Button>
+                </Flex>
+                
+                {/* Input area at the top */}
+                <Box 
+                  p={4} 
+                  borderBottomWidth="1px" 
+                  borderColor="gray.200"
+                  bg="white"
+                >
+                  <HStack>
+                    <Input
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      placeholder="Ask about database schemas, data models, or SQL queries..."
+                      onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                      disabled={loading}
+                      size="lg"
+                      py={6}
+                      borderRadius="md"
+                      _focus={{
+                        borderColor: "blue.400",
+                        boxShadow: "0 0 0 1px blue.400"
+                      }}
+                    />
+                    <Button 
+                      onClick={sendMessage} 
+                      isLoading={loading}
+                      colorScheme="blue"
+                      size="lg"
+                      px={8}
+                      height="56px"
+                    >
+                      Send
+                    </Button>
+                  </HStack>
                 </Box>
-              )}
-              <div ref={messagesEndRef} />
-            </VStack>
-          </Box>
-          
-          {/* Input area */}
-          <Box 
-            p={4} 
-            borderTopWidth="1px" 
-            borderColor="gray.200"
-            bg="white"
-          >
-            <HStack>
-              <Input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask about database schemas, data models, or SQL queries..."
-                onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                disabled={loading}
-                size="lg"
-                py={6}
-                borderRadius="md"
-                _focus={{
-                  borderColor: "blue.400",
-                  boxShadow: "0 0 0 1px blue.400"
-                }}
-              />
-              <Button 
-                onClick={sendMessage} 
-                isLoading={loading}
-                colorScheme="blue"
-                size="lg"
-                px={8}
-                height="56px"
-              >
-                Send
-              </Button>
-            </HStack>
-          </Box>
-        </Box>
+                
+                {/* Messages area below input */}
+                <Box 
+                  flex="1" 
+                  overflowY="auto" 
+                  p={6} 
+                  bg="gray.50"
+                >
+                  <VStack spacing={6} mb={8} align="stretch">
+                    {messages.map((message, index) => renderMessage({ ...message, id: index }))}
+                    
+                    {analysisResult && renderAnalysisConfirmation()}
+                    
+                    {processingStep && (
+                      <Box 
+                        p={4} 
+                        bg="blue.50" 
+                        borderRadius="md" 
+                        width={["98%", "95%", "90%"]}
+                        alignSelf="flex-start"
+                        boxShadow="0 2px 8px rgba(0, 0, 0, 0.05)"
+                        borderWidth="1px"
+                        borderColor="blue.100"
+                      >
+                        <HStack>
+                          <Box as={IoAnalytics} color="blue.500" boxSize={5} mr={2} />
+                          <Text fontWeight="500" color="blue.700">{processingStep}</Text>
+                        </HStack>
+                        <Progress size="xs" colorScheme="blue" isIndeterminate mt={3} />
+                      </Box>
+                    )}
+                    <div ref={messagesEndRef} />
+                  </VStack>
+                </Box>
+              </Flex>
+            </TabPanel>
+            
+            {/* History Tab */}
+            <TabPanel p={0} height="100%">
+              <Flex h="100%" direction={{ base: "column", lg: "row" }}>
+                {/* Conversation List */}
+                <Box 
+                  width={{ base: "100%", lg: "350px" }} 
+                  p={4} 
+                  borderRightWidth={{ base: 0, lg: "1px" }}
+                  borderBottomWidth={{ base: "1px", lg: 0 }}
+                  borderColor="gray.200"
+                  overflowY="auto"
+                  height={{ base: "auto", lg: "100%" }}
+                >
+                  <Flex justify="space-between" align="center" mb={4}>
+                    <Heading size="md">Chat History</Heading>
+                    <Button 
+                      leftIcon={<IoAdd />} 
+                      colorScheme="blue" 
+                      size="sm"
+                      onClick={() => {
+                        startNewConversation();
+                        setActiveTab('chat');
+                      }}
+                    >
+                      New Chat
+                    </Button>
+                  </Flex>
+                  
+                  {isHistoryLoading ? (
+                    <Progress size="xs" isIndeterminate colorScheme="blue" />
+                  ) : conversations.length === 0 ? (
+                    <Text color="gray.500" textAlign="center" py={4}>No conversation history</Text>
+                  ) : (
+                    <VStack spacing={3} align="stretch">
+                      {conversations.map((conv) => (
+                        <Box 
+                          key={conv.id}
+                          p={3}
+                          borderRadius="md"
+                          bg={activeConversationId === conv.id ? "blue.50" : "white"}
+                          borderWidth="1px"
+                          borderColor={activeConversationId === conv.id ? "blue.200" : "gray.200"}
+                          cursor="pointer"
+                          onClick={() => fetchConversation(conv.id)}
+                          _hover={{ 
+                            bg: activeConversationId === conv.id ? "blue.50" : "gray.50",
+                            borderColor: "blue.300"
+                          }}
+                          transition="all 0.2s"
+                        >
+                          <HStack justify="space-between" mb={1}>
+                            <Text 
+                              fontSize="sm" 
+                              color="gray.500"
+                              isTruncated
+                            >
+                              {new Date(conv.timestamp).toLocaleString()}
+                            </Text>
+                            {/* Only show badge for approved or needs improvement status */}
+                            {(conv.feedback_status === 'approved' || conv.feedback_status === 'needs_improvement') && (
+                              <Badge 
+                                colorScheme={
+                                  conv.feedback_status === 'approved' ? 'green' : 'orange'
+                                }
+                                fontSize="xs"
+                              >
+                                {conv.feedback_status === 'approved' ? 'Approved' : 'Needs Review'}
+                              </Badge>
+                            )}
+                          </HStack>
+                          <Text 
+                            fontWeight="medium" 
+                            isTruncated
+                            color={activeConversationId === conv.id ? "blue.700" : "gray.800"}
+                          >
+                            {conv.preview}
+                          </Text>
+                        </Box>
+                      ))}
+                    </VStack>
+                  )}
+                </Box>
+                
+                {/* Selected Conversation Content */}
+                <Box 
+                  flex="1" 
+                  p={4} 
+                  overflowY="auto"
+                  height="100%"
+                  bg="gray.50"
+                >
+                  {activeConversationId ? (
+                    <VStack spacing={6} align="stretch">
+                      {messages.map((message, index) => renderMessage({ ...message, id: index }))}
+                      <div ref={messagesEndRef} />
+                    </VStack>
+                  ) : (
+                    <Flex 
+                      height="100%" 
+                      align="center" 
+                      justify="center" 
+                      direction="column"
+                      color="gray.500"
+                    >
+                      <Box as={IoDocumentText} size="50px" mb={4} />
+                      <Text fontSize="lg">Select a conversation from the list to view</Text>
+                    </Flex>
+                  )}
+                </Box>
+              </Flex>
+            </TabPanel>
+          </TabPanels>
+        </Tabs>
       </Flex>
     </Box>
   )

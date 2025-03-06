@@ -58,7 +58,8 @@ code_search_tools = SearchTools(db_manager)
 question_parser_system = QuestionParserSystem(tools=code_search_tools)
 feedback_system = HumanFeedbackSystem()
 chat_db = ChatDatabase()
-chat_db.ensure_feedback_columns()  # Add this line to ensure columns exist
+chat_db.ensure_feedback_columns()
+chat_db.ensure_cleared_column()
 
 # Initialize tools and analysis system
 analysis_system = SimpleAnalysisSystem(code_search_tools)
@@ -914,10 +915,11 @@ async def get_conversation_details(conversation_id: str):
 async def get_conversations(limit: int = 10, offset: int = 0):
     """Get a list of recent conversations"""
     try:
-        # Get recent conversations
-        conversations = chat_db.get_recent_conversations(limit=limit)
+        db = ChatDatabase()
+        # Use get_recent_conversations instead of direct execute
+        conversations = db.get_recent_conversations(limit=limit)
         
-        # Format the response
+        # Format conversations
         formatted_conversations = []
         for conv in conversations:
             # Extract a preview of the conversation
@@ -929,11 +931,14 @@ async def get_conversations(limit: int = 10, offset: int = 0):
                 "id": conv.get("id", ""),
                 "timestamp": conv.get("created_at", ""),
                 "preview": query_preview,
-                "feedback_status": conv.get("feedback_status", "pending"),  # Default to 'pending' if not found
-                "has_response": bool(conv.get("output"))
+                "feedback_status": conv.get("feedback_status", "pending"),
+                "has_response": bool(conv.get("output")),
+                "cleared": conv.get("cleared", False)  # Add cleared status
             }
             
-            formatted_conversations.append(formatted_conv)
+            # Only include non-cleared conversations
+            if not formatted_conv["cleared"]:
+                formatted_conversations.append(formatted_conv)
         
         return JSONResponse(
             content={
@@ -944,16 +949,28 @@ async def get_conversations(limit: int = 10, offset: int = 0):
         )
     except Exception as e:
         logger.error(f"Error getting conversations: {e}")
-        # Return empty list instead of error to avoid breaking the UI
         return JSONResponse(
-            content={
-                "status": "success",
-                "conversations": [],
-                "total": 0,
-                "error": str(e)
-            },
-            status_code=200  # Return 200 even with error to avoid breaking UI
+            content={"status": "error", "message": str(e)},
+            status_code=500
         )
+
+@app.post("/api/conversation/{conversation_id}/clear")
+async def clear_conversation(conversation_id: str):
+    """Mark a conversation as cleared"""
+    try:
+        db = ChatDatabase()
+        # Use the connection properly
+        with db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE conversations SET cleared = TRUE WHERE id = ?",
+                (conversation_id,)
+            )
+            conn.commit()
+        return JSONResponse({"status": "success"})
+    except Exception as e:
+        logger.error(f"Error clearing conversation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/history", response_class=HTMLResponse)
 async def conversation_history(request: Request):
