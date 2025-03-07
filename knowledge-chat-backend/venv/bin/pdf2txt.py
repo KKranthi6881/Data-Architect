@@ -1,4 +1,4 @@
-#!/Users/Kranthi/Data-Architect/knowledge-chat-backend/venv/bin/python3
+#!/Users/Kranthi/projects/Data-Architect/knowledge-chat-backend/venv/bin/python3
 """A command line tool for extracting text and images from PDF and
 output it to plain text, html, xml or tags."""
 import argparse

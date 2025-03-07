@@ -12,6 +12,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 from src.db.database import ChatDatabase
+from src.agents.github_search.code_search_agent import GitHubCodeSearchAgent
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -70,6 +71,17 @@ class HumanFeedbackSystem:
                 if approved:
                     feedback_result["final_analysis"] = original_analysis
                     feedback_status = "approved"
+                    
+                    # Trigger GitHub code search for approved feedback
+                    if conversation_id:
+                        search_results = await self.process_approved_feedback(
+                            feedback_id=feedback_id,
+                            conversation_id=conversation_id,
+                            parsed_question=original_analysis
+                        )
+                        
+                        if search_results:
+                            feedback_result["github_search_results"] = search_results
                 else:
                     # Store feedback for improvement
                     feedback_result["needs_improvement"] = True
@@ -436,3 +448,66 @@ class HumanFeedbackSystem:
                 del self.feedback_callbacks[conversation_id]
             if conversation_id in self.pending_feedback:
                 del self.pending_feedback[conversation_id] 
+
+    async def process_approved_feedback(self, feedback_id: str, conversation_id: str, parsed_question: Dict[str, Any]):
+        """Process approved feedback by triggering GitHub code search"""
+        try:
+            self.logger.info(f"Processing approved feedback for ID: {feedback_id}")
+            
+            # Get thread_id from conversation
+            conversation = self.db.get_conversation(conversation_id)
+            thread_id = conversation.get("thread_id") if conversation else None
+            
+            if not thread_id:
+                self.logger.warning(f"No thread_id found for conversation {conversation_id}")
+                return None
+            
+            # Initialize GitHub code search agent
+            code_search_agent = GitHubCodeSearchAgent()
+            
+            # Search for relevant code
+            search_results = code_search_agent.search_code(parsed_question)
+            
+            # Save search results
+            if search_results:
+                code_search_agent.save_search_results(
+                    thread_id=thread_id,
+                    conversation_id=conversation_id,
+                    parsed_question=parsed_question,
+                    search_results=search_results
+                )
+                
+                # Update conversation with search results
+                if conversation:
+                    # Get existing technical details
+                    technical_details = {}
+                    if conversation.get("technical_details"):
+                        try:
+                            if isinstance(conversation["technical_details"], str):
+                                technical_details = json.loads(conversation["technical_details"])
+                            else:
+                                technical_details = conversation["technical_details"]
+                        except json.JSONDecodeError:
+                            technical_details = {}
+                    
+                    # Add search results to technical details
+                    technical_details["github_search_results"] = search_results
+                    
+                    # Update conversation
+                    conversation_data = {
+                        "query": conversation.get("query", ""),
+                        "output": conversation.get("output", ""),
+                        "technical_details": json.dumps(technical_details),
+                        "code_context": conversation.get("code_context", "{}"),
+                        "feedback_status": "approved",
+                        "thread_id": thread_id
+                    }
+                    
+                    # Save back to database
+                    self.db.save_conversation(conversation_id, conversation_data)
+            
+            return search_results
+            
+        except Exception as e:
+            self.logger.error(f"Error processing approved feedback: {e}", exc_info=True)
+            return None

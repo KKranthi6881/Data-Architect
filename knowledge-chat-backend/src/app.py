@@ -320,7 +320,7 @@ async def chat(request: ChatRequest):
     try:
         logger.info(f"Processing chat request: {request.message}")
         conversation_id = request.conversation_id or str(uuid.uuid4())
-        thread_id = request.thread_id
+        thread_id = request.thread_id or conversation_id  # Default to conversation_id if thread_id not provided
         feedback_id = str(uuid.uuid4())
         
         # Get business analysis with thread_id support
@@ -350,16 +350,23 @@ Key Points:
             "query": request.message,
             "output": response_text,
             "technical_details": json.dumps(result),
-            "code_context": json.dumps(request.context) if request.context else "{}"
+            "code_context": json.dumps(request.context) if request.context else "{}",
+            "thread_id": thread_id  # Always include thread_id
         }
         chat_db.save_conversation(conversation_id, conversation_data)
         
         # If wait_for_feedback is true, wait for feedback before responding
         feedback_status = "pending"
+        github_search_results = []
+        
         if request.wait_for_feedback:
             try:
                 feedback = await feedback_system.wait_for_feedback(feedback_id)
                 feedback_status = "approved" if feedback.get("approved", False) else "needs_improvement"
+                
+                # Get GitHub search results if available
+                if feedback.get("approved", False) and "github_search_results" in feedback:
+                    github_search_results = feedback["github_search_results"]
                 
                 # If feedback indicates changes needed, update the response
                 if not feedback.get("approved", False):
@@ -376,16 +383,33 @@ Key Points:
         else:
             feedback_status = "pending"
 
+        # Get technical details with GitHub search results if available
+        technical_details = {}
+        conversation = chat_db.get_conversation(conversation_id)
+        if conversation and conversation.get("technical_details"):
+            try:
+                if isinstance(conversation["technical_details"], str):
+                    technical_details = json.loads(conversation["technical_details"])
+                else:
+                    technical_details = conversation["technical_details"]
+                    
+                # Extract GitHub search results if available
+                if "github_search_results" in technical_details:
+                    github_search_results = technical_details["github_search_results"]
+            except json.JSONDecodeError:
+                pass
+
         return JSONResponse(
             content={
                 "answer": response_text,
                 "conversation_id": conversation_id,
-                "thread_id": thread_id,  # Include thread_id in response
+                "thread_id": thread_id,
                 "feedback_id": feedback_id,
                 "parsed_question": result,
                 "requires_confirmation": True,
                 "feedback_status": feedback_status,
                 "confidence_score": result.get("confidence_score", 0.0),
+                "github_search_results": github_search_results,  # Include GitHub search results
                 "details": result
             },
             status_code=200
@@ -394,6 +418,7 @@ Key Points:
     except Exception as e:
         logger.error(f"Error in chat endpoint: {e}", exc_info=True)
         error_conversation_id = request.conversation_id or str(uuid.uuid4())
+        error_thread_id = request.thread_id or error_conversation_id  # Default to conversation_id
         
         # Save error to conversation table
         error_message = f"I apologize, but I encountered an error analyzing your question: {str(e)}"
@@ -401,7 +426,8 @@ Key Points:
             "query": request.message if hasattr(request, 'message') else "Unknown query",
             "output": error_message,
             "technical_details": json.dumps({"error": str(e)}),
-            "code_context": "{}"
+            "code_context": "{}",
+            "thread_id": error_thread_id  # Always include thread_id
         }
         chat_db.save_conversation(error_conversation_id, error_data)
         
@@ -410,6 +436,7 @@ Key Points:
                 "answer": "I apologize, but I encountered an error analyzing your question. Could you please rephrase it?",
                 "error": str(e),
                 "conversation_id": error_conversation_id,
+                "thread_id": error_thread_id,  # Include thread_id in response
                 "requires_confirmation": False
             },
             status_code=200

@@ -1301,15 +1301,19 @@ const ChatPage = () => {
   // Update the useEffect hook to prevent auto-approval when switching tabs
   useEffect(() => {
     if (activeTab === 'chat') {
-      // Only clear messages if there's no active conversation
-      if (!activeConversationId) {
-        setMessages([]);
-      }
+      // Clear messages and reset conversation when switching to chat tab
+      setMessages([]);
+      setActiveConversationId(null);
+      setCurrentConversationId(null);
+      setCurrentThreadId(null);
+      
+      // Update URL to /chat without thread ID
+      navigate('/chat', { replace: true });
     } else if (activeTab === 'history') {
       // Don't auto-approve, just refresh the conversation list
       fetchConversations();
     }
-  }, [activeTab]);
+  }, [activeTab, navigate]);
 
   // Add clearChat function
   const clearChat = () => {
@@ -1356,6 +1360,11 @@ const ChatPage = () => {
           onChange={(index) => {
             const newTab = index === 0 ? 'chat' : 'history';
             setActiveTab(newTab);
+            
+            // If switching to chat tab, navigate to /chat
+            if (newTab === 'chat') {
+              navigate('/chat', { replace: true });
+            }
           }}
           defaultIndex={activeTab === 'chat' ? 0 : 1}
         >

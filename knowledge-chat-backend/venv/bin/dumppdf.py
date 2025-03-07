@@ -1,4 +1,4 @@
-#!/Users/Kranthi/Data-Architect/knowledge-chat-backend/venv/bin/python3
+#!/Users/Kranthi/projects/Data-Architect/knowledge-chat-backend/venv/bin/python3
 """Extract pdf structure in XML format"""
 import logging
 import os.path

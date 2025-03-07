@@ -14,21 +14,37 @@ class ChatDatabase:
     def _init_db(self):
         """Initialize database tables"""
         with sqlite3.connect(self.db_path) as conn:
-            # Create conversations table with thread_id as a required field
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS conversations (
-                    id TEXT PRIMARY KEY,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    query TEXT,
-                    output TEXT,
-                    code_context TEXT,
-                    technical_details TEXT,
-                    feedback_status TEXT,
-                    feedback_comments TEXT,
-                    thread_id TEXT NOT NULL, -- Make thread_id required (using SQL comment style)
-                    cleared BOOLEAN DEFAULT 0
-                )
-            """)
+            # Check if conversations table exists
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'")
+            table_exists = cursor.fetchone() is not None
+            
+            if not table_exists:
+                # Create conversations table with thread_id as a required field
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        id TEXT PRIMARY KEY,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        query TEXT,
+                        output TEXT,
+                        code_context TEXT,
+                        technical_details TEXT,
+                        feedback_status TEXT,
+                        feedback_comments TEXT,
+                        thread_id TEXT NOT NULL,
+                        cleared BOOLEAN DEFAULT 0
+                    )
+                """)
+            else:
+                # Check if thread_id column exists
+                cursor.execute("PRAGMA table_info(conversations)")
+                columns = [column[1] for column in cursor.fetchall()]
+                
+                # If thread_id doesn't exist, add it with a default value
+                if "thread_id" not in columns:
+                    conn.execute("ALTER TABLE conversations ADD COLUMN thread_id TEXT")
+                    # Update existing rows to use id as thread_id
+                    conn.execute("UPDATE conversations SET thread_id = id WHERE thread_id IS NULL")
             
             # Create checkpoints table
             conn.execute("""
@@ -93,11 +109,12 @@ class ChatDatabase:
                 datetime.now()
             ]
             
-            # Add thread_id if it exists in the schema and data
-            if "thread_id" in columns and "thread_id" in data:
+            # Add thread_id if it exists in the schema
+            if "thread_id" in columns:
                 fields.append("thread_id")
                 values.append("?")
-                params.append(data.get('thread_id'))
+                # If thread_id is not in data, use conversation_id as the thread_id
+                params.append(data.get('thread_id', conversation_id))
             
             # Add feedback fields if they exist in the data
             if "feedback_status" in columns and "feedback_status" in data:
