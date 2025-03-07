@@ -586,6 +586,10 @@ const ChatPage = () => {
   const { conversationId } = useParams();
   const messagesEndRef = useRef(null);
   const [activeTab, setActiveTab] = useState('chat');
+  const [currentConversationId, setCurrentConversationId] = useState(conversationId || null);
+  const [currentThreadId, setCurrentThreadId] = useState(null);
+  const [feedbackRequired, setFeedbackRequired] = useState(false);
+  const [feedbackData, setFeedbackData] = useState(null);
 
   // Add this to the top of the component
   useEffect(() => {
@@ -666,6 +670,11 @@ const ChatPage = () => {
         
         // Update URL without reloading
         navigate(`/chat/${id}`, { replace: true });
+        
+        // Set thread ID if available in the history
+        if (conversation.thread_id) {
+          setCurrentThreadId(conversation.thread_id);
+        }
       }
     } catch (error) {
       console.error('Error fetching conversation:', error);
@@ -703,6 +712,10 @@ const ChatPage = () => {
   const startNewConversation = () => {
     setMessages([]);
     setActiveConversationId(null);
+    setCurrentConversationId(null);
+    setCurrentThreadId(null);
+    setFeedbackRequired(false);
+    setFeedbackData(null);
     navigate('/chat', { replace: true });
   };
 
@@ -830,7 +843,8 @@ const ChatPage = () => {
         },
         body: JSON.stringify({
           message: userMessage,
-          conversation_id: activeConversationId || null
+          conversation_id: currentConversationId || null,
+          thread_id: currentThreadId
         })
       });
 
@@ -839,7 +853,7 @@ const ChatPage = () => {
 
       // Make sure we have a conversation ID
       if (data.conversation_id) {
-        setActiveConversationId(data.conversation_id);
+        setCurrentConversationId(data.conversation_id);
       }
 
       // Add assistant response with all required fields
@@ -851,12 +865,18 @@ const ChatPage = () => {
           conversation_id: data.conversation_id,
           feedback_id: data.feedback_id || data.conversation_id, // Use conversation_id as fallback
           feedback_status: 'pending',
-          requires_confirmation: true // Always show feedback options for new messages
+          requires_confirmation: true, // Always show feedback options for new messages
+          thread_id: data.thread_id
         }
       };
       
       console.log("Adding assistant message with details:", assistantMessage.details);
       setMessages(prev => [...prev, assistantMessage]);
+
+      // Set thread ID from response
+      if (data.thread_id) {
+        setCurrentThreadId(data.thread_id);
+      }
 
     } catch (error) {
       console.error('Error:', error);
@@ -900,6 +920,14 @@ const ChatPage = () => {
         throw new Error(`Failed to submit feedback: ${errorText}`);
       }
       
+      const responseData = await response.json();
+      console.log("Feedback response:", responseData);
+      
+      // Preserve thread ID from response
+      if (responseData.thread_id) {
+        setCurrentThreadId(responseData.thread_id);
+      }
+      
       // Update UI based on feedback result
       if (feedback.approved) {
         // Update the message to show it's approved and hide feedback buttons
@@ -910,7 +938,8 @@ const ChatPage = () => {
                 details: {
                   ...msg.details,
                   feedback_status: 'approved',
-                  requires_confirmation: false  // This will hide the feedback buttons
+                  requires_confirmation: false,
+                  thread_id: responseData.thread_id || msg.details.thread_id // Preserve thread ID
                 }
               }
             : msg
@@ -939,7 +968,8 @@ const ChatPage = () => {
                   ...msg.details,
                   feedback_status: 'needs_improvement',
                   feedback_comments: feedback.comments,
-                  requires_confirmation: false
+                  requires_confirmation: false,
+                  thread_id: responseData.thread_id || msg.details.thread_id // Preserve thread ID
                 }
               }
             : msg
@@ -948,7 +978,8 @@ const ChatPage = () => {
         // Send a follow-up request to get an improved response
         const followUpPayload = {
           message: feedback.comments || "Please improve this response",
-          conversation_id: feedback.conversation_id,
+          conversation_id: responseData.follow_up_id || null, // Use follow-up ID if provided
+          thread_id: responseData.thread_id || currentThreadId, // Use thread ID from response
           feedback: {
             approved: false,
             comments: feedback.comments,
@@ -982,15 +1013,21 @@ const ChatPage = () => {
             content: followUpData.answer,
             details: {
               ...followUpData,
-              conversation_id: feedback.conversation_id,
+              conversation_id: followUpData.conversation_id,
               feedback_id: followUpData.feedback_id || followUpData.conversation_id,
               feedback_status: 'pending',
-              requires_confirmation: true
+              requires_confirmation: true,
+              thread_id: followUpData.thread_id || responseData.thread_id || currentThreadId // Preserve thread ID
             }
           };
           
           console.log("Adding new assistant message:", assistantMessage);
           setMessages(prev => [...prev, assistantMessage]);
+          
+          // Update current conversation ID to the new one
+          if (followUpData.conversation_id) {
+            setCurrentConversationId(followUpData.conversation_id);
+          }
         }
         
         toast({
@@ -1282,6 +1319,8 @@ const ChatPage = () => {
     // Clear messages and conversation ID
     setMessages([]);
     setActiveConversationId(null);
+    setCurrentConversationId(null);
+    setCurrentThreadId(null);
     
     // Refresh conversations to ensure it shows in history
     fetchConversations();

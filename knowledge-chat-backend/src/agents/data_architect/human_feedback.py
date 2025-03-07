@@ -59,6 +59,14 @@ class HumanFeedbackSystem:
                 original_analysis = self.pending_feedback[feedback_id].get("business_analysis", {})
                 conversation_id = self.pending_feedback[feedback_id].get("conversation_id")
                 
+                # Get thread ID from the conversation if available
+                thread_id = None
+                if conversation_id:
+                    conversation = self.db.get_conversation(conversation_id)
+                    if conversation:
+                        thread_id = conversation.get("thread_id")
+                        feedback_result["thread_id"] = thread_id
+                
                 if approved:
                     feedback_result["final_analysis"] = original_analysis
                     feedback_status = "approved"
@@ -81,7 +89,8 @@ class HumanFeedbackSystem:
                                 "technical_details": conversation.get('technical_details', ''),
                                 "code_context": conversation.get('code_context', ''),
                                 "feedback_status": feedback_status,
-                                "feedback_comments": comments
+                                "feedback_comments": comments,
+                                "thread_id": thread_id  # Preserve thread ID
                             }
                             # Save back to database
                             self.db.save_conversation(conversation_id, conversation_data)

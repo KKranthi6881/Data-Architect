@@ -12,6 +12,7 @@ import logging
 from sqlite3 import connect
 from threading import Lock
 import json
+from datetime import datetime
 
 from src.tools import SearchTools
 from src.db.database import ChatDatabase
@@ -37,6 +38,7 @@ DEFAULT_ANALYSIS = {
 class ParserState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], "Conversation messages"]
     doc_context: Annotated[Dict, "Documentation context"]
+    sql_context: Annotated[Dict, "SQL schema context"]
     business_analysis: Annotated[Dict, "Business analysis results"]
     feedback_status: Annotated[str, "Current status"]
     confidence_score: Annotated[float, "Confidence in analysis"]
@@ -69,16 +71,20 @@ USER QUESTION:
 {question}
 
 BUSINESS DOCUMENTATION:
-{context}
+{doc_context}
+
+SQL SCHEMA INFORMATION:
+{sql_context}
 
 TASK:
-Analyze this question using our business documentation and provide a structured understanding.
+Analyze this question using our business documentation and SQL schema information to provide a structured understanding.
 
 GUIDELINES:
 - Focus on business objectives and requirements
-- Only reference information found in our documentation
+- Only reference information found in our documentation and schema
 - Identify any missing business context
 - Keep technical details for later analysis
+- Use SQL schema information to better understand data relationships
 
 IMPORTANT: Your response must be a valid JSON object with the following structure (no markdown, no explanations, just the JSON):
 {{
@@ -106,7 +112,7 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
 
     prompt = PromptTemplate(
         template=template,
-        input_variables=["question", "context"]
+        input_variables=["question", "doc_context", "sql_context"]
     )
 
     def process_question(state: ParserState) -> Dict:
@@ -114,18 +120,26 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
         try:
             messages = state['messages']
             question = messages[-1].content if messages else ""
-            context = state.get('doc_context', {})
+            doc_context = state.get('doc_context', {})
+            sql_context = state.get('sql_context', {})
             
-            # Format context
-            formatted_context = "\n".join([
+            # Format documentation context
+            formatted_doc_context = "\n".join([
                 f"[{doc.get('type', 'Doc')}]\n{doc.get('content', '')}\n---"
-                for doc in context.get('results', [])
+                for doc in doc_context.get('results', [])
+            ])
+            
+            # Format SQL schema context
+            formatted_sql_context = "\n".join([
+                f"[{sql.get('type', 'SQL')}]\n{sql.get('content', '')}\n---"
+                for sql in sql_context.get('results', [])
             ])
             
             # Generate analysis
             formatted_prompt = prompt.format(
                 question=question,
-                context=formatted_context
+                doc_context=formatted_doc_context,
+                sql_context=formatted_sql_context
             )
             response = llm.invoke(formatted_prompt)
             
@@ -262,40 +276,74 @@ class QuestionParserSystem:
         self.tools = tools
         self.db = ChatDatabase()
         self._lock = Lock()
+        self.active_threads = {}  # Store active thread information
 
-    async def parse_question(self, question: str) -> Dict[str, Any]:
+    async def parse_question(self, question: str, thread_id: str = None, conversation_id: str = None) -> Dict[str, Any]:
         """Process a question through the parser system"""
         try:
-            # Generate unique ID
-            conversation_id = str(uuid.uuid4())
+            # Generate unique IDs if not provided
+            if not thread_id:
+                thread_id = str(uuid.uuid4())
+            
+            if not conversation_id:
+                conversation_id = str(uuid.uuid4())
+            else:
+                # If conversation_id is provided but no thread_id, use it as thread_id too
+                if not thread_id:
+                    thread_id = conversation_id
+            
+            # Store the relationship between conversation and thread
+            self.active_threads[conversation_id] = {
+                "thread_id": thread_id,
+                "timestamp": datetime.now().isoformat(),
+                "status": "active"
+            }
             
             # Get documentation context
             doc_results = self.tools.search_documentation(question)
+            
+            # Get SQL schema context
+            sql_results = {}
+            try:
+                sql_results = self.tools.search_sql_schema(question)
+            except Exception as sql_error:
+                logger.warning(f"Error searching SQL schema: {sql_error}. Continuing with documentation only.")
+                # Create empty results if SQL search fails
+                sql_results = {"results": []}
             
             with self._lock:
                 result = self.app.invoke(
                     {
                         "messages": [HumanMessage(content=question)],
                         "doc_context": doc_results,
+                        "sql_context": sql_results,
                         "business_analysis": {},
                         "feedback_status": None,
                         "confidence_score": 0.0
                     },
-                    {"configurable": {"thread_id": conversation_id}}
+                    {"configurable": {"thread_id": thread_id}}
                 )
             
-            # Save conversation to database - similar to code_research.py
+            # Save conversation to database
             business_analysis = result.get("business_analysis", {})
             response_data = {
                 "query": question,
                 "output": business_analysis.get("rephrased_question", "No response available"),
                 "technical_details": json.dumps(business_analysis),
-                "code_context": json.dumps(doc_results)
+                "code_context": json.dumps({
+                    "documentation": doc_results,
+                    "sql_schema": sql_results
+                }),
+                "thread_id": thread_id  # Store thread_id in the conversation data
             }
             
             # Save to database using the conversations table
             with self._lock:
                 self.db.save_conversation(conversation_id, response_data)
+            
+            # Add thread_id to the returned business analysis
+            business_analysis["thread_id"] = thread_id
+            business_analysis["conversation_id"] = conversation_id
             
             return business_analysis
             
@@ -313,19 +361,30 @@ class QuestionParserSystem:
                 },
                 "assumptions": ["Please try again"],
                 "clarifying_questions": ["Could you rephrase your question?"],
-                "confidence_score": 0.0
+                "confidence_score": 0.0,
+                "thread_id": thread_id if thread_id else str(uuid.uuid4()),
+                "conversation_id": conversation_id if conversation_id else str(uuid.uuid4())
             })
             
             # Save error to database using conversations table
-            error_conversation_id = str(uuid.uuid4())
+            error_conversation_id = conversation_id if conversation_id else str(uuid.uuid4())
             error_response = {
                 "query": question,
                 "output": "Error analyzing question",
                 "technical_details": json.dumps(error_analysis),
-                "code_context": "{}"
+                "code_context": "{}",
+                "thread_id": thread_id if thread_id else str(uuid.uuid4())
             }
             
             with self._lock:
                 self.db.save_conversation(error_conversation_id, error_response)
                 
             return error_analysis
+
+    def get_thread_conversations(self, thread_id: str) -> List[Dict]:
+        """Get all conversations associated with a thread"""
+        try:
+            return self.db.get_conversations_by_thread(thread_id)
+        except Exception as e:
+            logger.error(f"Error getting thread conversations: {e}")
+            return []

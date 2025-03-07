@@ -1,109 +1,66 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   Modal,
   ModalOverlay,
   ModalContent,
   ModalHeader,
-  ModalBody,
   ModalFooter,
+  ModalBody,
+  ModalCloseButton,
   Button,
-  VStack,
-  Text,
-  Textarea,
-  Switch,
   FormControl,
   FormLabel,
-  useToast
+  Textarea,
+  Text,
+  Box,
+  VStack
 } from '@chakra-ui/react';
 
-const FeedbackDialog = ({ isOpen, onClose, message, onFeedbackSubmit }) => {
-  const [approved, setApproved] = useState(false);
+const FeedbackDialog = ({ isOpen, onClose, onSubmit, message }) => {
   const [comments, setComments] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const toast = useToast();
-
-  const handleSubmit = async () => {
-    try {
-      setIsSubmitting(true);
-      await onFeedbackSubmit({
-        conversation_id: message.details.conversation_id,
-        approved,
-        comments,
-        suggested_changes: null
-      });
-    } catch (error) {
-      toast({
-        title: 'Error submitting feedback',
-        description: error.message,
-        status: 'error',
-        duration: 5000,
-        isClosable: true,
-      });
-    } finally {
-      setIsSubmitting(false);
-    }
+  
+  const handleSubmit = () => {
+    onSubmit({
+      approved: false,
+      feedback_id: message?.details?.feedback_id,
+      conversation_id: message?.details?.conversation_id,
+      comments: comments
+    });
+    onClose();
   };
-
-  // Reset state when dialog opens
-  useEffect(() => {
-    if (isOpen) {
-      setApproved(false);
-      setComments('');
-    }
-  }, [isOpen]);
-
+  
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="xl">
+    <Modal isOpen={isOpen} onClose={onClose} size="lg">
       <ModalOverlay />
       <ModalContent>
-        <ModalHeader>Review Response</ModalHeader>
+        <ModalHeader>Provide Feedback</ModalHeader>
+        <ModalCloseButton />
         <ModalBody>
           <VStack spacing={4} align="stretch">
-            <Text fontWeight="bold">Original Question:</Text>
-            <Text>{message?.details?.parsed_question?.original_question}</Text>
-            
-            <Text fontWeight="bold">Interpretation:</Text>
-            <Text>{message?.details?.parsed_question?.rephrased_question}</Text>
-            
-            <Text fontWeight="bold">Business Context:</Text>
-            <Text>
-              Domain: {message?.details?.analysis?.business_context?.domain}
-              <br />
-              Focus: {message?.details?.analysis?.business_context?.primary_objective}
-            </Text>
+            <Box>
+              <Text fontWeight="bold">Current Understanding:</Text>
+              <Box p={3} bg="gray.100" borderRadius="md" mt={2}>
+                <Text>{message?.content}</Text>
+              </Box>
+            </Box>
             
             <FormControl>
-              <FormLabel>Approve this response?</FormLabel>
-              <Switch 
-                isChecked={approved} 
-                onChange={(e) => setApproved(e.target.checked)}
-              />
-            </FormControl>
-            
-            <FormControl>
-              <FormLabel>Comments or Suggestions:</FormLabel>
-              <Textarea
+              <FormLabel>What needs improvement?</FormLabel>
+              <Textarea 
                 value={comments}
                 onChange={(e) => setComments(e.target.value)}
-                placeholder="Enter any feedback or suggestions for improvement..."
+                placeholder="Please explain what's incorrect or missing in the understanding..."
+                rows={5}
               />
             </FormControl>
           </VStack>
         </ModalBody>
+
         <ModalFooter>
-          <Button 
-            mr={3} 
-            onClick={onClose}
-            isDisabled={isSubmitting}
-          >
+          <Button variant="ghost" mr={3} onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            colorScheme="blue"
-            onClick={handleSubmit}
-            isLoading={isSubmitting}
-            loadingText="Submitting..."
-          >
+          <Button colorScheme="blue" onClick={handleSubmit} isDisabled={!comments.trim()}>
             Submit Feedback
           </Button>
         </ModalFooter>

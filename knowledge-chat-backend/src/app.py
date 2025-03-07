@@ -80,9 +80,10 @@ class GitHubRepoRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
-    conversation_id: Optional[str] = None  # Add conversation ID support
-    context: Optional[Dict[str, Any]] = None  # Add context support
-    wait_for_feedback: bool = False  # New parameter to control feedback behavior
+    conversation_id: Optional[str] = None
+    thread_id: Optional[str] = None  # Add thread_id support
+    context: Optional[Dict[str, Any]] = None
+    wait_for_feedback: bool = False
 
 # Add FeedbackRequest model
 class FeedbackRequest(BaseModel):
@@ -319,10 +320,18 @@ async def chat(request: ChatRequest):
     try:
         logger.info(f"Processing chat request: {request.message}")
         conversation_id = request.conversation_id or str(uuid.uuid4())
+        thread_id = request.thread_id
         feedback_id = str(uuid.uuid4())
         
-        # Get business analysis
-        result = await question_parser_system.parse_question(request.message)
+        # Get business analysis with thread_id support
+        result = await question_parser_system.parse_question(
+            question=request.message,
+            thread_id=thread_id,
+            conversation_id=conversation_id
+        )
+        
+        # Extract thread_id from result
+        thread_id = result.get("thread_id", thread_id)
         
         # Add to feedback system for review with conversation_id
         feedback_system.add_feedback_request(feedback_id, result, conversation_id)
@@ -371,12 +380,13 @@ Key Points:
             content={
                 "answer": response_text,
                 "conversation_id": conversation_id,
+                "thread_id": thread_id,  # Include thread_id in response
                 "feedback_id": feedback_id,
                 "parsed_question": result,
                 "requires_confirmation": True,
                 "feedback_status": feedback_status,
                 "confidence_score": result.get("confidence_score", 0.0),
-                "details": result  # Include full details in response
+                "details": result
             },
             status_code=200
         )
@@ -450,65 +460,75 @@ def format_data_sources(doc_context: Dict) -> str:
     return "\n".join(formatted_sources) if formatted_sources else "Data sources will be analyzed"
 
 @app.post("/feedback/")
-async def submit_feedback(feedback: FeedbackRequest):
-    """Submit feedback for business analysis"""
+async def submit_feedback(request: FeedbackRequest):
+    """Submit feedback for a conversation"""
     try:
-        logger.info(f"Received feedback: {feedback}")
+        logger.info(f"Processing feedback request: {request}")
         
-        if not feedback.feedback_id:
-            raise HTTPException(status_code=422, detail="feedback_id is required")
+        # Get the original conversation to retrieve thread_id
+        conversation = chat_db.get_conversation(request.conversation_id)
+        thread_id = conversation.get("thread_id") if conversation else None
         
-        if not feedback.conversation_id:
-            raise HTTPException(status_code=422, detail="conversation_id is required")
-
-        # Get existing conversation
-        conversation = chat_db.get_conversation(feedback.conversation_id)
-        if not conversation:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-            
-        # Update with feedback information
-        feedback_status = "approved" if feedback.approved else "needs_improvement"
-        
-        # Get the existing data
-        conversation_data = {
-            "query": conversation.get('query', ''),
-            "output": conversation.get('output', ''),
-            "technical_details": conversation.get('technical_details', ''),
-            "code_context": conversation.get('code_context', ''),
-            "feedback_status": feedback_status,
-            "feedback_comments": feedback.comments
-        }
-        
-        # If not approved, add a note to the output
-        if not feedback.approved:
-            output = conversation.get('output', '')
-            output += f"\n\nFeedback: This analysis needs improvement - {feedback.comments if feedback.comments else 'No specific comments'}"
-            conversation_data["output"] = output
-        
-        # Save back to database
-        chat_db.save_conversation(feedback.conversation_id, conversation_data)
-
         # Process the feedback
         feedback_result = await feedback_system.process_feedback(
-            feedback_id=feedback.feedback_id,
-            approved=feedback.approved,
-            comments=feedback.comments
+            request.feedback_id,
+            request.approved,
+            request.comments
         )
-
+        
+        # Update the conversation with feedback status
+        conversation_data = {
+            "query": conversation.get("query", "") if conversation else "",
+            "output": conversation.get("output", "") if conversation else "",
+            "technical_details": conversation.get("technical_details", "") if conversation else "",
+            "code_context": conversation.get("code_context", "") if conversation else "",
+            "feedback_status": "approved" if request.approved else "needs_improvement",
+            "feedback_comments": request.comments,
+            "thread_id": thread_id  # Preserve thread_id
+        }
+        
+        # Save updated conversation
+        chat_db.save_conversation(request.conversation_id, conversation_data)
+        
+        # If feedback indicates changes needed, prepare for follow-up
+        if not request.approved and request.comments:
+            # Create a new conversation ID for the follow-up but keep the same thread_id
+            follow_up_id = str(uuid.uuid4())
+            
+            # Save placeholder for follow-up
+            follow_up_data = {
+                "query": f"Follow-up based on feedback: {request.comments}",
+                "output": "Processing follow-up...",
+                "technical_details": json.dumps({"feedback_id": request.feedback_id}),
+                "code_context": conversation.get("code_context", "") if conversation else "",
+                "thread_id": thread_id,  # Use the same thread_id
+                "feedback_status": "pending"
+            }
+            chat_db.save_conversation(follow_up_id, follow_up_data)
+            
+            # Include follow-up ID in response
+            feedback_result["follow_up_id"] = follow_up_id
+        
         return JSONResponse(
             content={
                 "status": "success",
-                "message": "Feedback processed successfully",
-                "feedback_id": feedback.feedback_id,
-                "conversation_id": feedback.conversation_id,
-                "approved": feedback.approved,
-                "needs_reanalysis": not feedback.approved
+                "feedback_id": request.feedback_id,
+                "conversation_id": request.conversation_id,
+                "thread_id": thread_id,  # Include thread_id in response
+                "approved": request.approved,
+                "processed": True
             }
         )
-            
+        
     except Exception as e:
-        logger.error(f"Error processing feedback: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error processing feedback: {e}", exc_info=True)
+        return JSONResponse(
+            content={
+                "status": "error",
+                "message": str(e)
+            },
+            status_code=500
+        )
 
 def format_sql_solution(doc_context: Dict) -> str:
     """Format SQL solution with relevant tables and their key columns."""
@@ -979,6 +999,60 @@ async def conversation_history(request: Request):
         "conversation_history.html", 
         {"request": request}
     )
+
+@app.get("/api/thread/{thread_id}/conversations")
+async def get_thread_conversations(thread_id: str):
+    """Get all conversations associated with a thread ID"""
+    try:
+        # Ensure thread_id column exists
+        chat_db.ensure_thread_id_column()
+        
+        # Get conversations by thread ID
+        conversations = chat_db.get_conversations_by_thread(thread_id)
+        
+        if not conversations:
+            return JSONResponse(
+                content={
+                    "status": "success",
+                    "conversations": [],
+                    "message": f"No conversations found for thread ID: {thread_id}"
+                }
+            )
+        
+        # Format conversations for response
+        formatted_conversations = []
+        for conv in conversations:
+            # Extract a preview of the conversation
+            query = conv.get("query", "")
+            query_preview = query[:100] + "..." if len(query) > 100 else query
+            
+            # Format the conversation
+            formatted_conv = {
+                "id": conv.get("id", ""),
+                "timestamp": conv.get("created_at", ""),
+                "preview": query_preview,
+                "query": query,
+                "response": conv.get("output", ""),
+                "feedback_status": conv.get("feedback_status", "pending"),
+                "thread_id": thread_id
+            }
+            
+            formatted_conversations.append(formatted_conv)
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "thread_id": thread_id,
+                "conversations": formatted_conversations,
+                "total": len(formatted_conversations)
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error getting thread conversations: {e}")
+        return JSONResponse(
+            content={"status": "error", "message": str(e)},
+            status_code=500
+        )
 
 if __name__ == "__main__":
     main() 
