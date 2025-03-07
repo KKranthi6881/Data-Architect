@@ -10,6 +10,7 @@ from sqlite3 import connect
 from threading import Lock
 import asyncio
 from datetime import datetime, timedelta
+import json  # Add this import at the top of the file
 
 from src.db.database import ChatDatabase
 from src.agents.github_search.code_search_agent import GitHubCodeSearchAgent
