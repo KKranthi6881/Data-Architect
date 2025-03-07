@@ -23,6 +23,7 @@ from src.api.feedback_routes import router as feedback_router
 import re
 import uuid
 import json
+from src.agents.data_architect.schema_search_agent import SchemaSearchAgent
 
 app = FastAPI(title="Knowledge Chat API")
 
@@ -41,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 # Get the base directory
 BASE_DIR = Path(__file__).resolve().parent.parent
+THREADS_DIR = os.path.join(BASE_DIR, "threads")
+
+# Create threads directory if it doesn't exist
+os.makedirs(THREADS_DIR, exist_ok=True)
 
 # Create required directories
 for directory in ["static", "templates", "uploads"]:
@@ -316,131 +321,65 @@ async def get_schema():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/")
-async def chat(request: ChatRequest):
+async def chat(request: dict):
+    """Process a chat message and return a response"""
     try:
-        logger.info(f"Processing chat request: {request.message}")
-        conversation_id = request.conversation_id or str(uuid.uuid4())
-        thread_id = request.thread_id or conversation_id  # Default to conversation_id if thread_id not provided
-        feedback_id = str(uuid.uuid4())
+        # Extract message from request
+        message = request.get("message", "")
+        conversation_id = request.get("conversation_id")
+        thread_id = request.get("thread_id")
+        feedback = request.get("feedback")
         
-        # Get business analysis with thread_id support
-        result = await question_parser_system.parse_question(
-            question=request.message,
-            thread_id=thread_id,
-            conversation_id=conversation_id
-        )
+        if not message:
+            return {"status": "error", "message": "No message provided"}
         
-        # Extract thread_id from result
-        thread_id = result.get("thread_id", thread_id)
+        # Generate a new conversation ID if not provided
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
         
-        # Add to feedback system for review with conversation_id
-        feedback_system.add_feedback_request(feedback_id, result, conversation_id)
-        
-        # Format response text - Include full analysis
-        response_text = f"""I've analyzed your question from a business perspective. Please review my understanding below and let me know if any adjustments are needed.
-
-Business Understanding:
-{result['rephrased_question']}
-
-Key Points:
-{chr(10).join([f"• {point}" for point in result['key_points']])}"""
-
-        # Save to conversation table
-        conversation_data = {
-            "query": request.message,
-            "output": response_text,
-            "technical_details": json.dumps(result),
-            "code_context": json.dumps(request.context) if request.context else "{}",
-            "thread_id": thread_id  # Always include thread_id
-        }
-        chat_db.save_conversation(conversation_id, conversation_data)
-        
-        # If wait_for_feedback is true, wait for feedback before responding
-        feedback_status = "pending"
-        github_search_results = []
-        
-        if request.wait_for_feedback:
-            try:
-                feedback = await feedback_system.wait_for_feedback(feedback_id)
-                feedback_status = "approved" if feedback.get("approved", False) else "needs_improvement"
-                
-                # Get GitHub search results if available
-                if feedback.get("approved", False) and "github_search_results" in feedback:
-                    github_search_results = feedback["github_search_results"]
-                
-                # If feedback indicates changes needed, update the response
-                if not feedback.get("approved", False):
-                    response_text += f"\n\nNote: This analysis needs improvement based on feedback: {feedback.get('comments', 'No specific comments')}"
-                    
-                    # Update the conversation with the new response
-                    conversation_data["output"] = response_text
-                    conversation_data["feedback_status"] = feedback_status
-                    conversation_data["feedback_comments"] = feedback.get("comments", "")
-                    chat_db.save_conversation(conversation_id, conversation_data)
-            except Exception as feedback_error:
-                logger.error(f"Error waiting for feedback: {feedback_error}")
-                feedback_status = "error"
-        else:
-            feedback_status = "pending"
-
-        # Get technical details with GitHub search results if available
-        technical_details = {}
-        conversation = chat_db.get_conversation(conversation_id)
-        if conversation and conversation.get("technical_details"):
-            try:
-                if isinstance(conversation["technical_details"], str):
-                    technical_details = json.loads(conversation["technical_details"])
-                else:
-                    technical_details = conversation["technical_details"]
-                    
-                # Extract GitHub search results if available
-                if "github_search_results" in technical_details:
-                    github_search_results = technical_details["github_search_results"]
-            except json.JSONDecodeError:
-                pass
-
-        return JSONResponse(
-            content={
-                "answer": response_text,
-                "conversation_id": conversation_id,
-                "thread_id": thread_id,
-                "feedback_id": feedback_id,
-                "parsed_question": result,
-                "requires_confirmation": True,
-                "feedback_status": feedback_status,
-                "confidence_score": result.get("confidence_score", 0.0),
-                "github_search_results": github_search_results,  # Include GitHub search results
-                "details": result
-            },
-            status_code=200
-        )
+        # Generate a new thread ID if not provided
+        if not thread_id:
+            thread_id = str(uuid.uuid4())
             
-    except Exception as e:
-        logger.error(f"Error in chat endpoint: {e}", exc_info=True)
-        error_conversation_id = request.conversation_id or str(uuid.uuid4())
-        error_thread_id = request.thread_id or error_conversation_id  # Default to conversation_id
+        # Create thread directory if it doesn't exist
+        thread_dir = os.path.join(THREADS_DIR, thread_id)
+        os.makedirs(thread_dir, exist_ok=True)
         
-        # Save error to conversation table
-        error_message = f"I apologize, but I encountered an error analyzing your question: {str(e)}"
-        error_data = {
-            "query": request.message if hasattr(request, 'message') else "Unknown query",
-            "output": error_message,
-            "technical_details": json.dumps({"error": str(e)}),
-            "code_context": "{}",
-            "thread_id": error_thread_id  # Always include thread_id
-        }
-        chat_db.save_conversation(error_conversation_id, error_data)
-        
-        return JSONResponse(
-            content={
-                "answer": "I apologize, but I encountered an error analyzing your question. Could you please rephrase it?",
-                "error": str(e),
-                "conversation_id": error_conversation_id,
-                "thread_id": error_thread_id,  # Include thread_id in response
-                "requires_confirmation": False
-            },
-            status_code=200
+        # Process the message with the data architect agent
+        agent_response = await process_message(
+            message=message,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+            feedback=feedback
         )
+        
+        # Extract the parsed question from the response
+        parsed_question = agent_response.get("parsed_question", {})
+        
+        # If we have a parsed question and feedback is approved, trigger schema search
+        if parsed_question and feedback and feedback.get("approved", False):
+            # Initialize schema search agent
+            schema_search_agent = SchemaSearchAgent()
+            
+            # Search for relevant schemas
+            schema_results = schema_search_agent.search_schemas(parsed_question)
+            
+            # Save schema search results
+            if schema_results:
+                schema_search_agent.save_search_results(
+                    thread_id=thread_id,
+                    conversation_id=conversation_id,
+                    parsed_question=parsed_question,
+                    search_results=schema_results
+                )
+                
+                # Add schema search results to the response
+                agent_response["schema_search_results"] = schema_results
+        
+        return agent_response
+    except Exception as e:
+        logger.error(f"Error processing chat message: {str(e)}", exc_info=True)
+        return {"status": "error", "message": str(e)}
 
 def format_technical_details(doc_context: Dict) -> str:
     """Format technical implementation details from the context"""
@@ -1080,6 +1019,108 @@ async def get_thread_conversations(thread_id: str):
             content={"status": "error", "message": str(e)},
             status_code=500
         )
+
+@app.post("/api/search-schemas")
+async def search_schemas(request: dict):
+    """Search for relevant database schemas"""
+    try:
+        # Extract query from request
+        query = request.get("query", "")
+        parsed_question = request.get("parsed_question", {})
+        
+        if not query and not parsed_question:
+            return {"status": "error", "message": "No query or parsed question provided"}
+        
+        # Initialize schema search agent
+        schema_search_agent = SchemaSearchAgent()
+        
+        # If we have a parsed question, use it directly
+        if parsed_question:
+            search_results = schema_search_agent.search_schemas(parsed_question)
+        else:
+            # Create a simple parsed question from the query
+            simple_parsed_question = {
+                "original_question": query,
+                "rephrased_question": query,
+                "business_context": {
+                    "domain": "data",
+                    "key_entities": []
+                },
+                "query_intent": {
+                    "primary_intent": "search"
+                }
+            }
+            search_results = schema_search_agent.search_schemas(simple_parsed_question)
+        
+        return {
+            "status": "success",
+            "results": search_results,
+            "count": len(search_results)
+        }
+    except Exception as e:
+        logger.error(f"Error searching schemas: {str(e)}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+async def process_message(message: str, conversation_id: str, thread_id: str, feedback: dict = None):
+    """Process a message with the data architect agent"""
+    try:
+        logger.info(f"Processing message: {message}")
+        feedback_id = str(uuid.uuid4())
+        
+        # Get business analysis with thread_id support
+        result = await question_parser_system.parse_question(
+            question=message,
+            thread_id=thread_id,
+            conversation_id=conversation_id
+        )
+        
+        # Extract thread_id from result
+        thread_id = result.get("thread_id", thread_id)
+        
+        # Add to feedback system for review with conversation_id
+        feedback_system.add_feedback_request(feedback_id, result, conversation_id)
+        
+        # Format response text - Include full analysis
+        response_text = f"""I've analyzed your question from a business perspective. Please review my understanding below and let me know if any adjustments are needed.
+
+Business Understanding:
+{result['rephrased_question']}
+
+Key Points:
+{chr(10).join([f"• {point}" for point in result['key_points']])}"""
+        
+        # Save to conversation table
+        conversation_data = {
+            "query": message,
+            "output": response_text,
+            "technical_details": json.dumps(result),
+            "code_context": "{}",
+            "thread_id": thread_id  # Always include thread_id
+        }
+        chat_db.save_conversation(conversation_id, conversation_data)
+        
+        # Process feedback if provided
+        if feedback:
+            await feedback_system.process_feedback(
+                feedback_id=feedback.get("feedback_id", feedback_id),
+                approved=feedback.get("approved", False),
+                comments=feedback.get("comments")
+            )
+        
+        return {
+            "answer": response_text,
+            "conversation_id": conversation_id,
+            "thread_id": thread_id,
+            "feedback_id": feedback_id,
+            "parsed_question": result,
+            "requires_confirmation": True,
+            "feedback_status": "pending",
+            "confidence_score": result.get("confidence_score", 0.0),
+            "details": result
+        }
+    except Exception as e:
+        logger.error(f"Error processing message: {e}", exc_info=True)
+        raise
 
 if __name__ == "__main__":
     main() 

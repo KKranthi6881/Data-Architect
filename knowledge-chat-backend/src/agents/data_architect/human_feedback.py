@@ -14,6 +14,7 @@ import json  # Add this import at the top of the file
 
 from src.db.database import ChatDatabase
 from src.agents.github_search.code_search_agent import GitHubCodeSearchAgent
+from src.agents.data_architect.schema_search_agent import SchemaSearchAgent
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -451,7 +452,7 @@ class HumanFeedbackSystem:
                 del self.pending_feedback[conversation_id] 
 
     async def process_approved_feedback(self, feedback_id: str, conversation_id: str, parsed_question: Dict[str, Any]):
-        """Process approved feedback by triggering GitHub code search"""
+        """Process approved feedback by triggering GitHub code search and schema search"""
         try:
             self.logger.info(f"Processing approved feedback for ID: {feedback_id}")
             
@@ -466,48 +467,69 @@ class HumanFeedbackSystem:
             # Initialize GitHub code search agent
             code_search_agent = GitHubCodeSearchAgent()
             
+            # Initialize Schema search agent
+            schema_search_agent = SchemaSearchAgent()
+            
             # Search for relevant code
-            search_results = code_search_agent.search_code(parsed_question)
+            code_search_results = code_search_agent.search_code(parsed_question)
+            
+            # Search for relevant schemas
+            schema_search_results = schema_search_agent.search_schemas(parsed_question)
             
             # Save search results
-            if search_results:
+            if code_search_results:
                 code_search_agent.save_search_results(
                     thread_id=thread_id,
                     conversation_id=conversation_id,
                     parsed_question=parsed_question,
-                    search_results=search_results
+                    search_results=code_search_results
                 )
-                
-                # Update conversation with search results
-                if conversation:
-                    # Get existing technical details
-                    technical_details = {}
-                    if conversation.get("technical_details"):
-                        try:
-                            if isinstance(conversation["technical_details"], str):
-                                technical_details = json.loads(conversation["technical_details"])
-                            else:
-                                technical_details = conversation["technical_details"]
-                        except json.JSONDecodeError:
-                            technical_details = {}
-                    
-                    # Add search results to technical details
-                    technical_details["github_search_results"] = search_results
-                    
-                    # Update conversation
-                    conversation_data = {
-                        "query": conversation.get("query", ""),
-                        "output": conversation.get("output", ""),
-                        "technical_details": json.dumps(technical_details),
-                        "code_context": conversation.get("code_context", "{}"),
-                        "feedback_status": "approved",
-                        "thread_id": thread_id
-                    }
-                    
-                    # Save back to database
-                    self.db.save_conversation(conversation_id, conversation_data)
             
-            return search_results
+            if schema_search_results:
+                schema_search_agent.save_search_results(
+                    thread_id=thread_id,
+                    conversation_id=conversation_id,
+                    parsed_question=parsed_question,
+                    search_results=schema_search_results
+                )
+            
+            # Update conversation with search results
+            if conversation:
+                # Get existing technical details
+                technical_details = {}
+                if conversation.get("technical_details"):
+                    try:
+                        if isinstance(conversation["technical_details"], str):
+                            technical_details = json.loads(conversation["technical_details"])
+                        else:
+                            technical_details = conversation["technical_details"]
+                    except json.JSONDecodeError:
+                        technical_details = {}
+                
+                # Add search results to technical details
+                technical_details["github_search_results"] = code_search_results
+                technical_details["schema_search_results"] = schema_search_results
+                
+                # Update conversation
+                conversation_data = {
+                    "query": conversation.get("query", ""),
+                    "output": conversation.get("output", ""),
+                    "technical_details": json.dumps(technical_details),
+                    "code_context": conversation.get("code_context", "{}"),
+                    "feedback_status": "approved",
+                    "thread_id": thread_id
+                }
+                
+                # Save back to database
+                self.db.save_conversation(conversation_id, conversation_data)
+            
+            # Combine results
+            combined_results = {
+                "code_search_results": code_search_results,
+                "schema_search_results": schema_search_results
+            }
+            
+            return combined_results
             
         except Exception as e:
             self.logger.error(f"Error processing approved feedback: {e}", exc_info=True)

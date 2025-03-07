@@ -1,0 +1,86 @@
+{
+  "id": "8aeecc32-1b2f-4e0e-9c85-4f848c42ae37",
+  "thread_id": "2b9374d7-466e-48aa-a2cd-417e501c0f66",
+  "conversation_id": "2201e6db-bcc9-48f4-9c0b-48a0ccda4616",
+  "timestamp": "2025-03-07T14:06:12.520552",
+  "parsed_question": {
+    "rephrased_question": "Analyze workflow completion rates over time to identify trends and patterns, and provide insights on user engagement and feature usage.",
+    "key_points": [
+      "Identify workflow completion rates by category over the past 90 days",
+      "Calculate daily success rates for each category",
+      "Determine rolling 7-day success rates for each category"
+    ],
+    "business_context": {
+      "domain": "Workforce Management",
+      "primary_objective": "Optimize workflow completion rates to improve user engagement and productivity",
+      "key_entities": [
+        "Workflow",
+        "User Engagement"
+      ],
+      "business_impact": "Improved workflow efficiency leads to increased user satisfaction and productivity"
+    },
+    "assumptions": [
+      "Assuming that workflow completion rates are a key indicator of user engagement and productivity",
+      "Assuming that rolling 7-day success rates provide valuable insights into trends and patterns in workflow completion"
+    ],
+    "clarifying_questions": [
+      "What is the definition of a successful workflow completion?",
+      "How do we handle missing data for users who have not completed any workflows?"
+    ],
+    "confidence_score": 0.85,
+    "thread_id": "2b9374d7-466e-48aa-a2cd-417e501c0f66",
+    "conversation_id": "2201e6db-bcc9-48f4-9c0b-48a0ccda4616"
+  },
+  "search_results": [
+    {
+      "file_path": "readme.md",
+      "code_snippet": "## Scaling Factor\n\n\nAlso, note that you can change the scaling factor of the TPCH dataset by switching the source database in `_source/source_tpch.yml` from the default of `10` to `100` or `1000` by changing the database name accordingly.\n\n```\nversion: 2\n\nsources:\n  - name: tpch\n    database: SNOWFLAKE_SAMPLE_DATA\n    schema: TPCH_SF10\n    loader: Snowflake\n\n...\n\n```\n## Snowflake Usage\n\nUsing an X-Small warehouse (1 credit / hour), the project currently runs in about *5 minutes* against the `TPCH_SF10` database.\n\n---\n- [What is dbt](https://dbt.readme.io/docs/overview)?\n- Read the [dbt viewpoint](https://dbt.readme.io/docs/viewpoint)\n- [Installation](https://dbt.readme.io/docs/installation)\n- Join the [chat](http://ac-slackin.herokuapp.com/) on Slack for live questions and support.\n\n---",
+      "relevance_score": 0.5817726837708328,
+      "explanation": "Automatically extracted from code repository",
+      "repo_info": {
+        "repo_url": "https://github.com/KKranthi6881/Ai-agent-dbt-snowflake",
+        "language": "markdown"
+      }
+    },
+    {
+      "file_path": "readme.md",
+      "code_snippet": "## Profile\n- Add a new profile to `~/.dbt/profiles.yml` called `tpch`.\n\n```\ntpch:\n    target: dev\n    outputs:\n        prod:\n            type: snowflake\n            threads: 8\n            account: <account>\n            user: <user>\n            password: <password>\n            role: <role>\n            database: <target_database>\n            warehouse: <snowflake_warehouse>\n            schema: <default_schema>\n\n        dev:\n            type: snowflake\n            threads: 8\n            account: <account>\n            user: <user>\n            password: <password>\n            role: <role>\n            database: <target_database>\n            warehouse: <snowflake_warehouse>\n            schema: <default_schema>\n```\n\n## Packages\n\nThis project make use of the [dbt_utils](https://github.com/fishtown-analytics/dbt-utils) package, so you will need to call `dbt deps` before running any model to ensure dbt can combile all package macros.\n\n\n## Scaling Factor",
+      "relevance_score": 0.5461783041763183,
+      "explanation": "Automatically extracted from code repository",
+      "repo_info": {
+        "repo_url": "https://github.com/KKranthi6881/Ai-agent-dbt-snowflake",
+        "language": "markdown"
+      }
+    },
+    {
+      "file_path": "readme.md",
+      "code_snippet": "# dbt TPC-H Sample\n\nThis is a dbt sample project for Snowflake using the `TPC-H` example dataset that ships as a shared database with Snowflake.\n\nMore details can be found on the [TPC website](http://www.tpc.org/tpch/default.asp) and in the [specification document](http://www.tpc.org/tpc_documents_current_versions/pdf/tpc-h_v2.18.0.pdf).\n\nThe project is laid out as follows:",
+      "relevance_score": 0.517898452392078,
+      "explanation": "Automatically extracted from code repository",
+      "repo_info": {
+        "repo_url": "https://github.com/KKranthi6881/Ai-agent-dbt-snowflake",
+        "language": "markdown"
+      }
+    },
+    {
+      "file_path": "models/wh/rpt_pricing_summary.sql",
+      "code_snippet": "{{\n    config(\n        materialized = 'table'\n    )\n}}\n\n/*\nPer TPC-H Spec: \n2.4.1 Pricing Summary Report Query (Q1)\n*/\n\nselect \n    f.return_status_code,\n    f.order_line_status_code,\n    sum(f.quantity) as quantity,\n    sum(f.gross_item_sales_amount) as gross_item_sales_amount,\n    sum(f.discounted_item_sales_amount) as discounted_item_sales_amount,\n    sum(f.net_item_sales_amount) as net_item_sales_amount,\n\n    avg(f.quantity) as avg_quantity,\n    avg(f.base_price) as avg_base_price,\n    avg(f.discount_percentage) as avg_discount_percentage,\n\n    sum(f.order_item_count) as order_item_count\n    \nfrom\n    {{ ref('fct_orders_items') }} f\nwhere\n    f.ship_date <= {{ dbt_utils.dateadd('day', -90, var('max_ship_date')) }}\ngroup by\n    1,2",
+      "relevance_score": 0.5143839205414723,
+      "explanation": "Automatically extracted from code repository",
+      "repo_info": {
+        "repo_url": "https://github.com/KKranthi6881/Ai-agent-dbt-snowflake",
+        "language": "dbt"
+      }
+    },
+    {
+      "file_path": "macros/dbt_housekeeping.sql",
+      "code_snippet": "{% macro dbt_housekeeping() -%}\n    '{{ invocation_id }}'::varchar as dbt_batch_id,\n    '{{ run_started_at }}'::timestamp as dbt_batch_ts\n{%- endmacro %}",
+      "relevance_score": 0.5120956523637543,
+      "explanation": "Automatically extracted from code repository",
+      "repo_info": {
+        "repo_url": "https://github.com/KKranthi6881/Ai-agent-dbt-snowflake",
+        "language": "dbt"
+      }
+    }
+  ]
+}

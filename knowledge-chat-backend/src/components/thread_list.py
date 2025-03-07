@@ -95,7 +95,7 @@ def render_thread_detail(thread_id):
         st.markdown("**Assistant:**")
         st.markdown(response)
         
-        # Check for GitHub search results
+        # Check for technical details
         technical_details = {}
         if conv.get("technical_details"):
             try:
@@ -121,6 +121,41 @@ def render_thread_detail(thread_id):
                         st.code(result["code_snippet"], language=result.get("repo_info", {}).get("language", ""))
                     
                     if j < len(search_results) - 1:
+                        st.markdown("---")
+        
+        # Display Schema search results if available
+        if "schema_search_results" in technical_details and technical_details["schema_search_results"]:
+            with st.expander("🗃️ Relevant Database Schemas"):
+                schema_results = technical_details["schema_search_results"]
+                
+                for j, result in enumerate(schema_results):
+                    st.markdown(f"**{j+1}. {result.get('schema_name', 'Unknown schema')}.{result.get('table_name', 'Unknown table')}**")
+                    st.markdown(f"Relevance: {result.get('relevance_score', 0.0):.2f}")
+                    
+                    # Display description
+                    if "description" in result:
+                        st.markdown(f"*{result.get('description', '')}*")
+                    
+                    # Display columns
+                    if "columns" in result:
+                        st.markdown("**Columns:**")
+                        columns = result.get("columns", [])
+                        if isinstance(columns, list):
+                            st.markdown(", ".join(columns))
+                        else:
+                            st.markdown(str(columns))
+                    
+                    # Display explanation
+                    if "explanation" in result:
+                        st.markdown("**Why this is relevant:**")
+                        st.markdown(result.get("explanation", ""))
+                    
+                    # Display query pattern if available
+                    if "query_pattern" in result:
+                        st.markdown("**Example Query Pattern:**")
+                        st.code(result.get("query_pattern", ""), language="sql")
+                    
+                    if j < len(schema_results) - 1:
                         st.markdown("---")
         
         # Add separator between conversations
