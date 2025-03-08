@@ -396,7 +396,7 @@ const FileUploadPage = () => {
         <Box>
           <Tabs variant="enclosed" colorScheme="brand">
             <TabList>
-              <Tab>SQL Scripts</Tab>
+              <Tab>SQL Schemas</Tab>
               <Tab>PDF Documents</Tab>
               <Tab>GitHub</Tab>
             </TabList>
@@ -404,7 +404,7 @@ const FileUploadPage = () => {
               <TabPanel px={0}>
                 <Card>
                   <CardHeader>
-                    <Heading size="md">Upload SQL Script</Heading>
+                    <Heading size="md">Upload SQL Schema Scripts</Heading>
                   </CardHeader>
                   <CardBody>
                     <VStack spacing={4} align="stretch">
@@ -417,17 +417,20 @@ const FileUploadPage = () => {
                           p={1}
                         />
                         <FormHelperText>
-                          Upload SQL scripts to analyze database schemas and queries
+                          Upload .sql file scripts to analyze database schemas and queries
                         </FormHelperText>
                       </FormControl>
                       
                       <Button
                         leftIcon={<IoCloudUpload />}
-                        colorScheme="brand"
+                        colorScheme="blue"
                         onClick={handleSqlUpload}
                         isDisabled={!sqlFile || isUploading}
                         isLoading={isUploading}
                         loadingText="Uploading..."
+                        size="md"
+                        width="100%"
+                        mt={2}
                       >
                         Upload SQL File
                       </Button>
@@ -462,11 +465,14 @@ const FileUploadPage = () => {
                       
                       <Button
                         leftIcon={<IoCloudUpload />}
-                        colorScheme="brand"
+                        colorScheme="red"
                         onClick={handlePdfUpload}
                         isDisabled={!pdfFile || isUploading}
                         isLoading={isUploading}
                         loadingText="Uploading..."
+                        size="md"
+                        width="100%"
+                        mt={2}
                       >
                         Upload PDF File
                       </Button>
@@ -556,11 +562,14 @@ const FileUploadPage = () => {
                       
                       <Button
                         leftIcon={<IoLogoGithub />}
-                        colorScheme="brand"
+                        colorScheme="purple"
                         onClick={handleGithubUpload}
                         isDisabled={!repoUrl || isUploading}
                         isLoading={isUploading}
                         loadingText="Connecting..."
+                        size="md"
+                        width="100%"
+                        mt={2}
                       >
                         Connect Repository
                       </Button>

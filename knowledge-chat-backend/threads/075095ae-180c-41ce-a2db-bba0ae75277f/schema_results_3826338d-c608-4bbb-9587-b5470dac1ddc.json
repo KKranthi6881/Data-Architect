@@ -1,0 +1,80 @@
+{
+  "id": "7421d188-1973-4bb7-9c4f-a9bf3c87ab1f",
+  "thread_id": "075095ae-180c-41ce-a2db-bba0ae75277f",
+  "conversation_id": "3826338d-c608-4bbb-9587-b5470dac1ddc",
+  "timestamp": "2025-03-08T16:12:55.972591",
+  "parsed_question": {
+    "rephrased_question": "What are the Brooklyn monthly taxi pickups from 2012 to 2017, based on NYC TLC trip data?",
+    "key_points": [
+      "The analysis should focus on Brooklyn pickup data",
+      "The analysis should only consider trips between 2012 and 2017"
+    ],
+    "business_context": {
+      "domain": "Transportation industry",
+      "primary_objective": "Understanding taxi activity in Brooklyn",
+      "key_entities": [
+        "Brooklyn",
+        "NYC TLC trip data"
+      ],
+      "business_impact": "Informing business decisions about taxi services in Brooklyn"
+    },
+    "assumptions": [
+      "The analysis assumes that the NYC TLC trip data is accurate and complete",
+      "The analysis assumes that the pickup and drop-off locations are correctly identified"
+    ],
+    "clarifying_questions": [
+      "What is the definition of a 'Brooklyn' pickup location?",
+      "How will the analysis account for trips with multiple pickups or drop-offs in Brooklyn?"
+    ],
+    "confidence_score": 0.8,
+    "thread_id": "075095ae-180c-41ce-a2db-bba0ae75277f",
+    "conversation_id": "3826338d-c608-4bbb-9587-b5470dac1ddc"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    }
+  ]
+}

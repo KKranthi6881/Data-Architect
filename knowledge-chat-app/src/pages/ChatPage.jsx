@@ -1493,20 +1493,7 @@ const ChatPage = () => {
                   overflowY="auto"
                   height={{ base: "auto", lg: "100%" }}
                 >
-                  <Flex justify="space-between" align="center" mb={4}>
-                    <Heading size="md">Chat History</Heading>
-                    <Button 
-                      leftIcon={<IoAdd />} 
-                      colorScheme="blue" 
-                      size="sm"
-                      onClick={() => {
-                        startNewConversation();
-                        setActiveTab('chat');
-                      }}
-                    >
-                      New Chat
-                    </Button>
-                  </Flex>
+
                   
                   {isHistoryLoading ? (
                     <Progress size="xs" isIndeterminate colorScheme="blue" />

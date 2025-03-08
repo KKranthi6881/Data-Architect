@@ -13,8 +13,8 @@ from datetime import datetime, timedelta
 import json  # Add this import at the top of the file
 
 from src.db.database import ChatDatabase
-from src.agents.github_search.code_search_agent import GitHubCodeSearchAgent
-from src.agents.data_architect.schema_search_agent import SchemaSearchAgent
+from src.agents.data_architect.github_search import GitHubCodeSearchAgent
+from src.agents.data_architect.schema_search import SchemaSearchAgent
 
 # Set up logger
 logger = logging.getLogger(__name__)

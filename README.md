@@ -1,13 +1,13 @@
 # Data Architect - Knowledge Chat Backend
 
-A knowledge-based chat system that integrates with various data sources including GitHub repositories, SQL scripts, and PDF documents.
+A knowledge-based chat system that integrates with various data sources including GitHub repositories, SQL Schema scripts, and PDF documents.
 
 ## Features
 
 - **Vector Database Integration**: Uses ChromaDB for efficient similarity search
 - **Multiple Data Source Support**: 
   - GitHub repositories
-  - SQL scripts with schema analysis
+  - SQL Schemas with schema analysis
   - PDF documents
 - **Code Analysis**: Analyzes code structure and relationships
 - **Chat Interface**: Query your knowledge base using natural language

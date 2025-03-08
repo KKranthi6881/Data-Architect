@@ -23,9 +23,9 @@ from src.api.feedback_routes import router as feedback_router
 import re
 import uuid
 import json
-from src.agents.data_architect.schema_search_agent import SchemaSearchAgent
-from src.agents.data_architect.data_architect_agent import DataArchitectAgent
-
+from src.agents.data_architect.schema_search import SchemaSearchAgent
+from src.agents.data_architect.data_architect import DataArchitectAgent
+from src.agents.data_architect.github_search import GitHubCodeSearchAgent
 app = FastAPI(title="Knowledge Chat API")
 
 # Add CORS middleware

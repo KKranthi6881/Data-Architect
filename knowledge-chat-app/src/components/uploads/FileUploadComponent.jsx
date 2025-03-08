@@ -20,7 +20,15 @@ import {
   Tab,
   TabPanel,
   InputGroup,
-  InputLeftAddon
+  InputLeftAddon,
+  Flex,
+  Checkbox,
+  SimpleGrid,
+  IconButton,
+  Tooltip,
+  Divider,
+  Alert,
+  AlertIcon
 } from '@chakra-ui/react'
 import { 
   IoCloudUpload, 
@@ -28,18 +36,30 @@ import {
   IoLogoGithub, 
   IoCodeSlash,
   IoCheckmarkCircle,
-  IoWarning
+  IoWarning,
+  IoClose,
+  IoInformationCircle,
+  IoAdd
 } from 'react-icons/io5'
 
 const FileUploadComponent = () => {
+  // Single file state (keeping for backward compatibility)
   const [sqlFile, setSqlFile] = useState(null)
   const [pdfFile, setPdfFile] = useState(null)
+  
+  // Multiple files state
+  const [sqlFiles, setSqlFiles] = useState([])
+  const [pdfFiles, setPdfFiles] = useState([])
+  
+  // Other state
   const [repoUrl, setRepoUrl] = useState('')
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadedFiles, setUploadedFiles] = useState([])
+  const [useMultipleFiles, setUseMultipleFiles] = useState(false)
   const toast = useToast()
 
+  // Single file handlers (keeping for backward compatibility)
   const handleSqlFileChange = (e) => {
     if (e.target.files[0]) {
       setSqlFile(e.target.files[0])
@@ -52,11 +72,46 @@ const FileUploadComponent = () => {
     }
   }
 
+  // Multiple files handlers
+  const handleMultipleSqlFilesChange = (e) => {
+    if (e.target.files) {
+      const filesArray = Array.from(e.target.files)
+      setSqlFiles(filesArray)
+    }
+  }
+
+  const handleMultiplePdfFilesChange = (e) => {
+    if (e.target.files) {
+      const filesArray = Array.from(e.target.files)
+      setPdfFiles(filesArray)
+    }
+  }
+
   const handleRepoUrlChange = (e) => {
     setRepoUrl(e.target.value)
   }
 
-  const simulateUpload = (fileType, fileName) => {
+  const toggleMultipleFiles = () => {
+    setUseMultipleFiles(!useMultipleFiles)
+    // Clear file selections when toggling
+    if (!useMultipleFiles) {
+      setSqlFile(null)
+      setPdfFile(null)
+    } else {
+      setSqlFiles([])
+      setPdfFiles([])
+    }
+  }
+
+  const removeFileFromSelection = (fileType, index) => {
+    if (fileType === 'sql') {
+      setSqlFiles(prev => prev.filter((_, i) => i !== index))
+    } else if (fileType === 'pdf') {
+      setPdfFiles(prev => prev.filter((_, i) => i !== index))
+    }
+  }
+
+  const simulateUpload = (fileType, files) => {
     setIsUploading(true)
     setUploadProgress(0)
     
@@ -67,27 +122,56 @@ const FileUploadComponent = () => {
           setIsUploading(false)
           
           // Add to uploaded files
-          setUploadedFiles(prev => [
-            ...prev, 
-            { 
-              id: Date.now(), 
-              name: fileName, 
-              type: fileType, 
-              uploadedAt: new Date().toISOString() 
-            }
-          ])
-          
-          toast({
-            title: 'Upload complete',
-            description: `${fileName} has been uploaded successfully.`,
-            status: 'success',
-            duration: 5000,
-            isClosable: true,
-          })
+          if (Array.isArray(files)) {
+            // Multiple files
+            const newUploadedFiles = files.map(file => ({
+              id: Date.now() + Math.random(), // Ensure unique IDs
+              name: file.name,
+              type: fileType,
+              size: file.size,
+              uploadedAt: new Date().toISOString()
+            }))
+            
+            setUploadedFiles(prev => [...prev, ...newUploadedFiles])
+            
+            toast({
+              title: 'Upload complete',
+              description: `${files.length} ${fileType} files have been uploaded successfully.`,
+              status: 'success',
+              duration: 5000,
+              isClosable: true,
+            })
+          } else {
+            // Single file
+            setUploadedFiles(prev => [
+              ...prev, 
+              { 
+                id: Date.now(), 
+                name: files.name, 
+                type: fileType,
+                size: files.size,
+                uploadedAt: new Date().toISOString() 
+              }
+            ])
+            
+            toast({
+              title: 'Upload complete',
+              description: `${files.name} has been uploaded successfully.`,
+              status: 'success',
+              duration: 5000,
+              isClosable: true,
+            })
+          }
           
           // Reset form
-          if (fileType === 'sql') setSqlFile(null)
-          if (fileType === 'pdf') setPdfFile(null)
+          if (fileType === 'sql') {
+            setSqlFile(null)
+            setSqlFiles([])
+          }
+          if (fileType === 'pdf') {
+            setPdfFile(null)
+            setPdfFiles([])
+          }
           if (fileType === 'github') setRepoUrl('')
           
           return 0
@@ -98,13 +182,23 @@ const FileUploadComponent = () => {
   }
 
   const handleSqlUpload = () => {
-    if (!sqlFile) return
-    simulateUpload('sql', sqlFile.name)
+    if (useMultipleFiles) {
+      if (sqlFiles.length === 0) return
+      simulateUpload('sql', sqlFiles)
+    } else {
+      if (!sqlFile) return
+      simulateUpload('sql', sqlFile)
+    }
   }
 
   const handlePdfUpload = () => {
-    if (!pdfFile) return
-    simulateUpload('pdf', pdfFile.name)
+    if (useMultipleFiles) {
+      if (pdfFiles.length === 0) return
+      simulateUpload('pdf', pdfFiles)
+    } else {
+      if (!pdfFile) return
+      simulateUpload('pdf', pdfFile)
+    }
   }
 
   const handleGithubUpload = () => {
@@ -112,7 +206,7 @@ const FileUploadComponent = () => {
     
     // Extract repo name from URL
     const repoName = repoUrl.split('/').pop() || 'repository'
-    simulateUpload('github', repoName)
+    simulateUpload('github', { name: repoName })
   }
 
   const getFileIcon = (fileType) => {
@@ -141,6 +235,14 @@ const FileUploadComponent = () => {
     }
   }
 
+  const formatFileSize = (bytes) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
   return (
     <Box maxW="1000px" mx="auto" py={8} px={4}>
       <Tabs colorScheme="brand" variant="enclosed">
@@ -156,35 +258,91 @@ const FileUploadComponent = () => {
               <Card variant="outline" p={4}>
                 <CardBody>
                   <VStack spacing={4} align="stretch">
+                    <Flex justify="space-between" align="center">
+                      <FormLabel mb={0}>Upload SQL Schema Files</FormLabel>
+                      <Checkbox 
+                        colorScheme="brand" 
+                        isChecked={useMultipleFiles} 
+                        onChange={toggleMultipleFiles}
+                      >
+                        Multiple files
+                      </Checkbox>
+                    </Flex>
+                    
                     <FormControl>
-                      <FormLabel>Upload SQL File</FormLabel>
-                      <Input
-                        type="file"
-                        accept=".sql"
-                        onChange={handleSqlFileChange}
-                        p={1}
-                      />
+                      {useMultipleFiles ? (
+                        <Input
+                          type="file"
+                          accept=".sql"
+                          onChange={handleMultipleSqlFilesChange}
+                          p={1}
+                          multiple
+                        />
+                      ) : (
+                        <Input
+                          type="file"
+                          accept=".sql"
+                          onChange={handleSqlFileChange}
+                          p={1}
+                        />
+                      )}
                       <Text fontSize="xs" color="gray.500" mt={1}>
-                        Upload SQL scripts to analyze and include in your knowledge base
+                        Upload .sql Schema scripts to analyze and include in your knowledge base
                       </Text>
                     </FormControl>
                     
-                    {sqlFile && (
-                      <HStack>
-                        <Text fontSize="sm">Selected file: {sqlFile.name}</Text>
-                        <Badge colorScheme="blue">{(sqlFile.size / 1024).toFixed(2)} KB</Badge>
-                      </HStack>
+                    {/* Display selected files */}
+                    {useMultipleFiles ? (
+                      sqlFiles.length > 0 && (
+                        <Box mt={2}>
+                          <Text fontSize="sm" fontWeight="medium" mb={2}>
+                            Selected files ({sqlFiles.length}):
+                          </Text>
+                          <VStack align="stretch" maxH="200px" overflowY="auto" spacing={2} p={2} bg="gray.50" borderRadius="md">
+                            {sqlFiles.map((file, index) => (
+                              <Flex key={index} justify="space-between" align="center" p={2} bg="white" borderRadius="md" shadow="sm">
+                                <HStack>
+                                  <Icon as={IoCodeSlash} color="blue.500" />
+                                  <Text fontSize="sm" noOfLines={1}>{file.name}</Text>
+                                </HStack>
+                                <HStack>
+                                  <Badge colorScheme="blue">{formatFileSize(file.size)}</Badge>
+                                  <IconButton
+                                    icon={<IoClose />}
+                                    size="xs"
+                                    variant="ghost"
+                                    colorScheme="red"
+                                    onClick={() => removeFileFromSelection('sql', index)}
+                                    aria-label="Remove file"
+                                  />
+                                </HStack>
+                              </Flex>
+                            ))}
+                          </VStack>
+                        </Box>
+                      )
+                    ) : (
+                      sqlFile && (
+                        <HStack>
+                          <Text fontSize="sm">Selected file: {sqlFile.name}</Text>
+                          <Badge colorScheme="blue">{formatFileSize(sqlFile.size)}</Badge>
+                        </HStack>
+                      )
                     )}
                     
                     <Button
                       leftIcon={<IoCloudUpload />}
-                      colorScheme="brand"
+                      colorScheme="blue"
+                      variant="solid"
                       onClick={handleSqlUpload}
-                      isDisabled={!sqlFile || isUploading}
+                      isDisabled={(useMultipleFiles ? sqlFiles.length === 0 : !sqlFile) || isUploading}
                       isLoading={isUploading}
                       loadingText="Uploading..."
+                      size="md"
+                      width="100%"
+                      mt={2}
                     >
-                      Upload SQL File
+                      Upload {useMultipleFiles ? `SQL Files (${sqlFiles.length})` : 'SQL File'}
                     </Button>
                     
                     {isUploading && (
@@ -201,35 +359,91 @@ const FileUploadComponent = () => {
               <Card variant="outline" p={4}>
                 <CardBody>
                   <VStack spacing={4} align="stretch">
+                    <Flex justify="space-between" align="center">
+                      <FormLabel mb={0}>Upload PDF Documents</FormLabel>
+                      <Checkbox 
+                        colorScheme="brand" 
+                        isChecked={useMultipleFiles} 
+                        onChange={toggleMultipleFiles}
+                      >
+                        Multiple files
+                      </Checkbox>
+                    </Flex>
+                    
                     <FormControl>
-                      <FormLabel>Upload PDF Document</FormLabel>
-                      <Input
-                        type="file"
-                        accept=".pdf"
-                        onChange={handlePdfFileChange}
-                        p={1}
-                      />
+                      {useMultipleFiles ? (
+                        <Input
+                          type="file"
+                          accept=".pdf"
+                          onChange={handleMultiplePdfFilesChange}
+                          p={1}
+                          multiple
+                        />
+                      ) : (
+                        <Input
+                          type="file"
+                          accept=".pdf"
+                          onChange={handlePdfFileChange}
+                          p={1}
+                        />
+                      )}
                       <Text fontSize="xs" color="gray.500" mt={1}>
                         Upload PDF documents to extract text and include in your knowledge base
                       </Text>
                     </FormControl>
                     
-                    {pdfFile && (
-                      <HStack>
-                        <Text fontSize="sm">Selected file: {pdfFile.name}</Text>
-                        <Badge colorScheme="red">{(pdfFile.size / 1024).toFixed(2)} KB</Badge>
-                      </HStack>
+                    {/* Display selected files */}
+                    {useMultipleFiles ? (
+                      pdfFiles.length > 0 && (
+                        <Box mt={2}>
+                          <Text fontSize="sm" fontWeight="medium" mb={2}>
+                            Selected files ({pdfFiles.length}):
+                          </Text>
+                          <VStack align="stretch" maxH="200px" overflowY="auto" spacing={2} p={2} bg="gray.50" borderRadius="md">
+                            {pdfFiles.map((file, index) => (
+                              <Flex key={index} justify="space-between" align="center" p={2} bg="white" borderRadius="md" shadow="sm">
+                                <HStack>
+                                  <Icon as={IoDocument} color="red.500" />
+                                  <Text fontSize="sm" noOfLines={1}>{file.name}</Text>
+                                </HStack>
+                                <HStack>
+                                  <Badge colorScheme="red">{formatFileSize(file.size)}</Badge>
+                                  <IconButton
+                                    icon={<IoClose />}
+                                    size="xs"
+                                    variant="ghost"
+                                    colorScheme="red"
+                                    onClick={() => removeFileFromSelection('pdf', index)}
+                                    aria-label="Remove file"
+                                  />
+                                </HStack>
+                              </Flex>
+                            ))}
+                          </VStack>
+                        </Box>
+                      )
+                    ) : (
+                      pdfFile && (
+                        <HStack>
+                          <Text fontSize="sm">Selected file: {pdfFile.name}</Text>
+                          <Badge colorScheme="red">{formatFileSize(pdfFile.size)}</Badge>
+                        </HStack>
+                      )
                     )}
                     
                     <Button
                       leftIcon={<IoCloudUpload />}
-                      colorScheme="brand"
+                      colorScheme="red"
+                      variant="solid"
                       onClick={handlePdfUpload}
-                      isDisabled={!pdfFile || isUploading}
+                      isDisabled={(useMultipleFiles ? pdfFiles.length === 0 : !pdfFile) || isUploading}
                       isLoading={isUploading}
                       loadingText="Uploading..."
+                      size="md"
+                      width="100%"
+                      mt={2}
                     >
-                      Upload PDF Document
+                      Upload {useMultipleFiles ? `PDF Files (${pdfFiles.length})` : 'PDF Document'}
                     </Button>
                     
                     {isUploading && (
@@ -264,11 +478,15 @@ const FileUploadComponent = () => {
                     
                     <Button
                       leftIcon={<IoLogoGithub />}
-                      colorScheme="brand"
+                      colorScheme="purple"
+                      variant="solid"
                       onClick={handleGithubUpload}
                       isDisabled={!repoUrl || isUploading}
                       isLoading={isUploading}
                       loadingText="Connecting..."
+                      size="md"
+                      width="100%"
+                      mt={2}
                     >
                       Connect Repository
                     </Button>
@@ -301,9 +519,16 @@ const FileUploadComponent = () => {
                       />
                       <VStack align="start" spacing={0}>
                         <Text fontWeight="medium">{file.name}</Text>
-                        <Text fontSize="xs" color="gray.500">
-                          Uploaded {new Date(file.uploadedAt).toLocaleString()}
-                        </Text>
+                        <HStack spacing={2}>
+                          {file.size && (
+                            <Text fontSize="xs" color="gray.500">
+                              {formatFileSize(file.size)}
+                            </Text>
+                          )}
+                          <Text fontSize="xs" color="gray.500">
+                            Uploaded {new Date(file.uploadedAt).toLocaleString()}
+                          </Text>
+                        </HStack>
                       </VStack>
                     </HStack>
                     <Badge colorScheme="green">
