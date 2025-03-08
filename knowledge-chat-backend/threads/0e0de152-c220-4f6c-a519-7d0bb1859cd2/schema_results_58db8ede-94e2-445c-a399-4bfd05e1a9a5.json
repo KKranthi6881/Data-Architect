@@ -1,0 +1,80 @@
+{
+  "id": "2b1e6fc5-b1cb-44ec-b3a8-310b27ac3381",
+  "thread_id": "0e0de152-c220-4f6c-a519-7d0bb1859cd2",
+  "conversation_id": "58db8ede-94e2-445c-a399-4bfd05e1a9a5",
+  "timestamp": "2025-03-08T00:13:25.087262",
+  "parsed_question": {
+    "rephrased_question": "Identify common sequences and patterns of feature usage among users, focusing on user adoption funnels and feature adoption impact on revenue.",
+    "key_points": [
+      "The analysis should focus on identifying common sequences and patterns of feature usage that are related to user adoption funnels and feature adoption impact on revenue.",
+      "The goal is to understand how features are used by users in a way that affects their adoption and engagement with the product."
+    ],
+    "business_context": {
+      "domain": "User Experience and Product Adoption",
+      "primary_objective": "Understand user behavior and optimize feature usage for better adoption and revenue growth.",
+      "key_entities": [
+        "Users",
+        "Features"
+      ],
+      "business_impact": "Improved user adoption and revenue growth through data-driven insights."
+    },
+    "assumptions": [
+      "Assuming that feature usage patterns can be used to predict user adoption and engagement with the product.",
+      "Assuming that understanding these patterns is crucial for optimizing feature development and improving overall user experience."
+    ],
+    "clarifying_questions": [
+      "What specific sequences and patterns of feature usage should be analyzed?",
+      "How will the analysis of feature usage patterns impact feature development and optimization?"
+    ],
+    "confidence_score": 0.85,
+    "thread_id": "0e0de152-c220-4f6c-a519-7d0bb1859cd2",
+    "conversation_id": "58db8ede-94e2-445c-a399-4bfd05e1a9a5"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.2,
+      "description": "",
+      "explanation": "This schema is not relevant to the business question as it does not contain any information about user behavior or feature usage.",
+      "query_pattern": ""
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.2,
+      "description": "",
+      "explanation": "This schema is not relevant to the business question as it does not contain any information about user behavior or feature usage.",
+      "query_pattern": ""
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.2,
+      "description": "",
+      "explanation": "This schema is not relevant to the business question as it does not contain any information about user behavior or feature usage.",
+      "query_pattern": ""
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.2,
+      "description": "",
+      "explanation": "This schema is not relevant to the business question as it does not contain any information about user behavior or feature usage.",
+      "query_pattern": ""
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.6,
+      "description": "",
+      "explanation": "This schema is somewhat relevant to the business question as it contains information about user interactions with features. However, more columns would be needed to fully answer the business question.",
+      "query_pattern": "SELECT feature_id, user_id, interaction_type FROM unknown_table WHERE interaction_date BETWEEN '2022-01-01' AND '2022-12-31'"
+    }
+  ]
+}

@@ -5,315 +5,305 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+import re
 
-import httpx
-from langchain_community.embeddings import OllamaEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain_core.documents import Document
+from langchain_core.prompts import PromptTemplate
+from langchain_ollama import ChatOllama
+
+from src.db.database import ChatDatabase
+from src.tools import SearchTools
+from src.utils import ChromaDBManager
+from src.agents.data_architect.question_parser import QuestionParserSystem
 
 # Set up logger
 logger = logging.getLogger(__name__)
 
 class SchemaSearchAgent:
-    """Agent for searching SQL schemas in vector database"""
+    """Agent for searching SQL schemas based on parsed questions"""
     
     def __init__(self):
+        """Initialize the schema search agent"""
         self.logger = logging.getLogger(__name__)
-        self.embedding_model = "nomic-embed-text"
-        self.llm_model = "llama3"
-        self.collection_name = "sql_schemas"
-        self.db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "db")
-        self.threads_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "threads")
+        self.db = ChatDatabase()
         
-        # Initialize embeddings
-        self.embeddings = OllamaEmbeddings(
-            model=self.embedding_model,
-            base_url="http://localhost:11434"
+        # Create ChromaDBManager and SearchTools
+        self.chroma_manager = ChromaDBManager()
+        self.search_tools = SearchTools(self.chroma_manager)
+        
+        # Initialize LLM
+        self.llm = ChatOllama(
+            model="llama3.2:latest",
+            temperature=0.1,
+            base_url="http://localhost:11434",
+            timeout=120,
         )
+    
+    def search_schemas(self, parsed_question: Dict[str, Any], max_results: int = 5) -> List[Dict[str, Any]]:
+        """
+        Search for relevant SQL schemas based on the parsed question
         
-        # Initialize vector store
-        self.vector_store = self._initialize_vector_store()
-    
-    def _initialize_vector_store(self) -> Chroma:
-        """Initialize the vector store for schema search"""
-        try:
-            # Create vector store directory if it doesn't exist
-            os.makedirs(os.path.join(self.db_path, "vector_db"), exist_ok=True)
+        Args:
+            parsed_question: The output from the question parser
+            max_results: Maximum number of results to return
             
-            # Initialize Chroma with the embeddings
-            vector_store = Chroma(
-                collection_name=self.collection_name,
-                embedding_function=self.embeddings,
-                persist_directory=os.path.join(self.db_path, "vector_db")
-            )
-            
-            return vector_store
-        except Exception as e:
-            self.logger.error(f"Error initializing vector store: {e}")
-            raise
-    
-    def search_schemas(self, parsed_question: Dict[str, Any], top_k: int = 5) -> List[Dict[str, Any]]:
-        """Search for relevant SQL schemas based on the parsed question"""
+        Returns:
+            List of schema search results
+        """
         try:
             # Create search query from parsed question
             search_query = self._create_search_query(parsed_question)
-            self.logger.info(f"Created search query: {search_query}")
+            self.logger.info(f"Created schema search query: {search_query}")
             
-            # Search for relevant schemas
-            results = self.vector_store.similarity_search_with_score(
-                query=search_query,
-                k=top_k
-            )
+            # Use the search_tools to search for SQL schemas
+            search_results = self.search_tools.search_sql_schema(search_query, limit=max_results)
             
-            # Format search results
-            formatted_results = self._format_search_results(results, parsed_question)
+            # Check if we got valid results
+            if search_results.get("status") != "success" or not search_results.get("results"):
+                self.logger.warning(f"No schema search results found or error in search")
+                return []
             
-            # Enhance search results with LLM
+            # Format the results for enhancement
+            formatted_results = search_results.get("results", [])
+            
+            # Enhance results with LLM
             enhanced_results = self._enhance_search_results(formatted_results, parsed_question)
             
             return enhanced_results
+            
         except Exception as e:
-            self.logger.error(f"Error searching schemas: {e}")
+            self.logger.error(f"Error in schema search: {e}", exc_info=True)
             return []
     
     def _create_search_query(self, parsed_question: Dict[str, Any]) -> str:
         """Create a search query from the parsed question"""
         try:
             # Extract key information from parsed question
-            original_question = parsed_question.get("original_question", "")
             rephrased_question = parsed_question.get("rephrased_question", "")
+            key_points = parsed_question.get("key_points", [])
             business_context = parsed_question.get("business_context", {})
-            domain = business_context.get("domain", "")
-            primary_objective = business_context.get("primary_objective", "")
-            key_entities = business_context.get("key_entities", [])
             
-            # Extract query intent
-            query_intent = parsed_question.get("query_intent", {})
-            primary_intent = query_intent.get("primary_intent", "")
-            metrics = query_intent.get("metrics", [])
-            grouping = query_intent.get("grouping", [])
+            # Build search query
+            query_parts = [rephrased_question]
             
-            # Combine information into a search query
-            search_query = f"{rephrased_question} {primary_intent}"
+            # Add key points (limited to first 3)
+            if key_points:
+                query_parts.extend(key_points[:3])
             
-            # Add key entities
-            if key_entities:
-                search_query += f" {' '.join(key_entities)}"
+            # Add key entities from business context
+            if business_context and "key_entities" in business_context:
+                entities = business_context.get("key_entities", [])
+                if entities and isinstance(entities, list):
+                    query_parts.append(" ".join(entities[:5]))
             
-            # Add metrics and grouping
-            if metrics:
-                search_query += f" {' '.join(metrics)}"
-            if grouping:
-                search_query += f" {' '.join(grouping)}"
+            # Join all parts
+            search_query = " ".join(query_parts)
             
             return search_query
-        except Exception as e:
-            self.logger.error(f"Error creating search query: {e}")
-            return parsed_question.get("original_question", "")
-    
-    def _format_search_results(self, results: List[tuple], parsed_question: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Format search results for further processing"""
-        formatted_results = []
-        
-        for doc, score in results:
-            # Extract schema information from document
-            schema_info = {
-                "schema_name": doc.metadata.get("schema_name", "Unknown"),
-                "table_name": doc.metadata.get("table_name", "Unknown"),
-                "columns": doc.metadata.get("columns", []),
-                "description": doc.metadata.get("description", ""),
-                "content": doc.page_content,
-                "relevance_score": float(score),
-                "metadata": doc.metadata
-            }
             
-            formatted_results.append(schema_info)
-        
-        return formatted_results
+        except Exception as e:
+            self.logger.error(f"Error creating schema search query: {e}")
+            return parsed_question.get("rephrased_question", "")
     
     def _enhance_search_results(self, search_results: List[Dict[str, Any]], parsed_question: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Enhance search results with LLM explanations"""
-        if not search_results:
-            return []
-        
+        """Enhance search results with LLM analysis"""
         try:
-            # Prepare context for LLM
-            context = {
-                "question": parsed_question.get("original_question", ""),
-                "rephrased_question": parsed_question.get("rephrased_question", ""),
-                "business_context": parsed_question.get("business_context", {}),
-                "query_intent": parsed_question.get("query_intent", {}),
-                "search_results": search_results
-            }
+            if not search_results:
+                return []
             
-            # Convert context to JSON string
-            context_json = json.dumps(context, indent=2)
+            # Create prompt for LLM
+            prompt_template = """
+            You are an expert data architect helping to find relevant database schemas for a business question.
             
-            # Prepare prompt for LLM
-            prompt = f"""
-            You are a data architecture expert. I need you to analyze these schema search results and explain how they relate to the user's question.
+            BUSINESS QUESTION:
+            {rephrased_question}
             
-            For each schema result, provide:
-            1. A brief explanation of why this schema is relevant to the question
-            2. How the columns in this schema can be used to answer the question
-            3. Any potential SQL query patterns that could be used with this schema
+            KEY POINTS:
+            {key_points}
             
-            Here is the context:
-            {context_json}
+            BUSINESS CONTEXT:
+            {business_context}
             
-            Please format your response as a JSON array with the following structure for each result:
+            I've found some database schemas that might be relevant. For each schema, analyze:
+            1. How relevant it is to the business question (score 0-10)
+            2. Why it's relevant or what insights it provides
+            3. How it could be used to answer the business question
+            4. A sample SQL query pattern that could be used with this schema
+            
+            SCHEMAS:
+            {schema_snippets}
+            
+            Provide your analysis in the following JSON format:
+            ```json
             [
-                {{
-                    "schema_name": "original schema name",
-                    "table_name": "original table name",
-                    "columns": ["original columns"],
-                    "relevance_score": original relevance score,
-                    "explanation": "Your explanation of why this schema is relevant",
-                    "query_pattern": "Example SQL query pattern using this schema",
-                    "column_usage": {{
-                        "column_name": "explanation of how this column is useful"
-                    }}
-                }},
-                ...
+              {{
+                "schema_name": "example_schema",
+                "table_name": "example_table",
+                "columns": ["column1", "column2", "column3"],
+                "relevance_score": 8.5,
+                "description": "This schema contains...",
+                "explanation": "This is relevant because...",
+                "query_pattern": "SELECT column1, column2 FROM example_table WHERE..."
+              }},
+              ...
             ]
+            ```
             
-            Return only the JSON array without any additional text.
+            IMPORTANT: Your response must be valid JSON that can be parsed. Do not include any text outside the JSON block.
             """
             
-            # Call LLM to enhance results
-            response = httpx.post(
-                "http://localhost:11434/api/chat",
-                json={
-                    "model": self.llm_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False
-                }
+            # Format schema snippets for the prompt
+            schema_snippet_texts = []
+            for i, result in enumerate(search_results):
+                # Extract schema information
+                schema_name = result.get("schema_name", "unknown_schema")
+                table_name = result.get("table_name", "unknown_table")
+                columns = result.get("columns", [])
+                description = result.get("description", "")
+                
+                # Format columns as a list
+                if isinstance(columns, str):
+                    columns = [col.strip() for col in columns.split(",")]
+                
+                # Create schema snippet text
+                columns_text = ", ".join(columns) if columns else "No columns available"
+                snippet_text = f"SCHEMA {i+1}:\nSchema: {schema_name}\nTable: {table_name}\nColumns: {columns_text}\nDescription: {description}\n"
+                schema_snippet_texts.append(snippet_text)
+            
+            # Format the prompt
+            prompt = PromptTemplate.from_template(prompt_template).format(
+                rephrased_question=parsed_question.get("rephrased_question", ""),
+                key_points="\n".join([f"- {point}" for point in parsed_question.get("key_points", [])]),
+                business_context=json.dumps(parsed_question.get("business_context", {}), indent=2),
+                schema_snippets="\n".join(schema_snippet_texts)
             )
             
-            if response.status_code != 200:
-                self.logger.error(f"Error from LLM API: {response.text}")
-                return search_results
+            # Get LLM response
+            response = self.llm.invoke(prompt)
+            response_text = response.content if hasattr(response, 'content') else str(response)
             
             # Extract JSON from response
-            llm_response = response.json()
-            llm_content = llm_response.get("message", {}).get("content", "")
+            json_text = self._extract_json(response_text)
             
-            # Extract JSON array from content
-            json_text = llm_content
-            if "```json" in llm_content:
-                json_text = llm_content.split("```json")[1].split("```")[0].strip()
-            elif "```" in llm_content:
-                json_text = llm_content.split("```")[1].strip()
+            if not json_text:
+                self.logger.warning("Could not extract JSON from LLM response")
+                return self._format_raw_results(search_results)
             
-            # Parse JSON
-            enhanced_results = json.loads(json_text)
-            
-            return enhanced_results
+            try:
+                enhanced_results = json.loads(json_text)
+                # Validate and fix the enhanced results
+                return self._validate_enhanced_results(enhanced_results, search_results)
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Error enhancing schema search results: {e}")
+                return self._format_raw_results(search_results)
+                
         except Exception as e:
-            self.logger.error(f"Error enhancing search results: {e}")
-            return search_results
+            self.logger.error(f"Error enhancing schema search results: {e}", exc_info=True)
+            # Return basic results if enhancement fails
+            return self._format_raw_results(search_results)
+    
+    def _extract_json(self, text: str) -> str:
+        """Extract JSON from LLM response text"""
+        # Try to extract JSON from markdown code block
+        json_pattern = r"```(?:json)?\s*([\s\S]*?)\s*```"
+        matches = re.findall(json_pattern, text)
+        
+        if matches:
+            return matches[0].strip()
+        
+        # Try to extract JSON array directly
+        array_pattern = r"\[\s*{[\s\S]*}\s*\]"
+        matches = re.findall(array_pattern, text)
+        
+        if matches:
+            return matches[0].strip()
+        
+        # If all else fails, try to extract anything that looks like JSON
+        if text.strip().startswith("[") and text.strip().endswith("]"):
+            return text.strip()
+        
+        return ""
+    
+    def _validate_enhanced_results(self, enhanced_results: List[Dict[str, Any]], original_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Validate and fix enhanced results"""
+        # Ensure we have a list
+        if not isinstance(enhanced_results, list):
+            self.logger.warning("Enhanced results is not a list, using raw results")
+            return self._format_raw_results(original_results)
+        
+        # Ensure all results have the required fields
+        for i, result in enumerate(enhanced_results):
+            if "relevance_score" not in result:
+                result["relevance_score"] = 0.7
+            elif isinstance(result["relevance_score"], int) or isinstance(result["relevance_score"], float):
+                # Normalize score to 0-1 range if it's on a 0-10 scale
+                if result["relevance_score"] > 1:
+                    result["relevance_score"] = result["relevance_score"] / 10.0
+            else:
+                result["relevance_score"] = 0.7
+                
+            if "explanation" not in result:
+                result["explanation"] = "Automatically extracted from database schema"
+                
+            if "schema_name" not in result and i < len(original_results):
+                result["schema_name"] = original_results[i].get("schema_name", "unknown_schema")
+                
+            if "table_name" not in result and i < len(original_results):
+                result["table_name"] = original_results[i].get("table_name", "unknown_table")
+                
+            if "columns" not in result and i < len(original_results):
+                result["columns"] = original_results[i].get("columns", [])
+                
+            if "description" not in result and i < len(original_results):
+                result["description"] = original_results[i].get("description", "")
+                
+            if "query_pattern" not in result:
+                result["query_pattern"] = f"SELECT * FROM {result.get('schema_name', 'schema')}.{result.get('table_name', 'table')} LIMIT 10"
+        
+        return enhanced_results
+    
+    def _format_raw_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Format raw search results when enhancement fails"""
+        return [
+            {
+                "schema_name": result.get("schema_name", "unknown_schema"),
+                "table_name": result.get("table_name", "unknown_table"),
+                "columns": result.get("columns", []),
+                "relevance_score": 0.7,  # Default relevance score
+                "description": result.get("description", ""),
+                "explanation": "Automatically extracted from database schema",
+                "query_pattern": f"SELECT * FROM {result.get('schema_name', 'schema')}.{result.get('table_name', 'table')} LIMIT 10"
+            }
+            for result in search_results
+        ]
     
     def save_search_results(self, thread_id: str, conversation_id: str, parsed_question: Dict[str, Any], search_results: List[Dict[str, Any]]):
-        """Save search results to thread directory"""
+        """Save search results to the thread directory"""
         try:
-            # Create thread directory if it doesn't exist
-            thread_dir = os.path.join(self.threads_path, thread_id)
-            os.makedirs(thread_dir, exist_ok=True)
+            # Get thread directory
+            thread_dir = Path(self.db.db_path).parent / "threads" / thread_id
+            thread_dir.mkdir(exist_ok=True)
             
-            # Create search results file
-            search_results_file = os.path.join(thread_dir, f"schema_results_{conversation_id}.json")
+            # Create a search results file
+            search_results_file = thread_dir / f"schema_results_{conversation_id}.json"
             
-            # Prepare data to save
-            data_to_save = {
+            # Prepare data for JSON storage
+            json_data = {
+                "id": str(uuid.uuid4()),
+                "thread_id": thread_id,
                 "conversation_id": conversation_id,
                 "timestamp": datetime.now().isoformat(),
                 "parsed_question": parsed_question,
                 "search_results": search_results
             }
             
-            # Save to file
+            # Write to file
             with open(search_results_file, 'w') as f:
-                json.dump(data_to_save, f, indent=2)
-            
-            self.logger.info(f"Saved search results to {search_results_file}")
-        except Exception as e:
-            self.logger.error(f"Error saving search results: {e}")
-    
-    def add_schema_to_vector_store(self, schema_info: Dict[str, Any]):
-        """Add a schema to the vector store"""
-        try:
-            # Create document from schema info
-            content = f"""
-            Schema: {schema_info.get('schema_name', '')}
-            Table: {schema_info.get('table_name', '')}
-            Description: {schema_info.get('description', '')}
-            Columns: {', '.join(schema_info.get('columns', []))}
-            """
-            
-            # Create document
-            doc = Document(
-                page_content=content,
-                metadata={
-                    "schema_name": schema_info.get("schema_name", ""),
-                    "table_name": schema_info.get("table_name", ""),
-                    "columns": schema_info.get("columns", []),
-                    "description": schema_info.get("description", ""),
-                    "primary_key": schema_info.get("primary_key", []),
-                    "foreign_keys": schema_info.get("foreign_keys", []),
-                    "data_types": schema_info.get("data_types", {}),
-                    "source": schema_info.get("source", "manual")
-                }
-            )
-            
-            # Add to vector store
-            self.vector_store.add_documents([doc])
-            
-            # Persist changes
-            self.vector_store.persist()
+                json.dump(json_data, f, indent=2)
+                
+            self.logger.info(f"Saved schema search results to {search_results_file}")
             
             return True
+            
         except Exception as e:
-            self.logger.error(f"Error adding schema to vector store: {e}")
-            return False
-    
-    def bulk_add_schemas(self, schemas: List[Dict[str, Any]]):
-        """Add multiple schemas to the vector store"""
-        try:
-            documents = []
-            
-            for schema in schemas:
-                # Create content for embedding
-                content = f"""
-                Schema: {schema.get('schema_name', '')}
-                Table: {schema.get('table_name', '')}
-                Description: {schema.get('description', '')}
-                Columns: {', '.join(schema.get('columns', []))}
-                """
-                
-                # Create document
-                doc = Document(
-                    page_content=content,
-                    metadata={
-                        "schema_name": schema.get("schema_name", ""),
-                        "table_name": schema.get("table_name", ""),
-                        "columns": schema.get("columns", []),
-                        "description": schema.get("description", ""),
-                        "primary_key": schema.get("primary_key", []),
-                        "foreign_keys": schema.get("foreign_keys", []),
-                        "data_types": schema.get("data_types", {}),
-                        "source": schema.get("source", "bulk_import")
-                    }
-                )
-                
-                documents.append(doc)
-            
-            # Add documents to vector store
-            self.vector_store.add_documents(documents)
-            
-            # Persist changes
-            self.vector_store.persist()
-            
-            return True
-        except Exception as e:
-            self.logger.error(f"Error bulk adding schemas: {e}")
+            self.logger.error(f"Error saving schema search results: {e}", exc_info=True)
             return False 

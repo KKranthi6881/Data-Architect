@@ -106,6 +106,17 @@ def render_thread_detail(thread_id):
             except:
                 pass
         
+        # Display Data Architect sections if available
+        if "sections" in technical_details:
+            sections = technical_details["sections"]
+            
+            with st.expander("🏗️ Data Architect Solution", expanded=True):
+                # Display each section
+                for section_name, section_content in sections.items():
+                    st.markdown(f"### {section_name}")
+                    st.markdown(section_content)
+                    st.markdown("---")
+        
         # Display GitHub search results if available
         if "github_search_results" in technical_details and technical_details["github_search_results"]:
             with st.expander("📂 Relevant Code Examples"):

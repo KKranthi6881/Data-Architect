@@ -1,0 +1,90 @@
+{
+  "id": "d6281dd8-1630-4cd0-b075-ca7261d59948",
+  "thread_id": "c5bfcd5b-6e34-4471-9725-862d016b15a9",
+  "conversation_id": "38aad075-86f4-4fbd-951a-78f55a241c9a",
+  "timestamp": "2025-03-07T23:44:57.684200",
+  "parsed_question": {
+    "rephrased_question": "Analyze workflow success rates over time to identify trends and patterns, providing a moving average calculation for each category.",
+    "key_points": [
+      "The goal is to analyze workflow completion rates over time to understand trends and patterns.",
+      "Moving averages will be used to smooth out fluctuations in the data."
+    ],
+    "business_context": {
+      "domain": "Workflow Management",
+      "primary_objective": "Optimize Workflow Completion Rates",
+      "key_entities": [
+        "Workflows",
+        "Completion Rates"
+      ],
+      "business_impact": "Improving workflow completion rates will increase productivity and efficiency."
+    },
+    "assumptions": [
+      "The data is accurate and up-to-date.",
+      "The moving average calculation will provide a meaningful representation of trends in the data."
+    ],
+    "clarifying_questions": [
+      "What is the desired frequency for the moving average calculation?",
+      "Are there any specific categories or workflows that require special attention?"
+    ],
+    "confidence_score": 0.85,
+    "thread_id": "c5bfcd5b-6e34-4471-9725-862d016b15a9",
+    "conversation_id": "38aad075-86f4-4fbd-951a-78f55a241c9a"
+  },
+  "search_results": [
+    {
+      "file_path": "readme.md",
+      "code_snippet": "## Scaling Factor\n\n\nAlso, note that you can change the scaling factor of the TPCH dataset by switching the source database in `_source/source_tpch.yml` from the default of `10` to `100` or `1000` by changing the database name accordingly.\n\n```\nversion: 2\n\nsources:\n  - name: tpch\n    database: SNOWFLAKE_SAMPLE_DATA\n    schema: TPCH_SF10\n    loader: Snowflake\n\n...\n\n```\n## Snowflake Usage\n\nUsing an X-Small warehouse (1 credit / hour), the project currently runs in about *5 minutes* against the `TPCH_SF10` database.\n\n---\n- [What is dbt](https://dbt.readme.io/docs/overview)?\n- Read the [dbt viewpoint](https://dbt.readme.io/docs/viewpoint)\n- [Installation](https://dbt.readme.io/docs/installation)\n- Join the [chat](http://ac-slackin.herokuapp.com/) on Slack for live questions and support.\n\n---",
+      "relevance_score": 0.7,
+      "explanation": "Automatically extracted from GitHub repository",
+      "repo_info": {
+        "repo_name": "Ai-agent-dbt-snowflake",
+        "repo_url": "https://github.com/KKranthi6881/Ai-agent-dbt-snowflake",
+        "language": "markdown"
+      }
+    },
+    {
+      "file_path": "readme.md",
+      "code_snippet": "# dbt TPC-H Sample\n\nThis is a dbt sample project for Snowflake using the `TPC-H` example dataset that ships as a shared database with Snowflake.\n\nMore details can be found on the [TPC website](http://www.tpc.org/tpch/default.asp) and in the [specification document](http://www.tpc.org/tpc_documents_current_versions/pdf/tpc-h_v2.18.0.pdf).\n\nThe project is laid out as follows:",
+      "relevance_score": 0.7,
+      "explanation": "Automatically extracted from GitHub repository",
+      "repo_info": {
+        "repo_name": "Ai-agent-dbt-snowflake",
+        "repo_url": "https://github.com/KKranthi6881/Ai-agent-dbt-snowflake",
+        "language": "markdown"
+      }
+    },
+    {
+      "file_path": "macros/dbt_housekeeping.sql",
+      "code_snippet": "{% macro dbt_housekeeping() -%}\n    '{{ invocation_id }}'::varchar as dbt_batch_id,\n    '{{ run_started_at }}'::timestamp as dbt_batch_ts\n{%- endmacro %}",
+      "relevance_score": 0.7,
+      "explanation": "Automatically extracted from GitHub repository",
+      "repo_info": {
+        "repo_name": "Ai-agent-dbt-snowflake",
+        "repo_url": "https://github.com/KKranthi6881/Ai-agent-dbt-snowflake",
+        "language": "dbt"
+      }
+    },
+    {
+      "file_path": "readme.md",
+      "code_snippet": "## Profile\n- Add a new profile to `~/.dbt/profiles.yml` called `tpch`.\n\n```\ntpch:\n    target: dev\n    outputs:\n        prod:\n            type: snowflake\n            threads: 8\n            account: <account>\n            user: <user>\n            password: <password>\n            role: <role>\n            database: <target_database>\n            warehouse: <snowflake_warehouse>\n            schema: <default_schema>\n\n        dev:\n            type: snowflake\n            threads: 8\n            account: <account>\n            user: <user>\n            password: <password>\n            role: <role>\n            database: <target_database>\n            warehouse: <snowflake_warehouse>\n            schema: <default_schema>\n```\n\n## Packages\n\nThis project make use of the [dbt_utils](https://github.com/fishtown-analytics/dbt-utils) package, so you will need to call `dbt deps` before running any model to ensure dbt can combile all package macros.\n\n\n## Scaling Factor",
+      "relevance_score": 0.7,
+      "explanation": "Automatically extracted from GitHub repository",
+      "repo_info": {
+        "repo_name": "Ai-agent-dbt-snowflake",
+        "repo_url": "https://github.com/KKranthi6881/Ai-agent-dbt-snowflake",
+        "language": "markdown"
+      }
+    },
+    {
+      "file_path": "macros/dt_convert_money.sql",
+      "code_snippet": "{% macro money(col) -%}\n::decimal(16,4)\n{%- endmacro %}",
+      "relevance_score": 0.7,
+      "explanation": "Automatically extracted from GitHub repository",
+      "repo_info": {
+        "repo_name": "Ai-agent-dbt-snowflake",
+        "repo_url": "https://github.com/KKranthi6881/Ai-agent-dbt-snowflake",
+        "language": "dbt"
+      }
+    }
+  ]
+}

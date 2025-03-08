@@ -44,94 +44,78 @@ class HumanFeedbackSystem:
         self.feedback_callbacks = {}
         self.timeout_seconds = 300  # 5 minutes timeout
 
-    async def process_feedback(self, feedback_id: str, approved: bool, comments: str = None) -> Dict:
-        """Process feedback for business analysis"""
+    async def process_feedback(self, 
+                              feedback_id: str, 
+                              approved: bool, 
+                              comments: Optional[str] = None,
+                              suggested_changes: Optional[Dict[str, Any]] = None,
+                              message_id: Optional[str] = None):
+        """Process feedback for a parsed question"""
         try:
-            self.logger.info(f"Processing feedback for ID: {feedback_id}")
+            self.logger.info(f"Processing feedback: ID={feedback_id}, approved={approved}, comments={comments}")
             
-            feedback_result = {
-                "feedback_id": feedback_id,
-                "approved": approved,
-                "comments": comments,
-                "timestamp": datetime.now().isoformat(),
-                "status": "processed"
-            }
-
-            if feedback_id in self.pending_feedback:
-                # Get original business analysis
-                original_analysis = self.pending_feedback[feedback_id].get("business_analysis", {})
-                conversation_id = self.pending_feedback[feedback_id].get("conversation_id")
+            # Get the feedback request
+            feedback_request = self.pending_feedback.get(feedback_id)
+            if not feedback_request:
+                self.logger.warning(f"No feedback request found for ID: {feedback_id}")
+                return {"status": "error", "message": "Feedback request not found"}
+            
+            # Get conversation_id from feedback request
+            conversation_id = feedback_request.get("conversation_id")
+            if not conversation_id:
+                self.logger.warning(f"No conversation_id found for feedback ID: {feedback_id}")
+                return {"status": "error", "message": "Conversation ID not found"}
+            
+            # Process based on approval status
+            if approved:
+                # Process approved feedback
+                search_results = await self.process_approved_feedback(
+                    feedback_id=feedback_id,
+                    conversation_id=conversation_id,
+                    parsed_question=feedback_request.get("parsed_question", {})
+                )
                 
-                # Get thread ID from the conversation if available
-                thread_id = None
-                if conversation_id:
-                    conversation = self.db.get_conversation(conversation_id)
-                    if conversation:
-                        thread_id = conversation.get("thread_id")
-                        feedback_result["thread_id"] = thread_id
+                return {
+                    "status": "success",
+                    "feedback_id": feedback_id,
+                    "approved": approved,
+                    "search_results": search_results,
+                    "message": "Feedback processed successfully"
+                }
+            else:
+                # Handle rejected feedback
+                # Update feedback status in the database
+                conversation = self.db.get_conversation(conversation_id)
+                if conversation:
+                    conversation_data = {
+                        "query": conversation.get("query", ""),
+                        "output": conversation.get("output", ""),
+                        "technical_details": conversation.get("technical_details", ""),
+                        "code_context": conversation.get("code_context", "{}"),
+                        "feedback_status": "rejected",
+                        "feedback_comments": comments,
+                        "thread_id": conversation.get("thread_id")
+                    }
+                    self.db.save_conversation(conversation_id, conversation_data)
                 
-                if approved:
-                    feedback_result["final_analysis"] = original_analysis
-                    feedback_status = "approved"
-                    
-                    # Trigger GitHub code search for approved feedback
-                    if conversation_id:
-                        search_results = await self.process_approved_feedback(
-                            feedback_id=feedback_id,
-                            conversation_id=conversation_id,
-                            parsed_question=original_analysis
-                        )
-                        
-                        if search_results:
-                            feedback_result["github_search_results"] = search_results
-                else:
-                    # Store feedback for improvement
-                    feedback_result["needs_improvement"] = True
-                    feedback_result["improvement_comments"] = comments
-                    feedback_status = "needs_improvement"
-                
-                # Save feedback to database if conversation_id exists
-                if conversation_id:
-                    with self._lock:
-                        # Get the existing conversation
-                        conversation = self.db.get_conversation(conversation_id)
-                        if conversation:
-                            # Update with feedback information
-                            conversation_data = {
-                                "query": conversation.get('query', ''),
-                                "output": conversation.get('output', ''),
-                                "technical_details": conversation.get('technical_details', ''),
-                                "code_context": conversation.get('code_context', ''),
-                                "feedback_status": feedback_status,
-                                "feedback_comments": comments,
-                                "thread_id": thread_id  # Preserve thread ID
-                            }
-                            # Save back to database
-                            self.db.save_conversation(conversation_id, conversation_data)
-                
-                del self.pending_feedback[feedback_id]
-            
-            self.processed_feedback[feedback_id] = feedback_result
-            
-            # Resolve any waiting futures
-            if feedback_id in self.feedback_callbacks and not self.feedback_callbacks[feedback_id].done():
-                self.feedback_callbacks[feedback_id].set_result(feedback_result)
-            
-            return feedback_result
-            
+                return {
+                    "status": "success",
+                    "feedback_id": feedback_id,
+                    "approved": approved,
+                    "message": "Feedback recorded as rejected"
+                }
+        
         except Exception as e:
-            self.logger.error(f"Error processing feedback: {e}")
-            raise
+            self.logger.error(f"Error processing feedback: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
 
     def get_pending_feedback_requests(self) -> Dict:
         """Get all pending feedback requests"""
         return self.pending_feedback
 
-    def get_feedback_status(self, feedback_id: str) -> Optional[Dict]:
-        """Get status of a specific feedback request"""
-        if feedback_id in self.processed_feedback:
-            return self.processed_feedback[feedback_id]
-        elif feedback_id in self.pending_feedback:
+    def get_feedback_status(self, feedback_id: str) -> Dict[str, Any]:
+        """Get the status of a feedback request"""
+        if feedback_id in self.pending_feedback:
             return self.pending_feedback[feedback_id]
         return None
 
@@ -142,13 +126,20 @@ class HumanFeedbackSystem:
             "conversation_id": conversation_id,
             "timestamp": datetime.now().isoformat(),
             "status": "pending",
-            "confidence_score": business_analysis.get("confidence_score", 0.0)
+            "confidence_score": business_analysis.get("confidence_score", 0.0),
+            "parsed_question": business_analysis  # Store the parsed question for later use
         }
         
         # Create a future for this feedback request
         if feedback_id not in self.feedback_callbacks:
             loop = asyncio.get_event_loop()
             self.feedback_callbacks[feedback_id] = loop.create_future()
+        
+        # Set timeout for auto-approval if timeout_seconds is positive
+        if hasattr(self, 'timeout_seconds') and self.timeout_seconds > 0:
+            self._set_timeout(feedback_id, self.timeout_seconds)
+        
+        self.logger.info(f"Added feedback request: {feedback_id} for conversation: {conversation_id}")
 
     def submit_for_feedback(self, request: Dict) -> str:
         """Submit a request for feedback."""
@@ -534,3 +525,40 @@ class HumanFeedbackSystem:
         except Exception as e:
             self.logger.error(f"Error processing approved feedback: {e}", exc_info=True)
             return None
+
+    def _set_timeout(self, feedback_id: str, timeout_seconds: int):
+        """Set a timeout for auto-approval of feedback"""
+        async def timeout_callback():
+            try:
+                await asyncio.sleep(timeout_seconds)
+                # Check if feedback is still pending
+                if feedback_id in self.pending_feedback and self.pending_feedback[feedback_id].get("status") == "pending":
+                    self.logger.info(f"Auto-approving feedback {feedback_id} due to timeout")
+                    
+                    # Get conversation_id
+                    conversation_id = self.pending_feedback[feedback_id].get("conversation_id")
+                    parsed_question = self.pending_feedback[feedback_id].get("parsed_question", {})
+                    
+                    if conversation_id:
+                        # Auto-approve the feedback
+                        await self.process_feedback(
+                            feedback_id=feedback_id,
+                            approved=True,
+                            comments="Auto-approved due to timeout"
+                        )
+                        
+                        # If there's a callback waiting, resolve it
+                        if feedback_id in self.feedback_callbacks and not self.feedback_callbacks[feedback_id].done():
+                            self.feedback_callbacks[feedback_id].set_result({
+                                "approved": True,
+                                "comments": "Auto-approved due to timeout"
+                            })
+            except Exception as e:
+                self.logger.error(f"Error in timeout callback for {feedback_id}: {e}")
+        
+        # Create and start the timeout task
+        try:
+            loop = asyncio.get_event_loop()
+            asyncio.create_task(timeout_callback())
+        except Exception as e:
+            self.logger.error(f"Error setting timeout for {feedback_id}: {e}")

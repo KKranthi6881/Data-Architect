@@ -24,6 +24,7 @@ import re
 import uuid
 import json
 from src.agents.data_architect.schema_search_agent import SchemaSearchAgent
+from src.agents.data_architect.data_architect_agent import DataArchitectAgent
 
 app = FastAPI(title="Knowledge Chat API")
 
@@ -68,6 +69,9 @@ chat_db.ensure_cleared_column()
 
 # Initialize tools and analysis system
 analysis_system = SimpleAnalysisSystem(code_search_tools)
+
+# Initialize the Data Architect Agent
+data_architect_agent = DataArchitectAgent()
 
 # Add new model for code analysis requests
 class CodeAnalysisRequest(BaseModel):
@@ -321,65 +325,45 @@ async def get_schema():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/")
-async def chat(request: dict):
-    """Process a chat message and return a response"""
+async def chat(request: ChatRequest):
+    """Process a chat message"""
     try:
-        # Extract message from request
-        message = request.get("message", "")
-        conversation_id = request.get("conversation_id")
-        thread_id = request.get("thread_id")
-        feedback = request.get("feedback")
-        
-        if not message:
-            return {"status": "error", "message": "No message provided"}
-        
         # Generate a new conversation ID if not provided
-        if not conversation_id:
-            conversation_id = str(uuid.uuid4())
+        conversation_id = request.conversation_id or str(uuid.uuid4())
         
-        # Generate a new thread ID if not provided
-        if not thread_id:
-            thread_id = str(uuid.uuid4())
-            
-        # Create thread directory if it doesn't exist
-        thread_dir = os.path.join(THREADS_DIR, thread_id)
-        os.makedirs(thread_dir, exist_ok=True)
+        # Use provided thread_id or create a new one
+        thread_id = request.thread_id or str(uuid.uuid4())
         
-        # Process the message with the data architect agent
+        # Process the message
         agent_response = await process_message(
-            message=message,
+            message=request.message,
             conversation_id=conversation_id,
-            thread_id=thread_id,
-            feedback=feedback
+            thread_id=thread_id
         )
         
-        # Extract the parsed question from the response
-        parsed_question = agent_response.get("parsed_question", {})
+        # Ensure the response includes all required fields
+        response = {
+            "answer": agent_response.get("answer", ""),
+            "conversation_id": conversation_id,
+            "thread_id": agent_response.get("thread_id", thread_id),
+            "feedback_id": agent_response.get("feedback_id", ""),
+            "parsed_question": agent_response.get("parsed_question", {}),
+            "feedback_required": True,  # Always require feedback for now
+            "feedback_status": "pending",
+            "confidence_score": agent_response.get("confidence_score", 0.0),
+            "details": agent_response.get("details", {})
+        }
         
-        # If we have a parsed question and feedback is approved, trigger schema search
-        if parsed_question and feedback and feedback.get("approved", False):
-            # Initialize schema search agent
-            schema_search_agent = SchemaSearchAgent()
-            
-            # Search for relevant schemas
-            schema_results = schema_search_agent.search_schemas(parsed_question)
-            
-            # Save schema search results
-            if schema_results:
-                schema_search_agent.save_search_results(
-                    thread_id=thread_id,
-                    conversation_id=conversation_id,
-                    parsed_question=parsed_question,
-                    search_results=schema_results
-                )
-                
-                # Add schema search results to the response
-                agent_response["schema_search_results"] = schema_results
+        logger.info(f"Chat response: feedback_id={response['feedback_id']}, conversation_id={conversation_id}")
         
-        return agent_response
+        return JSONResponse(content=response)
+        
     except Exception as e:
-        logger.error(f"Error processing chat message: {str(e)}", exc_info=True)
-        return {"status": "error", "message": str(e)}
+        logger.error(f"Error processing chat message: {e}", exc_info=True)
+        return JSONResponse(
+            content={"error": str(e)},
+            status_code=500
+        )
 
 def format_technical_details(doc_context: Dict) -> str:
     """Format technical implementation details from the context"""
@@ -426,73 +410,121 @@ def format_data_sources(doc_context: Dict) -> str:
     return "\n".join(formatted_sources) if formatted_sources else "Data sources will be analyzed"
 
 @app.post("/feedback/")
-async def submit_feedback(request: FeedbackRequest):
-    """Submit feedback for a conversation"""
+async def process_feedback(request: dict):
+    """Process feedback for a parsed question"""
     try:
-        logger.info(f"Processing feedback request: {request}")
+        # Extract feedback data
+        feedback_id = request.get("feedback_id")
+        conversation_id = request.get("conversation_id")
+        approved = request.get("approved", False)
+        comments = request.get("comments")
         
-        # Get the original conversation to retrieve thread_id
-        conversation = chat_db.get_conversation(request.conversation_id)
-        thread_id = conversation.get("thread_id") if conversation else None
+        if not feedback_id:
+            return {"status": "error", "message": "No feedback ID provided"}
         
-        # Process the feedback
-        feedback_result = await feedback_system.process_feedback(
-            request.feedback_id,
-            request.approved,
-            request.comments
+        logger.info(f"Processing feedback request: feedback_id='{feedback_id}' conversation_id='{conversation_id}' approved={approved} comments={comments}")
+        
+        # Check if this feedback has already been processed
+        feedback_status = feedback_system.get_feedback_status(feedback_id)
+        if feedback_status and feedback_status.get("status") == "processed":
+            logger.info(f"Feedback {feedback_id} has already been processed, skipping")
+            return {"status": "success", "message": "Feedback already processed", "already_processed": True}
+        
+        # Process feedback
+        result = await feedback_system.process_feedback(
+            feedback_id=feedback_id,
+            approved=approved,
+            comments=comments
         )
         
-        # Update the conversation with feedback status
-        conversation_data = {
-            "query": conversation.get("query", "") if conversation else "",
-            "output": conversation.get("output", "") if conversation else "",
-            "technical_details": conversation.get("technical_details", "") if conversation else "",
-            "code_context": conversation.get("code_context", "") if conversation else "",
-            "feedback_status": "approved" if request.approved else "needs_improvement",
-            "feedback_comments": request.comments,
-            "thread_id": thread_id  # Preserve thread_id
-        }
+        # Mark this feedback as processed to prevent loops
+        if feedback_id in feedback_system.pending_feedback:
+            feedback_system.pending_feedback[feedback_id]["status"] = "processed"
         
-        # Save updated conversation
-        chat_db.save_conversation(request.conversation_id, conversation_data)
-        
-        # If feedback indicates changes needed, prepare for follow-up
-        if not request.approved and request.comments:
-            # Create a new conversation ID for the follow-up but keep the same thread_id
-            follow_up_id = str(uuid.uuid4())
+        # If feedback is approved, trigger the Data Architect Agent
+        if approved and conversation_id:
+            # Get the conversation to extract thread_id and parsed_question
+            conversation = chat_db.get_conversation(conversation_id)
             
-            # Save placeholder for follow-up
-            follow_up_data = {
-                "query": f"Follow-up based on feedback: {request.comments}",
-                "output": "Processing follow-up...",
-                "technical_details": json.dumps({"feedback_id": request.feedback_id}),
-                "code_context": conversation.get("code_context", "") if conversation else "",
-                "thread_id": thread_id,  # Use the same thread_id
-                "feedback_status": "pending"
-            }
-            chat_db.save_conversation(follow_up_id, follow_up_data)
-            
-            # Include follow-up ID in response
-            feedback_result["follow_up_id"] = follow_up_id
+            if conversation:
+                thread_id = conversation.get("thread_id")
+                technical_details = conversation.get("technical_details", "{}")
+                
+                # Parse technical details
+                if isinstance(technical_details, str):
+                    try:
+                        technical_details = json.loads(technical_details)
+                    except json.JSONDecodeError:
+                        technical_details = {}
+                
+                # Extract parsed_question and original_question
+                parsed_question = technical_details
+                original_question = conversation.get("query", "")
+                
+                # Get search results from the result
+                code_search_results = result.get("search_results", {}).get("code_search_results", [])
+                schema_search_results = result.get("search_results", {}).get("schema_search_results", [])
+                
+                # Generate architect response
+                architect_response = data_architect_agent.generate_response(
+                    parsed_question=parsed_question,
+                    schema_results=schema_search_results,
+                    code_results=code_search_results,
+                    original_question=original_question
+                )
+                
+                if architect_response:
+                    # Include architect response in the result
+                    result["architect_response"] = architect_response
+                    
+                    # Create a new conversation entry with the architect's response
+                    new_conversation_id = str(uuid.uuid4())
+                    new_conversation_data = {
+                        "query": original_question,
+                        "output": architect_response.get("response", ""),
+                        "technical_details": json.dumps({
+                            "parsed_question": parsed_question,
+                            "schema_results": architect_response.get("schema_results", []),
+                            "code_results": architect_response.get("code_results", []),
+                            "sections": architect_response.get("sections", {})
+                        }),
+                        "code_context": json.dumps({
+                            "schema_results": architect_response.get("schema_results", []),
+                            "code_results": architect_response.get("code_results", [])
+                        }),
+                        "thread_id": thread_id,
+                        "feedback_status": "completed"
+                    }
+                    
+                    # Save the new conversation
+                    chat_db.save_conversation(new_conversation_id, new_conversation_data)
+                    
+                    # Include the new conversation ID in the result
+                    result["new_conversation_id"] = new_conversation_id
+                    
+                    # Log the architect response for debugging
+                    logger.info(f"Generated architect response for {conversation_id}, new ID: {new_conversation_id}")
+                    logger.debug(f"Architect response: {architect_response.get('response', '')[:100]}...")
+                    
+                    # Update the original conversation to mark it as processed
+                    conversation_data = {
+                        "query": conversation.get("query", ""),
+                        "output": conversation.get("output", ""),
+                        "technical_details": conversation.get("technical_details", ""),
+                        "code_context": conversation.get("code_context", "{}"),
+                        "feedback_status": "processed",  # Mark as processed
+                        "thread_id": thread_id
+                    }
+                    chat_db.save_conversation(conversation_id, conversation_data)
+                else:
+                    logger.error("Failed to generate architect response")
+                    result["error"] = "Failed to generate architect response"
         
-        return JSONResponse(
-            content={
-                "status": "success",
-                "feedback_id": request.feedback_id,
-                "conversation_id": request.conversation_id,
-                "thread_id": thread_id,  # Include thread_id in response
-                "approved": request.approved,
-                "processed": True
-            }
-        )
-        
+        return JSONResponse(content=result)
     except Exception as e:
         logger.error(f"Error processing feedback: {e}", exc_info=True)
         return JSONResponse(
-            content={
-                "status": "error",
-                "message": str(e)
-            },
+            content={"status": "error", "message": str(e)},
             status_code=500
         )
 
@@ -1084,10 +1116,18 @@ async def process_message(message: str, conversation_id: str, thread_id: str, fe
         response_text = f"""I've analyzed your question from a business perspective. Please review my understanding below and let me know if any adjustments are needed.
 
 Business Understanding:
-{result['rephrased_question']}
+{result.get('rephrased_question', 'No rephrased question available')}
 
 Key Points:
-{chr(10).join([f"• {point}" for point in result['key_points']])}"""
+{chr(10).join([f"• {point}" for point in result.get('key_points', ['No key points available'])])}
+
+Business Context:
+{json.dumps(result.get('business_context', {}), indent=2)}
+
+Debug Info:
+feedback_id: {feedback_id}
+conversation_id: {conversation_id}
+"""
         
         # Save to conversation table
         conversation_data = {
@@ -1095,7 +1135,8 @@ Key Points:
             "output": response_text,
             "technical_details": json.dumps(result),
             "code_context": "{}",
-            "thread_id": thread_id  # Always include thread_id
+            "thread_id": thread_id,  # Always include thread_id
+            "feedback_status": "pending"  # Mark as pending feedback
         }
         chat_db.save_conversation(conversation_id, conversation_data)
         
@@ -1114,6 +1155,7 @@ Key Points:
             "feedback_id": feedback_id,
             "parsed_question": result,
             "requires_confirmation": True,
+            "feedback_required": True,  # Explicitly set to True
             "feedback_status": "pending",
             "confidence_score": result.get("confidence_score", 0.0),
             "details": result

@@ -1,0 +1,81 @@
+{
+  "id": "5b4c1010-bfdf-4695-b07a-e23e455e575d",
+  "thread_id": "5fd6f432-451d-49dc-90d8-b22f16a9fcbb",
+  "conversation_id": "ddfdb4d5-c735-4949-b842-79c2ec315323",
+  "timestamp": "2025-03-08T00:05:03.850722",
+  "parsed_question": {
+    "rephrased_question": "What is the impact of feature adoption on revenue for companies with a certain plan tier, and how does this relate to subscription changes?",
+    "key_points": [
+      "Feature adoption can have a significant impact on revenue for companies with specific plan tiers.",
+      "The analysis should focus on correlating feature usage with subscription changes to understand the business implications."
+    ],
+    "business_context": {
+      "domain": "Subscription-based service",
+      "primary_objective": "Understanding the relationship between feature adoption and revenue growth",
+      "key_entities": [
+        "Company",
+        "Plan tier",
+        "Feature adoption"
+      ],
+      "business_impact": "Improving revenue forecasting and decision-making"
+    },
+    "assumptions": [
+      "The analysis assumes that feature adoption is a key driver of subscription changes.",
+      "The analysis assumes that the relationship between feature adoption and revenue growth is significant."
+    ],
+    "clarifying_questions": [
+      "What specific features are being adopted, and how do they impact revenue?",
+      "How does the plan tier affect the relationship between feature adoption and subscription changes?"
+    ],
+    "confidence_score": 0.85,
+    "thread_id": "5fd6f432-451d-49dc-90d8-b22f16a9fcbb",
+    "conversation_id": "ddfdb4d5-c735-4949-b842-79c2ec315323"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.2,
+      "description": "",
+      "explanation": "",
+      "query_pattern": ""
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.2,
+      "description": "",
+      "explanation": "",
+      "query_pattern": ""
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.2,
+      "description": "",
+      "explanation": "",
+      "query_pattern": ""
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.2,
+      "description": "",
+      "explanation": "",
+      "query_pattern": ""
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.85,
+      "description": "This schema contains information about company plans, feature adoption, and subscription changes.",
+      "explanation": "It is relevant because it provides a clear connection between plan tier, feature adoption, and revenue growth.",
+      "query_pattern": "SELECT * FROM unknown_schema.unknown_table WHERE plan_tier = 'specific_plan' AND feature_adoption > 0"
+    }
+  ]
+}

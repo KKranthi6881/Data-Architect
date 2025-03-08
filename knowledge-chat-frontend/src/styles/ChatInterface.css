@@ -1,0 +1,105 @@
+/* Architect Response Styling */
+.architect-response {
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.architect-response h3 {
+  margin-top: 0;
+  color: #2c3e50;
+  border-bottom: 1px solid #e0e0e0;
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+}
+
+.section-header {
+  font-weight: bold;
+  cursor: pointer;
+  padding: 8px 0;
+  color: #3498db;
+}
+
+details {
+  margin-bottom: 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+details[open] .section-header {
+  margin-bottom: 8px;
+}
+
+.section-content {
+  padding-left: 16px;
+  margin-bottom: 12px;
+}
+
+.technical-details {
+  margin-top: 20px;
+  border-top: 1px dashed #e0e0e0;
+  padding-top: 12px;
+}
+
+.technical-details summary {
+  color: #7f8c8d;
+  font-size: 0.9em;
+}
+
+.details-content {
+  padding: 12px;
+  background-color: #f0f4f8;
+  border-radius: 4px;
+  margin-top: 8px;
+}
+
+.schema-results, .code-results {
+  margin-bottom: 16px;
+}
+
+.schema-item, .code-item {
+  background-color: white;
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.schema-item h5, .code-item h5 {
+  margin-top: 0;
+  color: #2c3e50;
+  font-size: 0.95em;
+}
+
+/* Table styling */
+.section-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 16px 0;
+}
+
+.section-content th, .section-content td {
+  border: 1px solid #ddd;
+  padding: 8px;
+  text-align: left;
+}
+
+.section-content th {
+  background-color: #f2f2f2;
+}
+
+.section-content tr:nth-child(even) {
+  background-color: #f9f9f9;
+}
+
+/* Code block styling */
+.section-content pre {
+  background-color: #f8f8f8;
+  border-radius: 4px;
+  padding: 12px;
+  overflow-x: auto;
+}
+
+.section-content code {
+  font-family: 'Courier New', Courier, monospace;
+} 

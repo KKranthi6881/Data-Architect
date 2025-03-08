@@ -1,0 +1,49 @@
+{
+  "id": "6cba0626-b959-4af4-aaa3-a92fbdc560b1",
+  "thread_id": "b4ef94de-6338-442c-97d6-4f3825c479b8",
+  "conversation_id": "7636089b-9958-4b36-9c8f-a945e5040991",
+  "timestamp": "2025-03-07T23:14:33.148029",
+  "parsed_question": {},
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "description": "",
+      "relevance_score": 0.5,
+      "explanation": "Error enhancing results"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "description": "",
+      "relevance_score": 0.5,
+      "explanation": "Error enhancing results"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "description": "",
+      "relevance_score": 0.5,
+      "explanation": "Error enhancing results"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "description": "",
+      "relevance_score": 0.5,
+      "explanation": "Error enhancing results"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "description": "",
+      "relevance_score": 0.5,
+      "explanation": "Error enhancing results"
+    }
+  ]
+}
