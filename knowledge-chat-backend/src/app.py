@@ -1164,5 +1164,14 @@ conversation_id: {conversation_id}
         logger.error(f"Error processing message: {e}", exc_info=True)
         raise
 
+@app.get("/chat/architect/{conversation_id}")
+async def get_architect_response(conversation_id: str):
+    try:
+        # Fetch the architect response from your database or generate it
+        architect_response = await get_architect_response_for_conversation(conversation_id)
+        return architect_response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     main() 

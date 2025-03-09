@@ -1,0 +1,53 @@
+{
+  "id": "cebf1d6a-0f4b-4fe6-b483-c61370bf97c1",
+  "thread_id": "4040341c-7102-4e1b-8ff0-974f139427ef",
+  "conversation_id": "9395ae34-b313-4e8c-883b-81b107ca432b",
+  "timestamp": "2025-03-08T18:57:41.001326",
+  "parsed_question": {
+    "rephrased_question": "What are the differences in pickup patterns between yellow taxis and Uber rides at LaGuardia and JFK airports in Queens, New York City?",
+    "key_points": [
+      "Yellow taxis dominate airport pickups, with over 80% of car-hailing passengers being shuttled back into the city.",
+      "Uber has grown significantly in Queens, but still lags behind yellow taxis in terms of airport pickups."
+    ],
+    "business_context": {
+      "domain": "Transportation and Ride-Hailing",
+      "primary_objective": "Understanding passenger behavior at airports",
+      "key_entities": [
+        "Yellow Taxis",
+        "Uber",
+        "LaGuardia Airport",
+        "JFK Airport"
+      ],
+      "business_impact": "Informing strategies for airport pickups and improving customer experience"
+    },
+    "assumptions": [
+      "Assuming that the data is accurate and representative of real-world trends.",
+      "Assuming that the primary objective is to understand passenger behavior at airports."
+    ],
+    "clarifying_questions": [
+      "What is the average pickup time for yellow taxis versus Uber rides at LaGuardia Airport?",
+      "How do the pickup patterns differ between JFK Airport and other areas in Queens?"
+    ],
+    "confidence_score": 0.85,
+    "thread_id": "4040341c-7102-4e1b-8ff0-974f139427ef",
+    "conversation_id": "9395ae34-b313-4e8c-883b-81b107ca432b"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [
+        "id",
+        "airport_code",
+        "company",
+        "pickup_time",
+        "passenger_count",
+        "ride_type"
+      ],
+      "relevance_score": 0.9,
+      "description": "Contains data on ride pickups by airport and company.",
+      "explanation": "This schema contains relevant columns for analyzing pickup patterns by airport, company, and time period. The `airport_code` column can be used to filter data by airport, and the `ride_type` column can help identify yellow taxis and Uber rides.",
+      "query_pattern": "SELECT airport_code, company, COUNT(*) FROM unknown_schema.unknown_table WHERE ride_type IN ('yellow_taxi', 'uber') GROUP BY airport_code, company"
+    }
+  ]
+}

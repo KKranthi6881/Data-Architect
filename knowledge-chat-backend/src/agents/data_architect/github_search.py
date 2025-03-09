@@ -119,116 +119,123 @@ class GitHubCodeSearchAgent:
                 return []
             
             # Create prompt for LLM
-            prompt_template = """
-            # Data Engineering & Analytics Code Analysis
+            prompt = f"""
+            # Senior Data Engineer Code Analysis
 
-            You are an expert data engineer analyzing code repositories to find relevant data warehouse, ETL, and analytics implementations. Think step-by-step like a professional data architect to identify the most valuable code for the business question.
+            You are a senior data engineer with 10+ years of experience in implementing data pipelines, ETL processes, and analytics solutions. Analyze the following code snippets to provide actionable implementation guidance.
 
             ## Business Question
-            "{rephrased_question}"
+            "{parsed_question.get('rephrased_question', '')}"
 
             ## Key Points from Question
-            {key_points}
+            {chr(10).join([f"- {point}" for point in parsed_question.get('key_points', [])])}
 
             ## Business Context
-            {business_context}
+            ```json
+            {json.dumps(parsed_question.get('business_context', {}), indent=2)}
+            ```
 
             ## Available Code Snippets
-            {code_snippets}
-
+            """
+            
+            # Format code snippets for the prompt
+            for i, result in enumerate(search_results):
+                file_path = result.get("file_path", "unknown_file")
+                code_snippet = result.get("code_snippet", "")
+                repo_info = result.get("repo_info", {})
+                
+                # Truncate very long code snippets
+                if len(code_snippet) > 1500:
+                    code_snippet = code_snippet[:1500] + "\n// ... [truncated for brevity] ..."
+                
+                # Determine language for syntax highlighting
+                language = "unknown"
+                if file_path.endswith(".py"):
+                    language = "python"
+                elif file_path.endswith(".sql"):
+                    language = "sql"
+                elif file_path.endswith(".java"):
+                    language = "java"
+                elif file_path.endswith(".js"):
+                    language = "javascript"
+                
+                prompt += f"""
+            ### Code Snippet {i+1}: {file_path}
+            - **Repository**: {repo_info.get('repo_name', 'unknown')}
+            - **Language**: {language}
+            
+            ```{language}
+            {code_snippet}
+            ```
+                """
+            
+            # Add the rest of the prompt with detailed instructions
+            prompt += """
             ## Analysis Instructions
-            Think through this problem step-by-step:
+            For each code snippet, provide a comprehensive analysis that would help a data engineer implement or modify the code to address the business question:
 
-            1. **Understand the Data Requirements**:
-               - What data entities and attributes are needed?
-               - What data transformations or aggregations are required?
-               - What business metrics or KPIs need to be calculated?
-               - What time periods or dimensions are relevant for analysis?
+            1. **Code Purpose Analysis**:
+               - What is the primary function of this code?
+               - How does it relate to the business question?
+               - What data processing patterns does it implement?
 
-            2. **Identify Data Architecture Components**:
-               - Does the code implement data models, schemas, or table definitions?
-               - Does it contain ETL/ELT processes, data pipelines, or data integration logic?
-               - Does it implement data quality checks or data governance features?
-               - Does it contain analytics queries, reporting logic, or dashboard code?
+            2. **Implementation Guidance**:
+               - How can this code be adapted to address the business question?
+               - What specific modifications would be needed?
+               - Are there any missing components that need to be added?
 
-            3. **Evaluate Technical Implementation**:
-               - How well does the code handle data volume, variety, and velocity?
-               - Does it use appropriate data warehouse design patterns (star schema, snowflake, etc.)?
-               - Does it implement efficient SQL queries or data processing algorithms?
-               - How well does it handle data quality, error conditions, and edge cases?
+            3. **Development Steps**:
+               - Provide a step-by-step implementation plan
+               - Include specific code blocks that need to be modified
+               - Suggest new functions or methods that should be created
 
-            4. **Consider Business Value**:
-               - How directly does this code address the specific business metrics needed?
-               - How adaptable is it to the specific business domain and requirements?
-               - What insights or analytics capabilities does it enable?
-               - What modifications would be needed to fully address the business question?
+            4. **Integration Considerations**:
+               - How would this code integrate with other systems?
+               - What dependencies or prerequisites are needed?
+               - Are there any potential performance issues to address?
 
-            ## Example Thought Process
-            "The business question requires sales analysis by product category and region. Looking at this code:
+            5. **Testing and Validation**:
+               - How should the implementation be tested?
+               - What edge cases should be considered?
+               - What validation checks should be implemented?
 
-            1. This appears to be a data warehouse implementation with dimension and fact tables.
-            2. It includes a star schema with product_dim, location_dim, and sales_fact tables.
-            3. The ETL process handles data cleansing and transformation from source systems.
-            4. The analytics queries implement the exact aggregations needed by product category and region.
-            5. However, it lacks the time-based analysis mentioned in the question.
-            6. We could extend this by adding date_dim joins and time-based aggregation functions..."
-
-            ## Analysis Output
+            ## Response Format
             For each code snippet, provide your analysis in the following JSON format:
 
             ```json
             [
               {
-                "file_path": "data_warehouse/schema/sales_schema.sql",
-                "code_snippet": "CREATE TABLE sales_fact (...)\\nCREATE TABLE product_dim (...)",
+                "file_path": "example/path/to/file.py",
+                "language": "python",
                 "relevance_score": 8.5,
-                "explanation": "This code defines a star schema for a sales data warehouse with product and location dimensions. The sales_fact table contains the metrics needed for the analysis (revenue, units sold) and joins to dimension tables via foreign keys. The schema design follows data warehouse best practices and would support the required analysis of sales by product category and region. The code includes proper indexing for query performance.",
-                "repo_info": {
-                  "repo_name": "example/data-warehouse",
-                  "language": "sql"
-                }
+                "code_purpose": "This code implements a data pipeline that extracts data from a source system, transforms it, and loads it into a target database.",
+                "implementation_guidance": "This code can be adapted to address the business question by modifying the extraction logic to include additional fields and adding a new transformation step.",
+                "development_steps": [
+                  {
+                    "step": "Modify the extract_data function to include additional fields",
+                    "code_block": "def extract_data(source_system):\\n    # Existing code...\\n    # Add new fields\\n    data['new_field'] = source_system.get_new_field()\\n    # Continue with existing code...",
+                    "explanation": "Adding the new_field to the extracted data will provide the necessary information for the business question."
+                  },
+                  {
+                    "step": "Add a new transformation function",
+                    "code_block": "def transform_for_business_question(data):\\n    # New transformation logic\\n    result = data.groupby(['dimension1', 'dimension2']).agg({'metric': 'sum'})\\n    return result",
+                    "explanation": "This new function will aggregate the data according to the business requirements."
+                  }
+                ],
+                "integration_considerations": "This code will need to be integrated with the existing data pipeline. It depends on the source_system module and requires access to the target database.",
+                "testing_approach": "The implementation should be tested with a sample dataset that includes edge cases such as missing values and extreme values. Unit tests should be written for the new transformation function."
               }
             ]
             ```
 
             IMPORTANT: 
             - Your response must be valid JSON that can be parsed
-            - Score relevance from 0-10 based on how directly the code addresses the data requirements
-            - Provide detailed explanations that show your reasoning about the data architecture
-            - Focus on data modeling, ETL processes, and analytics implementations
+            - Score relevance from 0-10 based on how directly the code addresses the question
+            - Provide detailed explanations that show your reasoning
+            - Include realistic, executable code blocks in your development steps
+            - Focus on practical implementation details that a data engineer could use immediately
             - Do not include any text outside the JSON block
             """
-            
-            # Format code snippets for the prompt
-            code_snippet_texts = []
-            for i, result in enumerate(search_results):
-                # Extract code information
-                file_path = result.get("file", {}).get("path", "unknown_file")
-                repo_name = result.get("repository", {}).get("name", "unknown_repo")
-                repo_url = result.get("repository", {}).get("url", "unknown_url")
-                language = result.get("file", {}).get("language", "unknown_language")
-                content = result.get("content", "")
-                
-                # Create code snippet text
-                snippet_text = f"""
-                ### Snippet {i+1}:
-                - **File**: {file_path}
-                - **Repository**: [{repo_name}]({repo_url})
-                - **Language**: {language}
-
-                ```
-                {content}
-                ```
-                """
-                code_snippet_texts.append(snippet_text)
-            
-            # Format the prompt
-            prompt = PromptTemplate.from_template(prompt_template).format(
-                rephrased_question=parsed_question.get("rephrased_question", ""),
-                key_points="\n".join([f"- {point}" for point in parsed_question.get("key_points", [])]),
-                business_context=json.dumps(parsed_question.get("business_context", {}), indent=2),
-                code_snippets="\n".join(code_snippet_texts)
-            )
             
             # Get LLM response
             response = self.llm.invoke(prompt)
@@ -250,7 +257,7 @@ class GitHubCodeSearchAgent:
                 return self._format_raw_results(search_results)
             
         except Exception as e:
-            self.logger.error(f"Error enhancing search results: {e}", exc_info=True)
+            self.logger.error(f"Error enhancing code search results: {e}", exc_info=True)
             # Return basic results if enhancement fails
             return self._format_raw_results(search_results)
 
@@ -276,58 +283,74 @@ class GitHubCodeSearchAgent:
         
         return ""
 
-    def _validate_enhanced_results(self, enhanced_results: List[Dict[str, Any]], original_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _validate_enhanced_results(self, enhanced_results: List[Dict[str, Any]], raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Validate and fix enhanced results"""
-        # Ensure we have a list
         if not isinstance(enhanced_results, list):
-            self.logger.warning("Enhanced results is not a list, using raw results")
-            return self._format_raw_results(original_results)
+            self.logger.warning("Enhanced results is not a list, returning raw results")
+            return self._format_raw_results(raw_results)
         
-        # Ensure all results have the required fields
+        valid_results = []
+        
         for i, result in enumerate(enhanced_results):
-            if "relevance_score" not in result:
-                result["relevance_score"] = 0.7
-            elif isinstance(result["relevance_score"], int) or isinstance(result["relevance_score"], float):
-                # Normalize score to 0-1 range if it's on a 0-10 scale
-                if result["relevance_score"] > 1:
-                    result["relevance_score"] = result["relevance_score"] / 10.0
-            else:
-                result["relevance_score"] = 0.7
+            if i >= len(raw_results):
+                break
             
-            if "explanation" not in result:
-                result["explanation"] = "Automatically extracted from GitHub repository"
+            # Get the raw result
+            raw_result = raw_results[i]
             
-            if "file_path" not in result and i < len(original_results):
-                result["file_path"] = original_results[i].get("file", {}).get("path", "unknown_file")
-            
-            if "repo_info" not in result and i < len(original_results):
-                result["repo_info"] = {
-                    "repo_name": original_results[i].get("repository", {}).get("name", "unknown_repo"),
-                    "repo_url": original_results[i].get("repository", {}).get("url", "unknown_url"),
-                    "language": original_results[i].get("file", {}).get("language", "unknown_language")
-                }
-            
-            if "code_snippet" not in result and i < len(original_results):
-                result["code_snippet"] = original_results[i].get("content", "")
-        
-        return enhanced_results
-
-    def _format_raw_results(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Format raw search results when enhancement fails"""
-        return [
-            {
-                "file_path": result.get("file", {}).get("path", "unknown_file"),
-                "code_snippet": result.get("content", ""),
-                "relevance_score": 0.7,  # Default relevance score
-                "explanation": "Automatically extracted from GitHub repository",
-                "repo_info": {
-                    "repo_name": result.get("repository", {}).get("name", "unknown_repo"),
-                    "repo_url": result.get("repository", {}).get("url", "unknown_url"),
-                    "language": result.get("file", {}).get("language", "unknown_language")
-                }
+            # Create a valid result with required fields
+            valid_result = {
+                "file_path": result.get("file_path", raw_result.get("file_path", "unknown_file")),
+                "language": result.get("language", "unknown"),
+                "relevance_score": result.get("relevance_score", 0) / 10.0,  # Normalize to 0-1
+                "code_snippet": raw_result.get("code_snippet", ""),
+                "repo_info": raw_result.get("repo_info", {}),
+                "code_purpose": result.get("code_purpose", ""),
+                "implementation_guidance": result.get("implementation_guidance", ""),
+                "development_steps": result.get("development_steps", []),
+                "integration_considerations": result.get("integration_considerations", ""),
+                "testing_approach": result.get("testing_approach", ""),
+                "explanation": result.get("explanation", "This code may be relevant to the business question.")
             }
-            for result in search_results
-        ]
+            
+            valid_results.append(valid_result)
+        
+        return valid_results
+
+    def _format_raw_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Format raw results when enhancement fails"""
+        formatted_results = []
+        
+        for result in results:
+            # Determine language from file extension
+            language = "unknown"
+            file_path = result.get("file_path", "")
+            if file_path.endswith(".py"):
+                language = "python"
+            elif file_path.endswith(".sql"):
+                language = "sql"
+            elif file_path.endswith(".java"):
+                language = "java"
+            elif file_path.endswith(".js"):
+                language = "javascript"
+            
+            formatted_result = {
+                "file_path": result.get("file_path", "unknown_file"),
+                "language": language,
+                "relevance_score": 0.5,  # Default medium relevance
+                "code_snippet": result.get("code_snippet", ""),
+                "repo_info": result.get("repo_info", {}),
+                "code_purpose": "This code was found based on keyword matching.",
+                "implementation_guidance": "Review this code to determine if it can be adapted to address the business question.",
+                "development_steps": [],
+                "integration_considerations": "Further analysis needed to determine integration requirements.",
+                "testing_approach": "Standard testing practices should be applied.",
+                "explanation": "This code contains keywords related to the business question."
+            }
+            
+            formatted_results.append(formatted_result)
+        
+        return formatted_results
     
     def save_search_results(self, thread_id: str, conversation_id: str, parsed_question: Dict[str, Any], search_results: List[Dict[str, Any]]):
         """Save search results to the thread directory"""

@@ -1,0 +1,79 @@
+{
+  "id": "d34a27a0-c367-4583-8186-f0b50e1f97f5",
+  "thread_id": "45e05ca6-fd06-44c5-a105-0092f2fd9ef5",
+  "conversation_id": "aaf1ab9f-7366-4cd7-9290-0bd7ec27074e",
+  "timestamp": "2025-03-09T14:15:08.696453",
+  "parsed_question": {
+    "rephrased_question": "What are the peak hours for yellow taxi pickups in NYC, considering airport pickups and Manhattan's dominance?",
+    "key_points": [
+      "Manhattan accounts for 85% of all NYC taxi pickups, with most being made by yellow taxis.",
+      "Uber has grown significantly in Manhattan, but still lags behind yellow taxis in terms of pickup volume."
+    ],
+    "business_context": {
+      "domain": "Transportation and Ride-hailing",
+      "primary_objective": "Understanding peak hours for yellow taxi pickups to optimize operations.",
+      "key_entities": [
+        "Yellow Taxis",
+        "Uber",
+        "Manhattan"
+      ],
+      "business_impact": "Improving efficiency and reducing wait times for passengers."
+    },
+    "assumptions": [
+      "Assuming that yellow taxi pickups are the primary focus, with Uber pickups being a secondary consideration."
+    ],
+    "clarifying_questions": [
+      "Are there any specific airport pickup patterns or trends to consider?"
+    ],
+    "confidence_score": 0.85,
+    "thread_id": "45e05ca6-fd06-44c5-a105-0092f2fd9ef5",
+    "conversation_id": "aaf1ab9f-7366-4cd7-9290-0bd7ec27074e"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    }
+  ]
+}

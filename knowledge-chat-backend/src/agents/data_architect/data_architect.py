@@ -124,30 +124,118 @@ class DataArchitectAgent:
         """
         try:
             # Create prompt for LLM
-            prompt_template = """
-            # Senior Data Architect Advisory
+            prompt = f"""
+            # Enterprise Data Architect Advisory
 
-            You are a senior data architect with extensive experience in enterprise data warehousing, analytics, and data engineering. Your role is to provide comprehensive, actionable guidance that helps the organization implement effective data solutions.
+            You are a principal data architect with 15+ years of experience in enterprise data warehousing, analytics engineering, and data platform design. Your role is to provide comprehensive, technically precise guidance that enables data engineers and analysts to implement effective solutions.
 
             ## Business Question
-            "{rephrased_question}"
+            "{parsed_question.get('rephrased_question', '')}"
 
             ## Key Points from Question
-            {key_points}
+            {chr(10).join([f"- {point}" for point in parsed_question.get('key_points', [])])}
 
             ## Business Context
             ```json
-            {business_context}
+            {json.dumps(parsed_question.get('business_context', {}), indent=2)}
             ```
 
             ## Available Database Schemas
-            {schema_results}
-
+            """
+            
+            # Format schema results for the prompt
+            for i, result in enumerate(schema_results):
+                schema_name = result.get("schema_name", "unknown_schema")
+                table_name = result.get("table_name", "unknown_table")
+                columns = result.get("columns", [])
+                description = result.get("description", "")
+                explanation = result.get("explanation", "")
+                relevance_score = result.get("relevance_score", 0)
+                query_pattern = result.get("query_pattern", "")
+                
+                # Format columns properly
+                if isinstance(columns, list):
+                    columns_text = ", ".join(columns)
+                else:
+                    columns_text = str(columns)
+                
+                prompt += f"""
+            ### Schema {i+1}: {schema_name}.{table_name}
+            - **Relevance Score**: {relevance_score*10:.1f}/10
+            - **Columns**: {columns_text}
+            - **Description**: {description}
+            - **Relevance Explanation**: {explanation}
+            - **Sample Query Pattern**: 
+            ```sql
+            {query_pattern}
+            ```
+                """
+            
+            # Format code results for the prompt
+            prompt += """
             ## Relevant Code Examples
-            {code_results}
-
-            ## Your Task
-            Synthesize all the information above to create a comprehensive data architecture solution. Think step-by-step like an experienced data architect:
+            """
+            
+            for i, result in enumerate(code_results):
+                file_path = result.get("file_path", "unknown_file")
+                code_snippet = result.get("code_snippet", "")
+                explanation = result.get("explanation", "")
+                relevance_score = result.get("relevance_score", 0)
+                repo_info = result.get("repo_info", {})
+                development_steps = result.get("development_steps", [])
+                
+                # Truncate very long code snippets
+                if len(code_snippet) > 800:
+                    code_snippet = code_snippet[:800] + "\n// ... [truncated for brevity] ..."
+                
+                # Determine language for syntax highlighting
+                language = repo_info.get("language", "").lower()
+                if not language or language == "unknown_language":
+                    # Try to guess language from file extension
+                    if file_path.endswith(".sql"):
+                        language = "sql"
+                    elif file_path.endswith(".py"):
+                        language = "python"
+                    elif file_path.endswith(".java"):
+                        language = "java"
+                    elif file_path.endswith(".js"):
+                        language = "javascript"
+                    else:
+                        language = "text"
+                
+                prompt += f"""
+            ### Code Example {i+1}: {file_path}
+            - **Relevance Score**: {relevance_score*10:.1f}/10
+            - **Repository**: {repo_info.get('repo_name', 'unknown')}
+            - **Explanation**: {explanation}
+            - **Code Snippet**: 
+            ```{language}
+            {code_snippet}
+            ```
+            """
+                
+                # Add development steps if available
+                if development_steps:
+                    prompt += """
+            - **Development Steps**:
+            """
+                    for j, step in enumerate(development_steps):
+                        step_desc = step.get("step", "")
+                        step_code = step.get("code_block", "")
+                        step_explanation = step.get("explanation", "")
+                        
+                        prompt += f"""
+              {j+1}. {step_desc}
+                 ```{language}
+                 {step_code}
+                 ```
+                 {step_explanation}
+            """
+            
+            # Add the rest of the prompt with detailed instructions
+            prompt += """
+            ## Analysis Instructions
+            Think through this problem step-by-step as a principal data architect:
 
             1. **Analyze Business Requirements**:
                - Identify the core business objectives and metrics
@@ -186,98 +274,84 @@ class DataArchitectAgent:
             [Provide a clear explanation of the business problem, objectives, and requirements. Show that you understand the business context and the value this solution will deliver.]
 
             ## Data Architecture Recommendation
-            [Present a comprehensive data architecture solution, including logical data model, physical schema design, and data flow patterns. Include diagrams or structured descriptions of tables and relationships.]
+            [Present a comprehensive data architecture solution, including logical data model, physical schema design, and data flow patterns. Include diagrams or structured descriptions of tables and relationships. Be specific about table structures, column types, and relationships.]
 
-            ## Implementation Approach
-            [Provide specific, actionable guidance on how to implement the solution, including ETL/ELT processes, SQL patterns, and code examples. Reference and improve upon the code examples provided.]
+            ## Technical Implementation Details
+            [Provide specific, actionable technical guidance that a data engineer could immediately use to implement the solution. Include:
+            
+            1. Detailed schema definitions with DDL statements
+            2. Key SQL queries with explanations
+            3. Join strategies and optimization techniques
+            4. Indexing recommendations
+            5. Partitioning strategies if applicable
+            6. Sample ETL/ELT code or pseudocode
+            7. Performance considerations and query optimization]
 
-            ## Best Practices
-            [Share industry best practices, governance considerations, and optimization techniques relevant to this specific solution.]
+            ## Development Roadmap
+            [Outline a phased implementation plan with specific technical milestones, dependencies, and validation points. Include specific tasks that data engineers should complete in order.]
 
-            ## Implementation Plan
-            [Outline a phased implementation plan with key milestones, dependencies, and validation points.]
+            ## Testing and Validation Strategy
+            [Provide specific test cases, data quality checks, and validation queries that should be implemented to ensure the solution works correctly.]
 
-            Make your response practical, actionable, and tailored to the specific business question. Include specific SQL examples, table designs, and code patterns where appropriate. Your goal is to provide guidance that could be immediately used to implement a production-ready solution.
+            ## Step-by-Step Implementation Guide
+            [This is the most important section. Provide an extremely detailed, sequential list of implementation steps that a developer should follow to build this solution. For each step:
+            
+            1. Provide a clear, actionable instruction with a specific goal
+            2. Specify exactly which tables and columns to use
+            3. Include the exact SQL query or code to implement that step
+            4. For joins, explicitly state which columns to join on and why
+            5. Explain what the step accomplishes and how to verify it worked
+            6. Identify any dependencies or prerequisites
+            7. Note any potential issues or edge cases to watch for
+            
+            Break down complex operations into multiple atomic steps. For example:
+            
+            Step 1: Create a staging table to hold customer data
+            ```sql
+            CREATE TABLE staging.customer_data (
+                customer_id INT PRIMARY KEY,
+                first_name VARCHAR(50),
+                last_name VARCHAR(50),
+                email VARCHAR(100),
+                signup_date DATE
+            );
+            ```
+            This table will temporarily store customer data before transformation.
+            
+            Step 2: Extract customer data from source system
+            ```sql
+            INSERT INTO staging.customer_data
+            SELECT 
+                customer_id,
+                first_name,
+                last_name,
+                email,
+                TO_DATE(signup_date, 'YYYY-MM-DD')
+            FROM source_system.raw_customers;
+            ```
+            Verify this step by checking: `SELECT COUNT(*) FROM staging.customer_data;`
+            
+            Step 3: Join customer data with transaction history
+            ```sql
+            SELECT 
+                c.customer_id,
+                c.first_name,
+                c.last_name,
+                t.transaction_id,
+                t.transaction_date,
+                t.amount
+            FROM staging.customer_data c
+            JOIN transactions.orders t ON c.customer_id = t.customer_id
+            WHERE t.transaction_date >= '2023-01-01';
+            ```
+            This join connects customers to their transactions using customer_id as the join key.
+            
+            Make this section extremely detailed and practical - it should serve as a complete implementation guide that a developer could follow without additional context or interpretation. Include at least 10-15 specific, granular steps.]
+
+            Make your response practical, actionable, and technically precise. Include specific SQL examples, table designs, and code patterns. Your goal is to provide guidance that could be immediately used by a data engineer to implement a production-ready solution.
+            
+            Remember to be extremely detailed in the Step-by-Step Implementation Guide section, breaking down the solution into atomic, executable steps with specific tables, columns, and join conditions.
             """
-            
-            # Format schema results for the prompt
-            schema_results_text = ""
-            for i, result in enumerate(schema_results):
-                schema_name = result.get("schema_name", "unknown_schema")
-                table_name = result.get("table_name", "unknown_table")
-                columns = result.get("columns", [])
-                description = result.get("description", "")
-                explanation = result.get("explanation", "")
-                relevance_score = result.get("relevance_score", 0)
-                query_pattern = result.get("query_pattern", "")
-                
-                # Format columns properly
-                if isinstance(columns, list):
-                    columns_text = ", ".join(columns)
-                else:
-                    columns_text = str(columns)
-                
-                schema_text = f"""
-                ### Schema {i+1}: {schema_name}.{table_name}
-                - **Relevance Score**: {relevance_score*10:.1f}/10
-                - **Columns**: {columns_text}
-                - **Description**: {description}
-                - **Relevance Explanation**: {explanation}
-                - **Sample Query Pattern**: 
-                ```sql
-                {query_pattern}
-                ```
-                """
-                schema_results_text += schema_text
-            
-            # Format code results for the prompt
-            code_results_text = ""
-            for i, result in enumerate(code_results):
-                file_path = result.get("file_path", "unknown_file")
-                code_snippet = result.get("code_snippet", "")
-                explanation = result.get("explanation", "")
-                relevance_score = result.get("relevance_score", 0)
-                repo_info = result.get("repo_info", {})
-                
-                # Truncate very long code snippets
-                if len(code_snippet) > 800:
-                    code_snippet = code_snippet[:800] + "\n// ... [truncated for brevity] ..."
-                
-                # Determine language for syntax highlighting
-                language = repo_info.get("language", "").lower()
-                if not language or language == "unknown_language":
-                    # Try to guess language from file extension
-                    if file_path.endswith(".sql"):
-                        language = "sql"
-                    elif file_path.endswith(".py"):
-                        language = "python"
-                    elif file_path.endswith(".java"):
-                        language = "java"
-                    elif file_path.endswith(".js"):
-                        language = "javascript"
-                    else:
-                        language = ""
-                
-                code_text = f"""
-                ### Code Example {i+1}: {file_path}
-                - **Relevance Score**: {relevance_score*10:.1f}/10
-                - **Repository**: {repo_info.get('repo_name', 'unknown')}
-                - **Relevance Explanation**: {explanation}
-                
-                ```{language}
-                {code_snippet}
-                ```
-                """
-                code_results_text += code_text
-            
-            # Format the prompt
-            prompt = PromptTemplate.from_template(prompt_template).format(
-                rephrased_question=parsed_question.get("rephrased_question", ""),
-                key_points="\n".join([f"- {point}" for point in parsed_question.get("key_points", [])]),
-                business_context=json.dumps(parsed_question.get("business_context", {}), indent=2),
-                schema_results=schema_results_text,
-                code_results=code_results_text
-            )
             
             # Get LLM response
             response = self.llm.invoke(prompt)
@@ -311,9 +385,10 @@ class DataArchitectAgent:
         section_headers = [
             "Business Understanding",
             "Data Architecture Recommendation",
-            "Implementation Approach",
-            "Best Practices",
-            "Implementation Plan"
+            "Technical Implementation Details",
+            "Development Roadmap",
+            "Testing and Validation Strategy",
+            "Step-by-Step Implementation Guide"  # Added new section
         ]
         
         # Extract each section

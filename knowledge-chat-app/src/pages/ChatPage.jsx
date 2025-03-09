@@ -127,7 +127,8 @@ const sampleConversation = [
   }
 ];
 
-// Update the FormattedMessage component to handle different content types
+// Update the FormattedMessage component to better handle data architect responses
+
 const FormattedMessage = ({ content }) => {
   // Handle case where content is not a string
   if (typeof content !== 'string') {
@@ -143,167 +144,72 @@ const FormattedMessage = ({ content }) => {
     return <Text color="gray.500">No content available</Text>;
   }
   
-  // Check if content contains sections we want to hide in accordions
-  const hasImplementationDetails = content.includes('**Implementation Details:**');
-  const hasAvailableTables = content.includes('**Available Tables and Columns:**');
-  const hasBusinessContext = content.includes('**Business Context:**');
-  
-  // Function to extract section content
-  const extractSectionContent = (sectionTitle) => {
-    const startMarker = `**${sectionTitle}:**`;
-    const startIndex = content.indexOf(startMarker);
-    if (startIndex === -1) return '';
-    
-    // Find the next section marker after this one
-    const nextSectionIndex = content.indexOf('**', startIndex + startMarker.length);
-    
-    if (nextSectionIndex === -1) {
-      // This is the last section
-      return content.substring(startIndex + startMarker.length).trim();
-    } else {
-      // Extract content until the next section
-      return content.substring(startIndex + startMarker.length, nextSectionIndex).trim();
-    }
-  };
-  
-  // Extract content for sections
-  const implementationContent = hasImplementationDetails ? 
-    extractSectionContent('Implementation Details') : '';
-  
-  const tablesContent = hasAvailableTables ? 
-    extractSectionContent('Available Tables and Columns') : '';
-    
-  const businessContent = hasBusinessContext ?
-    extractSectionContent('Business Context') : '';
-  
-  // Remove these sections from the main content
-  let mainContent = content;
-  
-  if (hasBusinessContext) {
-    const startMarker = '**Business Context:**';
-    const startIndex = mainContent.indexOf(startMarker);
-    const nextSectionIndex = mainContent.indexOf('**', startIndex + startMarker.length);
-    
-    if (nextSectionIndex === -1) {
-      // This is the last section
-      mainContent = mainContent.substring(0, startIndex);
-    } else {
-      // Remove just this section
-      mainContent = mainContent.substring(0, startIndex) + 
-                   mainContent.substring(nextSectionIndex);
-    }
-  }
-  
-  if (hasImplementationDetails) {
-    const startMarker = '**Implementation Details:**';
-    const startIndex = mainContent.indexOf(startMarker);
-    const nextSectionIndex = mainContent.indexOf('**', startIndex + startMarker.length);
-    
-    if (nextSectionIndex === -1) {
-      // This is the last section
-      mainContent = mainContent.substring(0, startIndex);
-    } else {
-      // Remove just this section
-      mainContent = mainContent.substring(0, startIndex) + 
-                   mainContent.substring(nextSectionIndex);
-    }
-  }
-  
-  if (hasAvailableTables) {
-    const startMarker = '**Available Tables and Columns:**';
-    const startIndex = mainContent.indexOf(startMarker);
-    const nextSectionIndex = mainContent.indexOf('**', startIndex + startMarker.length);
-    
-    if (nextSectionIndex === -1) {
-      // This is the last section
-      mainContent = mainContent.substring(0, startIndex);
-    } else {
-      // Remove just this section
-      mainContent = mainContent.substring(0, startIndex) + 
-                   mainContent.substring(nextSectionIndex);
-    }
-  }
-  
-  // Check if the content has markdown formatting
-  const hasMarkdown = mainContent.includes('**') || mainContent.includes('##');
+  // Check if content contains markdown sections (## or **)
+  const hasMarkdown = content.includes('##') || content.includes('**');
   
   if (hasMarkdown) {
-    // Format the main content with markdown
-    const formattedMainContent = mainContent.split('**').map((part, idx) => {
-      if (idx % 2 === 0) {
-        // Regular text
-        return (
-          <Text 
-            key={idx} 
-            fontSize="16px"
-            fontFamily="'Merriweather', Georgia, serif"
-            lineHeight="1.7"
-            color="gray.800"
-            mb={3}
-            letterSpacing="0.01em"
-          >
-            {part}
-          </Text>
-        );
-      } else {
-        // This is a section title
-        const isUnderstanding = part.includes('Based on your question and available content, I assume:');
-        
-        return (
-          <Box key={idx} width="100%" mt={5} mb={4}>
-            <Heading 
-              size="md" 
-              color={isUnderstanding ? "purple.700" : "gray.800"}
-              fontWeight="600"
-              fontFamily="'Playfair Display', Georgia, serif"
-              pb={2}
-              borderBottom="2px solid"
-              borderColor={isUnderstanding ? "purple.200" : "gray.200"}
-              width="fit-content"
-              fontSize={isUnderstanding ? "20px" : "18px"}
-              letterSpacing="0.02em"
-            >
-              {part}
-            </Heading>
-          </Box>
-        );
-      }
-    });
+    // Split by markdown headers (##)
+    const sections = content.split(/##\s+/);
     
     return (
-      <>
-        {formattedMainContent}
-        
-        {/* Business Context Section if available */}
-        {businessContent && (
-          <Box width="100%" mt={5} mb={4}>
-            <Heading 
-              size="md" 
-              color="blue.700"
-              fontWeight="600"
-              fontFamily="'Playfair Display', Georgia, serif"
-              pb={2}
-              borderBottom="2px solid"
-              borderColor="blue.200"
-              width="fit-content"
-              fontSize="18px"
-              letterSpacing="0.02em"
-            >
-              Business Context
-            </Heading>
-            
-            <Text 
-              mt={3}
-              fontSize="16px"
-              fontFamily="'Merriweather', Georgia, serif"
-              lineHeight="1.7"
-              color="gray.800"
-            >
-              {businessContent}
-            </Text>
-          </Box>
-        )}
-      </>
+      <VStack align="start" spacing={4} width="100%">
+        {sections.map((section, idx) => {
+          if (idx === 0 && !section.trim()) return null;
+          
+          if (idx === 0) {
+            // This is the intro text before any headers
+            return (
+              <Text 
+                key={idx}
+                fontSize="16px"
+                fontFamily="'Merriweather', Georgia, serif"
+                lineHeight="1.7"
+                color="gray.800"
+                whiteSpace="pre-wrap"
+              >
+                {section}
+              </Text>
+            );
+          }
+          
+          // For sections with headers
+          const sectionParts = section.split(/\n/);
+          const sectionTitle = sectionParts[0];
+          const sectionContent = sectionParts.slice(1).join('\n');
+          
+          return (
+            <Box key={idx} width="100%" mt={2}>
+              <Heading 
+                size="md" 
+                color="purple.700"
+                fontWeight="600"
+                fontFamily="'Playfair Display', Georgia, serif"
+                pb={2}
+                borderBottom="2px solid"
+                borderColor="purple.200"
+                width="fit-content"
+                fontSize="18px"
+                letterSpacing="0.02em"
+                mb={3}
+              >
+                {sectionTitle}
+              </Heading>
+              <Text 
+                fontSize="16px"
+                fontFamily="'Merriweather', Georgia, serif"
+                lineHeight="1.7"
+                color="gray.800"
+                whiteSpace="pre-wrap"
+                pl={2}
+                borderLeft="3px solid"
+                borderColor="purple.100"
+              >
+                {sectionContent}
+              </Text>
+            </Box>
+          );
+        })}
+      </VStack>
     );
   } else {
     // Simple text display for non-markdown content
@@ -892,45 +798,32 @@ const ChatPage = () => {
 
   const handleFeedbackSubmit = async (feedback) => {
     try {
-      console.log("Submitting feedback:", feedback);
       setLoading(true);
-      
+      console.log("Starting feedback submission process");
+
       const feedbackPayload = {
         feedback_id: feedback.feedback_id,
         conversation_id: feedback.conversation_id,
         approved: feedback.approved,
-        comments: feedback.comments || null,
-        suggested_changes: null,
-        message_id: null
+        comments: feedback.comments || null
       };
-      
-      console.log("Sending feedback payload:", feedbackPayload);
-      
+
+      // First API call - submit feedback
       const response = await fetch('http://localhost:8000/feedback/', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(feedbackPayload)
       });
-      
+
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Feedback submission error:", errorText);
-        throw new Error(`Failed to submit feedback: ${errorText}`);
+        throw new Error(`Failed to submit feedback: ${await response.text()}`);
       }
-      
+
       const responseData = await response.json();
-      console.log("Feedback response:", responseData);
-      
-      // Preserve thread ID from response
-      if (responseData.thread_id) {
-        setCurrentThreadId(responseData.thread_id);
-      }
-      
-      // Update UI based on feedback result
+      console.log("Feedback API response:", responseData);
+
       if (feedback.approved) {
-        // Update the message to show it's approved and hide feedback buttons
+        // Update original message to show approved status
         setMessages(prev => prev.map(msg => 
           msg.details?.feedback_id === feedback.feedback_id
             ? {
@@ -938,290 +831,275 @@ const ChatPage = () => {
                 details: {
                   ...msg.details,
                   feedback_status: 'approved',
-                  requires_confirmation: false,
-                  thread_id: responseData.thread_id || msg.details.thread_id // Preserve thread ID
+                  requires_confirmation: false
                 }
               }
             : msg
         ));
-        
-        toast({
-          title: 'Response Approved',
-          description: 'The response has been approved and finalized.',
-          status: 'success',
-          duration: 3000
-        });
 
-        // Move to history tab after approval
-        setActiveTab('history');
-        await fetchConversations();
-      } else {
-        // If not approved, stay in chat tab and process feedback
-        setProcessingStep('Processing your feedback...');
-        
-        // Update the original message status
-        setMessages(prev => prev.map(msg => 
-          msg.details?.feedback_id === feedback.feedback_id
-            ? {
-                ...msg,
-                details: {
-                  ...msg.details,
-                  feedback_status: 'needs_improvement',
-                  feedback_comments: feedback.comments,
-                  requires_confirmation: false,
-                  thread_id: responseData.thread_id || msg.details.thread_id // Preserve thread ID
-                }
-              }
-            : msg
-        ));
-        
-        // Send a follow-up request to get an improved response
-        const followUpPayload = {
-          message: feedback.comments || "Please improve this response",
-          conversation_id: responseData.follow_up_id || null, // Use follow-up ID if provided
-          thread_id: responseData.thread_id || currentThreadId, // Use thread ID from response
-          feedback: {
-            approved: false,
-            comments: feedback.comments,
-            feedback_id: feedback.feedback_id
+        // Add loading message
+        const loadingMessage = {
+          id: Date.now(),
+          type: 'assistant',
+          content: "Preparing detailed data architect analysis...",
+          details: {
+            is_architect_response: true,
+            is_loading: true
           }
         };
         
-        console.log("Sending follow-up request:", followUpPayload);
-        
-        const followUpResponse = await fetch('http://localhost:8000/chat/', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(followUpPayload)
-        });
-        
-        if (!followUpResponse.ok) {
-          const errorText = await followUpResponse.text();
-          console.error("Follow-up request error:", errorText);
-          throw new Error(`Failed to get improved response: ${errorText}`);
-        }
-        
-        const followUpData = await followUpResponse.json();
-        console.log("Follow-up response:", followUpData);
-        
-        // Add the new response if one was returned
-        if (followUpData.answer) {
-          const assistantMessage = {
-            type: 'assistant',
-            content: followUpData.answer,
-            details: {
-              ...followUpData,
-              conversation_id: followUpData.conversation_id,
-              feedback_id: followUpData.feedback_id || followUpData.conversation_id,
-              feedback_status: 'pending',
-              requires_confirmation: true,
-              thread_id: followUpData.thread_id || responseData.thread_id || currentThreadId // Preserve thread ID
-            }
-          };
-          
-          console.log("Adding new assistant message:", assistantMessage);
-          setMessages(prev => [...prev, assistantMessage]);
-          
-          // Update current conversation ID to the new one
-          if (followUpData.conversation_id) {
-            setCurrentConversationId(followUpData.conversation_id);
-          }
-        }
-        
-        toast({
-          title: 'Feedback Submitted',
-          description: 'Your feedback has been processed.',
-          status: 'info',
-          duration: 3000
+        setMessages(prev => [...prev, loadingMessage]);
+
+        // Second API call - fetch architect response
+        const architectResponse = await fetch(`http://localhost:8000/chat/architect/${feedback.conversation_id}`, {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' }
         });
 
-        // Stay in chat tab for feedback
-        setActiveTab('chat');
+        if (!architectResponse.ok) {
+          throw new Error('Failed to fetch architect response');
+        }
+
+        const architectData = await architectResponse.json();
+        console.log("Architect API response:", architectData);
+
+        // Create architect message
+        const architectMessage = {
+          id: Date.now() + 1,
+          type: 'assistant',
+          content: architectData.response || architectData.chat_response,
+          details: {
+            conversation_id: feedback.conversation_id,
+            is_architect_response: true,
+            feedback_status: 'final',
+            requires_confirmation: false,
+            sections: architectData.sections || {}
+          }
+        };
+
+        // Update messages - remove loading and add architect response
+        setMessages(prev => {
+          const filteredMessages = prev.filter(msg => !msg.details?.is_loading);
+          console.log("Messages before adding architect response:", filteredMessages);
+          const newMessages = [...filteredMessages, architectMessage];
+          console.log("Messages after adding architect response:", newMessages);
+          return newMessages;
+        });
+
+        // Force scroll to bottom
+        setTimeout(() => {
+          if (messagesEndRef.current) {
+            messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+          }
+        }, 100);
+
+        toast({
+          title: 'Analysis Complete',
+          description: 'The data architect has provided a detailed solution.',
+          status: 'success',
+          duration: 3000
+        });
       }
-      
-      // Refresh conversations to show updated status
+
       await fetchConversations();
-      
+
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error in handleFeedbackSubmit:', error);
       toast({
         title: 'Error',
         description: error.message,
         status: 'error',
-        duration: 5000,
-        isClosable: true,
+        duration: 5000
       });
     } finally {
       setLoading(false);
-      setProcessingStep('');
     }
   };
 
   // Update message display with wider boxes
   const renderMessage = (message) => {
-    console.log("Rendering message:", message);
-    
-    // Check if the message requires feedback - updated condition
     const requiresFeedback = message.type === 'assistant' && 
                             message.details?.requires_confirmation === true && 
                             message.details?.feedback_status !== 'approved' && 
                             message.details?.feedback_status !== 'needs_improvement';
     
-    console.log("Message requires feedback:", requiresFeedback, message.details);
+    const isArchitectResponse = message.type === 'assistant' && 
+                               message.details?.is_architect_response === true;
+    
+    const isLoading = message.details?.is_loading === true;
     
     return (
       <Box 
         key={message.id}
-        bg={message.type === 'user' ? 'blue.50' : 'white'}
+        bg={message.type === 'user' ? 'blue.50' : isArchitectResponse ? 'purple.50' : 'white'}
         p={5}
         borderRadius="lg"
         alignSelf="flex-start"
         width={["98%", "95%", "90%"]}
         boxShadow="0 2px 8px rgba(0, 0, 0, 0.08)"
         borderWidth="1px"
-        borderColor={message.type === 'user' ? 'blue.100' : 'gray.100'}
+        borderColor={message.type === 'user' ? 'blue.100' : isArchitectResponse ? 'purple.100' : 'gray.100'}
         mb={5}
         transition="all 0.2s"
         _hover={{ boxShadow: "0 4px 12px rgba(0, 0, 0, 0.1)" }}
       >
-        {message.type === 'user' ? (
-          <VStack align="stretch" spacing={3} width="100%">
-            <Box>
-              <Text 
-                fontSize="xs" 
-                color="blue.600" 
-                fontWeight="600" 
-                mb={1}
-                textTransform="uppercase"
-                letterSpacing="0.05em"
-              >
-                You
-              </Text>
-              <Text 
-                fontFamily="'Merriweather', Georgia, serif"
-                fontSize="16px"
-                fontWeight="500"
-                lineHeight="1.7"
-                color="gray.800"
-                whiteSpace="pre-wrap"
-              >
-                {message.content}
-              </Text>
-            </Box>
-          </VStack>
-        ) : (
-          <VStack align="stretch" spacing={5} width="100%">
-            <Box>
-              <Text 
-                fontSize="xs" 
-                color="purple.600" 
-                fontWeight="600" 
-                mb={1}
-                textTransform="uppercase"
-                letterSpacing="0.05em"
-              >
-                Assistant
-              </Text>
-              {/* Main content */}
-              <Text 
-                fontFamily="'Merriweather', Georgia, serif"
-                fontSize="16px"
-                fontWeight="500"
-                lineHeight="1.7"
-                color="gray.800"
-                whiteSpace="pre-wrap"
-              >
-                {message.content}
-              </Text>
-            </Box>
-
-            {/* Feedback Section - Only show if feedback is required and not yet provided */}
-            {requiresFeedback && (
-              <Box 
-                bg="gray.50" 
-                p={4}
-                borderRadius="md"
-                borderWidth="1px"
-                borderColor="gray.200"
-                mt={2}
-              >
-                <Text 
-                  fontSize="15px" 
-                  color="gray.600" 
-                  fontWeight="500"
-                  mb={3}
-                  fontFamily="Georgia, serif"
-                >
-                  Please review this understanding:
-                </Text>
-                <InlineFeedback 
-                  message={message}
-                  onFeedbackSubmit={handleFeedbackSubmit}
-                />
-              </Box>
-            )}
-
-            {/* Show feedback status badges */}
-            {message.details?.feedback_status === 'approved' && (
-              <Badge colorScheme="green" p={2} borderRadius="md">
-                ✓ Understanding confirmed
-              </Badge>
-            )}
+        <VStack align="stretch" spacing={5} width="100%">
+          <Box>
+            <Text 
+              fontSize="xs" 
+              color={isArchitectResponse ? "purple.600" : "blue.600"} 
+              fontWeight="600" 
+              mb={1}
+              textTransform="uppercase"
+              letterSpacing="0.05em"
+            >
+              {isArchitectResponse ? "Data Architect" : message.type === 'user' ? "You" : "Assistant"}
+            </Text>
             
-            {message.details?.feedback_status === 'needs_improvement' && (
-              <Badge colorScheme="orange" p={2} borderRadius="md">
-                Clarification requested: {message.details?.feedback_comments}
-              </Badge>
+            {isLoading ? (
+              <VStack spacing={4} align="start" width="100%">
+                <Text color="gray.600">Preparing detailed analysis...</Text>
+                <Progress size="xs" isIndeterminate colorScheme="purple" width="100%" />
+              </VStack>
+            ) : (
+              isArchitectResponse ? (
+                <Box>
+                  <FormattedMessage content={message.content} />
+                </Box>
+              ) : (
+                <Text 
+                  fontFamily="'Merriweather', Georgia, serif"
+                  fontSize="16px"
+                  fontWeight="500"
+                  lineHeight="1.7"
+                  color="gray.800"
+                  whiteSpace="pre-wrap"
+                >
+                  {message.content}
+                </Text>
+              )
             )}
+          </Box>
 
-            {/* Show pending status if no feedback given and in history tab */}
-            {!message.details?.feedback_status && activeTab === 'history' && (
-              <Badge colorScheme="blue" p={2} borderRadius="md">
-                ⏳ Pending Review
-              </Badge>
-            )}
+          {/* Feedback Section - Only show if feedback is required and not yet provided */}
+          {requiresFeedback && (
+            <Box 
+              bg="gray.50" 
+              p={4}
+              borderRadius="md"
+              borderWidth="1px"
+              borderColor="gray.200"
+              mt={2}
+            >
+              <Text 
+                fontSize="15px" 
+                color="gray.600" 
+                fontWeight="500"
+                mb={3}
+                fontFamily="Georgia, serif"
+              >
+                Please review this understanding:
+              </Text>
+              <InlineFeedback 
+                message={message}
+                onFeedbackSubmit={handleFeedbackSubmit}
+              />
+            </Box>
+          )}
 
-            {/* Analysis Details */}
-            {message.details?.parsed_question && (
-              <Accordion allowToggle width="100%">
-                <AccordionItem border="none" borderTop="1px solid" borderColor="gray.200">
-                  <AccordionButton py={3} _hover={{ bg: "gray.50" }}>
-                    <Box flex="1" textAlign="left">
-                      <Text fontSize="15px" color="blue.600" fontWeight="500">
-                        View Analysis Details
-                      </Text>
+          {/* Show feedback status badges */}
+          {message.details?.feedback_status === 'approved' && !isArchitectResponse && (
+            <Badge colorScheme="green" p={2} borderRadius="md">
+              ✓ Understanding confirmed
+            </Badge>
+          )}
+          
+          {message.details?.feedback_status === 'needs_improvement' && (
+            <Badge colorScheme="orange" p={2} borderRadius="md">
+              Clarification requested: {message.details?.feedback_comments}
+            </Badge>
+          )}
+
+          {/* Show pending status if no feedback given and in history tab */}
+          {!message.details?.feedback_status && activeTab === 'history' && (
+            <Badge colorScheme="blue" p={2} borderRadius="md">
+              ⏳ Pending Review
+            </Badge>
+          )}
+
+          {/* Analysis Details */}
+          {message.details?.parsed_question && (
+            <Accordion allowToggle width="100%">
+              <AccordionItem border="none" borderTop="1px solid" borderColor="gray.200">
+                <AccordionButton py={3} _hover={{ bg: "gray.50" }}>
+                  <Box flex="1" textAlign="left">
+                    <Text fontSize="15px" color="blue.600" fontWeight="500">
+                      View Analysis Details
+                    </Text>
+                  </Box>
+                  <AccordionIcon />
+                </AccordionButton>
+                <AccordionPanel pb={4} pt={2}>
+                  <VStack align="stretch" spacing={4}>
+                    <Box>
+                      <Text fontWeight="bold" mb={2} color="gray.700">Business Analysis:</Text>
+                      <VStack align="start" spacing={2} pl={4}>
+                        <Text>Rephrased Question: {message.details.parsed_question.rephrased_question}</Text>
+                        {message.details.parsed_question.business_context && (
+                          <>
+                            <Text>Domain: {message.details.parsed_question.business_context.domain}</Text>
+                            <Text>Primary Objective: {message.details.parsed_question.business_context.primary_objective}</Text>
+                            <Text>Key Entities:</Text>
+                            <UnorderedList>
+                              {message.details.parsed_question.business_context.key_entities?.map((entity, idx) => (
+                                <ListItem key={idx}>{entity}</ListItem>
+                              ))}
+                            </UnorderedList>
+                          </>
+                        )}
+                      </VStack>
                     </Box>
-                    <AccordionIcon />
-                  </AccordionButton>
-                  <AccordionPanel pb={4} pt={2}>
-                    <VStack align="stretch" spacing={4}>
-                      <Box>
-                        <Text fontWeight="bold" mb={2} color="gray.700">Business Analysis:</Text>
-                        <VStack align="start" spacing={2} pl={4}>
-                          <Text>Rephrased Question: {message.details.parsed_question.rephrased_question}</Text>
-                          {message.details.parsed_question.business_context && (
-                            <>
-                              <Text>Domain: {message.details.parsed_question.business_context.domain}</Text>
-                              <Text>Primary Objective: {message.details.parsed_question.business_context.primary_objective}</Text>
-                              <Text>Key Entities:</Text>
-                              <UnorderedList>
-                                {message.details.parsed_question.business_context.key_entities?.map((entity, idx) => (
-                                  <ListItem key={idx}>{entity}</ListItem>
-                                ))}
-                              </UnorderedList>
-                            </>
-                          )}
-                        </VStack>
+                  </VStack>
+                </AccordionPanel>
+              </AccordionItem>
+            </Accordion>
+          )}
+
+          {/* Data Architect Details - Show for architect responses */}
+          {isArchitectResponse && message.details?.sections && (
+            <Accordion allowToggle width="100%" defaultIndex={[0]}>
+              <AccordionItem border="none" borderTop="1px solid" borderColor="purple.200">
+                <AccordionButton py={3} _hover={{ bg: "purple.50" }}>
+                  <Box flex="1" textAlign="left">
+                    <Text fontSize="15px" color="purple.600" fontWeight="500">
+                      View Technical Implementation Details
+                    </Text>
+                  </Box>
+                  <AccordionIcon />
+                </AccordionButton>
+                <AccordionPanel pb={4} pt={2}>
+                  <VStack align="stretch" spacing={4}>
+                    {Object.entries(message.details.sections).map(([sectionName, sectionContent], idx) => (
+                      <Box key={idx}>
+                        <Text fontWeight="bold" mb={2} color="purple.700">{sectionName}:</Text>
+                        <Box 
+                          pl={4} 
+                          borderLeft="2px solid" 
+                          borderColor="purple.100"
+                          fontSize="15px"
+                          lineHeight="1.6"
+                          whiteSpace="pre-wrap"
+                        >
+                          {sectionContent}
+                        </Box>
                       </Box>
-                    </VStack>
-                  </AccordionPanel>
-                </AccordionItem>
-              </Accordion>
-            )}
-          </VStack>
-        )}
+                    ))}
+                  </VStack>
+                </AccordionPanel>
+              </AccordionItem>
+            </Accordion>
+          )}
+        </VStack>
       </Box>
     );
   };
@@ -1336,6 +1214,29 @@ const ChatPage = () => {
       duration: 3000
     });
   };
+
+  // Also, let's add a useEffect to debug message changes
+  useEffect(() => {
+    console.log("Messages state changed:", messages);
+    // Scroll to bottom whenever messages change
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
+
+  // Add this useEffect to monitor message state changes
+  useEffect(() => {
+    console.log("Messages state updated:", messages);
+    
+    // Check if we have an architect response
+    const hasArchitectResponse = messages.some(
+      msg => msg.details?.is_architect_response && !msg.details?.is_loading
+    );
+    
+    if (hasArchitectResponse) {
+      console.log("Architect response found in messages");
+    }
+  }, [messages]);
 
   return (
     <Box height="100vh" overflow="hidden">
@@ -1493,8 +1394,6 @@ const ChatPage = () => {
                   overflowY="auto"
                   height={{ base: "auto", lg: "100%" }}
                 >
-
-                  
                   {isHistoryLoading ? (
                     <Progress size="xs" isIndeterminate colorScheme="blue" />
                   ) : conversations.length === 0 ? (
