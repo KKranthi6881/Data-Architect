@@ -1,0 +1,81 @@
+{
+  "id": "42f1a222-39e5-4c2d-9d7c-2bd5c7385651",
+  "thread_id": "ab009a6b-fd08-483d-923f-35429562c35e",
+  "conversation_id": "39cc1bee-40ef-437d-93d4-a52a5a2d3d01",
+  "timestamp": "2025-03-10T16:19:20.266513",
+  "parsed_question": {
+    "rephrased_question": "What are the most common yellow NYC taxi pickups?",
+    "key_points": [
+      "Yellow taxis account for more drop-offs in Brooklyn than green taxis, but their pickup numbers have decreased since the introduction of green boro taxis.",
+      "Manhattan still has the largest number of taxi pickups, with around 85% of all NYC taxi pickups occurring there."
+    ],
+    "business_context": {
+      "domain": "Transportation and Taxi Industry",
+      "primary_objective": "Understanding Taxi Activity Patterns",
+      "key_entities": [
+        "Yellow Taxis",
+        "Green Taxis",
+        "Manhattan"
+      ],
+      "business_impact": "This information can help inform taxi industry strategies and urban planning decisions."
+    },
+    "assumptions": [
+      "The data is accurate and up-to-date.",
+      "The taxi types (yellow, green, Uber) are correctly identified in the dataset."
+    ],
+    "clarifying_questions": [
+      "How do the pickup numbers for yellow taxis compare to other taxi types in Manhattan?",
+      "Are there any seasonal or time-of-day variations in yellow taxi pickups?"
+    ],
+    "confidence_score": 0.8,
+    "thread_id": "ab009a6b-fd08-483d-923f-35429562c35e",
+    "conversation_id": "39cc1bee-40ef-437d-93d4-a52a5a2d3d01"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    }
+  ]
+}

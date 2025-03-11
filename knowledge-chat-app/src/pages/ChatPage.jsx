@@ -527,59 +527,74 @@ const ChatPage = () => {
     }
   };
 
-  // Fetch a specific conversation
+  // Update the fetchConversation function to use thread API
   const fetchConversation = async (id) => {
     try {
       setLoading(true);
+      // First get the initial conversation to get the thread_id
       const response = await fetch(`http://localhost:8000/api/conversation/${id}`);
       if (!response.ok) {
         throw new Error('Failed to fetch conversation');
       }
       const data = await response.json();
-      console.log("API Response:", data); // Log the full API response
+      console.log("Initial conversation data:", data);
       
-      if (data.status === 'success') {
-        const conversation = data.conversation;
-        console.log("Conversation data:", conversation); // Log the conversation data
+      if (data.status === 'success' && data.conversation) {
+        const threadId = data.conversation.thread_id;
         
-        // Clear existing messages
-        setMessages([]);
+        if (!threadId) {
+          throw new Error('No thread ID found for conversation');
+        }
         
-        // Add user message
-        const userMessage = {
-          type: 'user',
-          content: conversation.query || "No query available",
-          id: `${id}-query`
-        };
-        console.log("Adding user message:", userMessage);
+        // Now fetch all conversations in this thread
+        const threadResponse = await fetch(`http://localhost:8000/api/thread/${threadId}/conversations`);
+        if (!threadResponse.ok) {
+          throw new Error('Failed to fetch thread conversations');
+        }
+        const threadData = await threadResponse.json();
+        console.log("Thread conversations data:", threadData);
         
-        // Add assistant response with proper formatting
-        const assistantMessage = {
-          type: 'assistant',
-          content: typeof conversation.response === 'string' 
-            ? conversation.response 
-            : JSON.stringify(conversation.response),
-          id: `${id}-response`,
-          details: {
-            conversation_id: id,
-            feedback_status: conversation.feedback?.status || 'pending',
-            parsed_question: conversation.technical_details, // Use technical_details for parsed_question
-            sources: conversation.context
-          }
-        };
-        console.log("Adding assistant message:", assistantMessage);
-        
-        // Update messages state with both messages
-        setMessages([userMessage, assistantMessage]);
-        
-        setActiveConversationId(id);
-        
-        // Update URL without reloading
-        navigate(`/chat/${id}`, { replace: true });
-        
-        // Set thread ID if available in the history
-        if (conversation.thread_id) {
-          setCurrentThreadId(conversation.thread_id);
+        if (threadData.status === 'success') {
+          // Clear existing messages
+          setMessages([]);
+          
+          // Sort conversations by timestamp
+          const sortedConversations = threadData.conversations.sort(
+            (a, b) => new Date(a.timestamp) - new Date(b.timestamp)
+          );
+          
+          // Process each conversation in the thread
+          sortedConversations.forEach(conv => {
+            // Add user message
+            const userMessage = {
+              type: 'user',
+              content: conv.query,
+              id: `${conv.id}-query`
+            };
+            
+            // Add assistant message
+            const assistantMessage = {
+              type: 'assistant',
+              content: conv.response,
+              id: `${conv.id}-response`,
+              details: {
+                conversation_id: conv.id,
+                feedback_id: conv.id,
+                feedback_status: conv.feedback_status || 'pending',
+                requires_confirmation: conv.feedback_status !== 'approved',
+                parsed_question: conv.technical_details,
+                sources: conv.context
+              }
+            };
+            
+            setMessages(prev => [...prev, userMessage, assistantMessage]);
+          });
+          
+          setActiveConversationId(id);
+          setCurrentThreadId(threadId);
+          
+          // Update URL without reloading
+          navigate(`/chat/${id}`, { replace: true });
         }
       }
     } catch (error) {
@@ -808,7 +823,7 @@ const ChatPage = () => {
         comments: feedback.comments || null
       };
 
-      // First API call - submit feedback
+      // Submit feedback
       const response = await fetch('http://localhost:8000/feedback/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -850,57 +865,44 @@ const ChatPage = () => {
         
         setMessages(prev => [...prev, loadingMessage]);
 
-        // Second API call - fetch architect response
-        const architectResponse = await fetch(`http://localhost:8000/chat/architect/${feedback.conversation_id}`, {
-          method: 'GET',
-          headers: { 'Content-Type': 'application/json' }
-        });
+        try {
+          // Fetch architect response
+          const architectResponse = await fetch(`http://localhost:8000/chat/architect/${feedback.conversation_id}`);
+          if (!architectResponse.ok) {
+            throw new Error('Failed to fetch architect response');
+          }
 
-        if (!architectResponse.ok) {
-          throw new Error('Failed to fetch architect response');
+          const architectData = await architectResponse.json();
+          console.log("Architect API response:", architectData);
+
+          if (architectData.status === 'success') {
+            // Remove loading message and add architect response
+            setMessages(prev => {
+              const filteredMessages = prev.filter(msg => !msg.details?.is_loading);
+              return [...filteredMessages, {
+                type: 'assistant',
+                content: architectData.response,
+                id: `architect-${Date.now()}`,
+                details: {
+                  is_architect_response: true,
+                  feedback_status: 'final',
+                  requires_confirmation: false,
+                  schema_results: architectData.schema_results,
+                  code_results: architectData.code_results,
+                  sections: architectData.sections
+                }
+              }];
+            });
+          }
+        } catch (error) {
+          console.error('Error fetching architect response:', error);
+          // Remove loading message if there was an error
+          setMessages(prev => prev.filter(msg => !msg.details?.is_loading));
+          throw error;
         }
-
-        const architectData = await architectResponse.json();
-        console.log("Architect API response:", architectData);
-
-        // Create architect message
-        const architectMessage = {
-          id: Date.now() + 1,
-          type: 'assistant',
-          content: architectData.response || architectData.chat_response,
-          details: {
-            conversation_id: feedback.conversation_id,
-            is_architect_response: true,
-            feedback_status: 'final',
-            requires_confirmation: false,
-            sections: architectData.sections || {}
-          }
-        };
-
-        // Update messages - remove loading and add architect response
-        setMessages(prev => {
-          const filteredMessages = prev.filter(msg => !msg.details?.is_loading);
-          console.log("Messages before adding architect response:", filteredMessages);
-          const newMessages = [...filteredMessages, architectMessage];
-          console.log("Messages after adding architect response:", newMessages);
-          return newMessages;
-        });
-
-        // Force scroll to bottom
-        setTimeout(() => {
-          if (messagesEndRef.current) {
-            messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-          }
-        }, 100);
-
-        toast({
-          title: 'Analysis Complete',
-          description: 'The data architect has provided a detailed solution.',
-          status: 'success',
-          duration: 3000
-        });
       }
 
+      // Refresh conversation list
       await fetchConversations();
 
     } catch (error) {

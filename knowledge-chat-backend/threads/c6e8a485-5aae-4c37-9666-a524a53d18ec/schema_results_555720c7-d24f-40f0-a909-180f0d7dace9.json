@@ -1,0 +1,80 @@
+{
+  "id": "0036c741-3faa-41ae-8594-49fe54793e96",
+  "thread_id": "c6e8a485-5aae-4c37-9666-a524a53d18ec",
+  "conversation_id": "555720c7-d24f-40f0-a909-180f0d7dace9",
+  "timestamp": "2025-03-10T21:41:08.003520",
+  "parsed_question": {
+    "rephrased_question": "What are the peak hours for yellow taxi trips?",
+    "key_points": [
+      "The yellow taxi industry is a key part of New York City's transportation landscape.",
+      "Analyzing peak hours can help identify trends and patterns in demand."
+    ],
+    "business_context": {
+      "domain": "Transportation",
+      "primary_objective": "Understanding demand patterns to optimize services.",
+      "key_entities": [
+        "Yellow taxi",
+        "New York City"
+      ],
+      "business_impact": "Identifying peak hours can inform strategies for managing capacity and pricing."
+    },
+    "assumptions": [
+      "The yellow taxi industry is subject to weather conditions that may impact demand.",
+      "The dataset provided contains relevant information on taxi trips, including pickup and dropoff times."
+    ],
+    "clarifying_questions": [
+      "What is the definition of a 'late night' period for this analysis?",
+      "How does weather affect yellow taxi demand?"
+    ],
+    "confidence_score": 0.8,
+    "thread_id": "c6e8a485-5aae-4c37-9666-a524a53d18ec",
+    "conversation_id": "555720c7-d24f-40f0-a909-180f0d7dace9"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    }
+  ]
+}

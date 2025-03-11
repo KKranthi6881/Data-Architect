@@ -171,41 +171,57 @@ class ChatDatabase:
     def get_recent_conversations(self, limit=10):
         """Get recent conversations with safe handling of missing columns"""
         try:
-            cursor = self._get_connection().cursor()
-            
-            # Check if feedback_status column exists
-            cursor.execute("PRAGMA table_info(conversations)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            # Build query based on available columns
-            select_columns = "id, query, output, created_at, technical_details, code_context"
-            if "feedback_status" in columns:
-                select_columns += ", feedback_status"
-            if "feedback_comments" in columns:
-                select_columns += ", feedback_comments"
-            
-            query = f"SELECT {select_columns} FROM conversations ORDER BY created_at DESC LIMIT ?"
-            
-            cursor.execute(query, (limit,))
-            rows = cursor.fetchall()
-            
-            # Create column names list based on selected columns
-            column_names = ["id", "query", "output", "created_at", "technical_details", "code_context"]
-            if "feedback_status" in columns:
-                column_names.append("feedback_status")
-            if "feedback_comments" in columns:
-                column_names.append("feedback_comments")
-            
-            # Convert to list of dictionaries
-            conversations = []
-            for row in rows:
-                conversation = {}
-                for i, column in enumerate(column_names):
-                    if i < len(row):
-                        conversation[column] = row[i]
-                conversations.append(conversation)
-            
-            return conversations
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Build simple query with essential columns
+                query = """
+                    SELECT 
+                        id,
+                        created_at,
+                        query,
+                        output,
+                        feedback_status,
+                        cleared
+                    FROM conversations 
+                    WHERE cleared IS NULL OR cleared = 0
+                    ORDER BY created_at DESC 
+                    LIMIT ?
+                """
+                
+                cursor.execute(query, (limit,))
+                rows = cursor.fetchall()
+                print(f"Retrieved {len(rows)} rows from database")
+                
+                # Convert to list of dictionaries
+                conversations = []
+                for row in rows:
+                    try:
+                        # Parse output if it exists
+                        output = row[3] if len(row) > 3 else None
+                        if isinstance(output, str):
+                            try:
+                                output = json.loads(output)
+                            except json.JSONDecodeError:
+                                output = output
+                        
+                        conversation = {
+                            "id": row[0],
+                            "created_at": row[1],
+                            "query": row[2],
+                            "output": output,
+                            "feedback_status": row[4] if len(row) > 4 else "pending",
+                            "cleared": bool(row[5]) if len(row) > 5 else False
+                        }
+                        conversations.append(conversation)
+                        print(f"Processed conversation: {conversation['id']}")
+                        
+                    except Exception as e:
+                        print(f"Error processing conversation row: {e}")
+                        continue
+                
+                return conversations
+                
         except Exception as e:
             print(f"Error getting recent conversations: {e}")
             return []

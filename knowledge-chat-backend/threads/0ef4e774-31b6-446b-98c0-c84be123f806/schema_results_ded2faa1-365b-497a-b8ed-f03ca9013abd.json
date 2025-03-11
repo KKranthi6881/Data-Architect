@@ -1,0 +1,81 @@
+{
+  "id": "5aee52cc-552a-4007-a1e1-e1222cc239cb",
+  "thread_id": "0ef4e774-31b6-446b-98c0-c84be123f806",
+  "conversation_id": "ded2faa1-365b-497a-b8ed-f03ca9013abd",
+  "timestamp": "2025-03-09T22:22:42.172511",
+  "parsed_question": {
+    "rephrased_question": "What are the top most yellow taxi peak locations and ranges in New York City?",
+    "key_points": [
+      "Yellow taxis account for more drop-offs in Brooklyn than pickups, but green taxis have closed the gap.",
+      "Manhattan is the largest number of taxi pickups, with around 85% of all NYC taxi pickups occurring there."
+    ],
+    "business_context": {
+      "domain": "Transportation and Taxi Services",
+      "primary_objective": "Understanding peak locations for yellow taxis to optimize routes and services.",
+      "key_entities": [
+        "Yellow Taxis",
+        "Green Taxis",
+        "Manhattan"
+      ],
+      "business_impact": "Improving the efficiency of taxi services in NYC."
+    },
+    "assumptions": [
+      "Assuming that yellow taxi data is available and accurate.",
+      "Assuming that peak locations are related to demand and traffic patterns."
+    ],
+    "clarifying_questions": [
+      "What is the definition of a 'peak location' for yellow taxis?",
+      "How do green taxis compare to yellow taxis in terms of demand and usage?"
+    ],
+    "confidence_score": 0.85,
+    "thread_id": "0ef4e774-31b6-446b-98c0-c84be123f806",
+    "conversation_id": "ded2faa1-365b-497a-b8ed-f03ca9013abd"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    }
+  ]
+}

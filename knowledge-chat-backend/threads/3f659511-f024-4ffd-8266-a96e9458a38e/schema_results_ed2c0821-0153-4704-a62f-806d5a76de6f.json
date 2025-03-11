@@ -1,0 +1,81 @@
+{
+  "id": "4df890a7-94cb-4a5f-a7e4-a1639229bc92",
+  "thread_id": "3f659511-f024-4ffd-8266-a96e9458a38e",
+  "conversation_id": "ed2c0821-0153-4704-a62f-806d5a76de6f",
+  "timestamp": "2025-03-10T16:11:17.854368",
+  "parsed_question": {
+    "rephrased_question": "What are the top most yellow taxi peak locations and ranges, considering the impact of Uber on Manhattan's taxi activity?",
+    "key_points": [
+      "Yellow taxis have nearly doubled their pickups in Brooklyn since 2009-2013",
+      "Green taxis have surpassed yellow taxis in Brooklyn, accounting for 70% of monthly taxi pickups"
+    ],
+    "business_context": {
+      "domain": "Transportation and Ride-hailing Industry",
+      "primary_objective": "Understanding Taxi Activity Patterns to Inform Business Strategy",
+      "key_entities": [
+        "Yellow Taxis",
+        "Green Taxis",
+        "Uber"
+      ],
+      "business_impact": "Analyzing taxi activity patterns can help businesses understand market trends and make informed decisions"
+    },
+    "assumptions": [
+      "Assuming that yellow taxis are the primary focus of interest",
+      "Assuming that Uber's impact on Manhattan's taxi activity is relevant to understanding peak locations and ranges"
+    ],
+    "clarifying_questions": [
+      "What is the significance of Brooklyn's taxi activity in the context of yellow taxis?",
+      "How does Uber's growth in Manhattan affect the overall taxi activity patterns?"
+    ],
+    "confidence_score": 0.85,
+    "thread_id": "3f659511-f024-4ffd-8266-a96e9458a38e",
+    "conversation_id": "ed2c0821-0153-4704-a62f-806d5a76de6f"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    }
+  ]
+}

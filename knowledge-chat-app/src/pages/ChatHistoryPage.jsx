@@ -49,22 +49,34 @@ const ChatHistoryPage = () => {
         throw new Error('Failed to fetch conversations');
       }
       const data = await response.json();
-      console.log("Conversations data:", data);
+      console.log("API Response:", data); // Debug log
       
-      if (data.status === 'success') {
-        setConversations(data.conversations);
+      if (data.status === 'success' && Array.isArray(data.conversations)) {
+        // Ensure all required fields are present
+        const validConversations = data.conversations.map(conv => ({
+          id: conv.id || '',
+          timestamp: conv.timestamp || conv.created_at || '',
+          preview: conv.preview || 'No preview available',
+          feedback_status: conv.feedback_status || 'pending',
+          has_response: Boolean(conv.has_response)
+        }));
+        
+        console.log("Processed conversations:", validConversations); // Debug log
+        setConversations(validConversations);
       } else {
-        throw new Error(data.message || 'Failed to load conversations');
+        console.warn("Unexpected API response format:", data);
+        setConversations([]);
       }
     } catch (error) {
       console.error('Error fetching conversations:', error);
       toast({
         title: 'Error',
-        description: error.message,
+        description: 'Failed to load conversation history',
         status: 'error',
         duration: 5000,
         isClosable: true,
       });
+      setConversations([]); // Clear conversations on error
     } finally {
       setIsLoading(false);
     }
@@ -172,14 +184,14 @@ const ChatHistoryPage = () => {
                     <Badge 
                       colorScheme={
                         conversation.feedback_status === 'approved' ? 'green' : 
-                        conversation.feedback_status === 'needs_improvement' ? 'orange' : 'blue'
+                        conversation.feedback_status === 'needs_improvement' ? 'orange' : 
+                        'blue'
                       }
                       fontSize="xs"
                     >
-                      {
-                        conversation.feedback_status === 'approved' ? 'Approved' : 
-                        conversation.feedback_status === 'needs_improvement' ? 'Needs Review' : 'Pending'
-                      }
+                      {conversation.feedback_status === 'approved' ? 'Approved' : 
+                       conversation.feedback_status === 'needs_improvement' ? 'Needs Review' : 
+                       'Pending'}
                     </Badge>
                     <HStack spacing={1}>
                       <Icon as={IoTimeOutline} color="gray.500" boxSize={3} />
@@ -194,8 +206,14 @@ const ChatHistoryPage = () => {
                     fontSize="md" 
                     noOfLines={2}
                   >
-                    {conversation.preview}
+                    {conversation.preview || "No preview available"}
                   </Text>
+                  
+                  {!conversation.has_response && (
+                    <Badge colorScheme="yellow" fontSize="xs">
+                      Awaiting Response
+                    </Badge>
+                  )}
                   
                   <Divider />
                   
