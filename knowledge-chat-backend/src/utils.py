@@ -743,6 +743,9 @@ class ChromaDBManager:
         Add a processed GitHub repository to the vector store.
         """
         try:
+            # Parse the repo URL to extract hostname for fallback
+            parsed_url = urlparse(repo_url)
+            
             # Process the repository
             repo_data = self.process_github(repo_url, 
                                            username=metadata.get("username", ""), 
@@ -776,7 +779,7 @@ class ChromaDBManager:
                     # Create a simplified metadata dict with only primitive types
                     cleaned_metadata = {
                         "repo_url": repo_url,
-                        "hostname": doc["metadata"].get("hostname", parsed_url.netloc),  # Include hostname
+                        "hostname": doc["metadata"].get("hostname", parsed_url.netloc),  # Now parsed_url is defined
                         "file_path": doc["metadata"].get("file_path", ""),
                         "language": doc["metadata"].get("language", ""),
                         "chunk_index": doc["metadata"].get("chunk_index", 0),

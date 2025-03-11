@@ -205,8 +205,8 @@ const FileUploadComponent = () => {
     try {
       // Parse the URL
       const parsedUrl = new URL(url);
-      // Check if it's using https protocol
-      if (parsedUrl.protocol !== 'https:') return false;
+      // Check if it's using http or https protocol
+      if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') return false;
       
       // Get path parts after removing leading/trailing slashes
       const pathParts = parsedUrl.pathname.replace(/^\/|\/$/g, '').split('/');
