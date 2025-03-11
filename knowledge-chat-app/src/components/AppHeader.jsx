@@ -10,7 +10,13 @@ import {
   Icon
 } from '@chakra-ui/react';
 import { Link as RouterLink, useLocation } from 'react-router-dom';
-import { IoCheckmarkCircle, IoChatbubbles, IoTime, IoHome } from 'react-icons/io5';
+import { 
+  IoCheckmarkCircle, 
+  IoChatbubbles, 
+  IoTime, 
+  IoHome, 
+  IoCloudUpload 
+} from 'react-icons/io5';
 
 const AppHeader = () => {
   const location = useLocation();
@@ -57,8 +63,8 @@ const AppHeader = () => {
           <Button
             as={RouterLink}
             to="/"
-            colorScheme={isActive('/') && !isActive('/chat') && !isActive('/history') ? 'blue' : 'gray'}
-            variant={isActive('/') && !isActive('/chat') && !isActive('/history') ? 'solid' : 'ghost'}
+            colorScheme={isActive('/') && !isActive('/chat') && !isActive('/upload') && !isActive('/history') ? 'blue' : 'gray'}
+            variant={isActive('/') && !isActive('/chat') && !isActive('/upload') && !isActive('/history') ? 'solid' : 'ghost'}
             leftIcon={<IoHome />}
             size="md"
           >
@@ -74,6 +80,17 @@ const AppHeader = () => {
             size="md"
           >
             Chat
+          </Button>
+          
+          <Button
+            as={RouterLink}
+            to="/upload"
+            colorScheme={isActive('/upload') ? 'blue' : 'gray'}
+            variant={isActive('/upload') ? 'solid' : 'ghost'}
+            leftIcon={<IoCloudUpload />}
+            size="md"
+          >
+            Upload
           </Button>
           
           <Button
