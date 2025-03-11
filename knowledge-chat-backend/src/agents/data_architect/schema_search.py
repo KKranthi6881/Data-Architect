@@ -201,6 +201,7 @@ class SchemaSearchAgent:
             ```
 
             IMPORTANT: 
+            -  Provide the info based on available info only. Never ever generalize it
             - Your response must be valid JSON that can be parsed
             - Score relevance from 0-10 based on how directly the schema addresses the question
             - Provide detailed explanations that show your reasoning

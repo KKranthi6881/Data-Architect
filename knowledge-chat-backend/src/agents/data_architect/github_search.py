@@ -172,7 +172,7 @@ class GitHubCodeSearchAgent:
             # Add the rest of the prompt with detailed instructions
             prompt += """
             ## Analysis Instructions
-            For each code snippet, provide a comprehensive analysis that would help a data engineer implement or modify the code to address the business question:
+            For each code snippet, provide a comprehensive analysis that would help a data engineer implement or modify the code to address the business question. Provide the info based on available info only. Never ever generalize it:
 
             1. **Code Purpose Analysis**:
                - What is the primary function of this code?
