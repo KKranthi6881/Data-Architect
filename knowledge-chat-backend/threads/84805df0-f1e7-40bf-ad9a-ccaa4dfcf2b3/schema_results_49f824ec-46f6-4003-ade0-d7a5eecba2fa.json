@@ -1,0 +1,80 @@
+{
+  "id": "bf4e73b7-dded-48dd-982a-bf881a41f950",
+  "thread_id": "84805df0-f1e7-40bf-ad9a-ccaa4dfcf2b3",
+  "conversation_id": "49f824ec-46f6-4003-ade0-d7a5eecba2fa",
+  "timestamp": "2025-03-10T19:32:29.120145",
+  "parsed_question": {
+    "rephrased_question": "What are the peak hours for yellow taxi cab routes based on travel time and pickup locations?",
+    "key_points": [
+      "The dataset contains 580 taxi trips with a mean travel time of 29.8 minutes and a median of 29 minutes.",
+      "Only 39% of trips make it in 27 minutes or less, suggesting that peak hours are likely during the morning rush."
+    ],
+    "business_context": {
+      "domain": "Transportation",
+      "primary_objective": "Optimizing taxi routes for efficient travel times",
+      "key_entities": [
+        "Yellow taxis",
+        "Pickup locations"
+      ],
+      "business_impact": "Understanding peak hours can help optimize routes and reduce wait times"
+    },
+    "assumptions": [
+      "Assuming that yellow taxi cab routes are affected by traffic patterns and time of day.",
+      "Assuming that travel time is a key factor in determining peak hours."
+    ],
+    "clarifying_questions": [
+      "What is the relationship between pickup locations and travel times?",
+      "How do weather conditions impact taxi travel times?"
+    ],
+    "confidence_score": 0.8,
+    "thread_id": "84805df0-f1e7-40bf-ad9a-ccaa4dfcf2b3",
+    "conversation_id": "49f824ec-46f6-4003-ade0-d7a5eecba2fa"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    }
+  ]
+}

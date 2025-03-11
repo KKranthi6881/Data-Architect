@@ -7,27 +7,28 @@ import AboutPage from './pages/AboutPage'
 import ChatPage from './pages/ChatPage'
 import FileUploadPage from './pages/knowledge/FileUploadPage'
 import ChatHistoryPage from './pages/ChatHistoryPage'
+import AppHeader from './components/AppHeader'
 import './App.css'
 
 function App() {
   return (
     <ChakraProvider>
       <Router>
-        <Flex direction="column" minH="100vh">
-          <Navbar />
-          <Box as="main" flex="1" bg="white">
+        <Box minH="100vh">
+          <AppHeader />
+          <Box as="main" pt={4}>
             <Routes>
-              <Route path="/" element={<ChatPage />} />
-              <Route path="/home" element={<HomePage />} />
+              <Route path="/" element={<HomePage />} />
               <Route path="/about" element={<AboutPage />} />
               <Route path="/upload" element={<FileUploadPage />} />
               <Route path="/chat" element={<ChatPage />} />
               <Route path="/chat/:conversationId" element={<ChatPage />} />
               <Route path="/history" element={<ChatHistoryPage />} />
+              <Route path="/history/:conversationId" element={<ChatHistoryPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Box>
-        </Flex>
+        </Box>
       </Router>
     </ChakraProvider>
   )

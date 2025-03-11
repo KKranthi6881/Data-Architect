@@ -1,0 +1,83 @@
+{
+  "id": "b292b323-475c-4cd7-95f8-ce3220926e0c",
+  "thread_id": "b11a6fa2-b81e-4922-9c55-c59fc9010344",
+  "conversation_id": "5d7d077b-98cd-49ee-98d1-db7866a26543",
+  "timestamp": "2025-03-11T12:12:44.211249",
+  "parsed_question": {
+    "rephrased_question": "Calculate the average peak hours and average peak taxi fee for different categories of trips, such as Uber, Lyft, Via, Juno, and Gett.",
+    "key_points": [
+      "The analysis should consider the growth rate of ridesharing services compared to taxis over the next two years.",
+      "The calculation should account for the decline in taxi activity and the increase in ridesharing service activity."
+    ],
+    "business_context": {
+      "domain": "Transportation industry",
+      "primary_objective": "Understanding the impact of ridesharing services on taxi activity",
+      "key_entities": [
+        "Uber",
+        "Lyft",
+        "Via",
+        "Juno",
+        "Gett"
+      ],
+      "business_impact": "The analysis will help identify trends and patterns in taxi and ridesharing service activity"
+    },
+    "assumptions": [
+      "The data is accurate and complete",
+      "The growth rates of ridesharing services are consistent with historical trends"
+    ],
+    "clarifying_questions": [
+      "What is the definition of 'peak hours' for this analysis?",
+      "How should we handle missing or invalid data points?"
+    ],
+    "confidence_score": 0.85,
+    "thread_id": "b11a6fa2-b81e-4922-9c55-c59fc9010344",
+    "conversation_id": "5d7d077b-98cd-49ee-98d1-db7866a26543"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    }
+  ]
+}
