@@ -27,6 +27,8 @@ from urllib.parse import urlparse
 import git
 import shutil
 import json
+import hashlib
+from datetime import datetime
 
 
 
@@ -884,3 +886,223 @@ class ChromaDBManager:
             return 'dbt'
         
         return extension_map.get(ext)
+
+    def process_git_zip(self, zip_path: str, filename: str) -> Dict[str, Any]:
+        """
+        Process a ZIP file containing a Git repository
+        
+        Args:
+            zip_path: Path to the ZIP file
+            filename: Original filename of the ZIP
+            
+        Returns:
+            Dictionary with repository metadata and processed files
+        """
+        logger.info(f"Processing Git ZIP file: {zip_path}")
+        
+        # Create a temporary directory for extraction
+        extract_dir = tempfile.mkdtemp(prefix="git_extract_")
+        
+        # Track current file path (used by language detection)
+        self.current_file_path = ""
+        
+        try:
+            # Extract the ZIP file
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+            
+            # Repository metadata
+            repo_metadata = {
+                "source": "zip_upload",
+                "filename": filename,
+                "upload_time": datetime.now().isoformat(),
+                "file_count": 0,
+                "languages": {}
+            }
+            
+            # Track languages for stats
+            language_counts = {}
+            
+            # Process the extracted files
+            processed_files = []
+            
+            # Walk through the extracted directory
+            for root, dirs, files in os.walk(extract_dir):
+                # Skip hidden directories (like .git)
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+                
+                for file in files:
+                    # Skip hidden files
+                    if file.startswith('.'):
+                        continue
+                    
+                    file_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(file_path, extract_dir)
+                    
+                    # Skip binary files and very large files
+                    if self._is_binary_file(file_path) or os.path.getsize(file_path) > 1024 * 1024:
+                        continue
+                    
+                    try:
+                        # Get file extension
+                        _, ext = os.path.splitext(file)
+                        ext = ext.lstrip('.').lower()
+                        
+                        # Set current file path for language detection
+                        self.current_file_path = rel_path
+                        
+                        # Determine the language
+                        language = self._get_language_from_extension(ext)
+                        
+                        # Skip unsupported file types
+                        if not language:
+                            continue
+                        
+                        # Update language count
+                        language_counts[language] = language_counts.get(language, 0) + 1
+                        
+                        # Read file content
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        # Analyze SQL content if applicable
+                        analysis = {}
+                        if language == 'sql':
+                            analysis = self._analyze_sql(content)
+                        elif language == 'python':
+                            analysis = self._analyze_python(content)
+                        
+                        # Store processed file
+                        processed_files.append({
+                            "path": rel_path,
+                            "language": language,
+                            "content": content,
+                            "analysis": analysis,
+                            "size": os.path.getsize(file_path)
+                        })
+                    
+                    except Exception as e:
+                        logger.warning(f"Error processing file {rel_path}: {str(e)}")
+            
+            # Update repository metadata
+            repo_metadata["file_count"] = len(processed_files)
+            repo_metadata["languages"] = language_counts
+            
+            # Create documents for vector storage
+            documents = []
+            zip_id = hashlib.md5(filename.encode()).hexdigest()
+            
+            # Process each file into chunks
+            for file in processed_files:
+                # Generate a unique ID for the document
+                doc_id = base64.b64encode(f"{zip_id}:{file['path']}".encode()).decode()
+                
+                # Create chunks from the file content
+                if file['language'] in ['python', 'javascript', 'typescript', 'java']:
+                    # Use code-specific splitter for programming languages
+                    chunks = self.code_splitter.split_text(file['content'])
+                else:
+                    # Use regular document splitter for other files
+                    chunks = self.doc_splitter.split_text(file['content'])
+                
+                # Create a document for each chunk
+                for i, chunk in enumerate(chunks):
+                    chunk_id = f"{doc_id}_chunk_{i}"
+                    
+                    # Create metadata with only primitive types
+                    metadata = {
+                        "source": "git_zip",
+                        "filename": filename,
+                        "file_path": file['path'],
+                        "language": file['language'],
+                        "chunk_index": i,
+                        "total_chunks": len(chunks),
+                        "size": file.get('size', 0)
+                    }
+                    
+                    # Add simplified analysis data if available
+                    if file['analysis']:
+                        # Convert complex analysis objects to simple strings
+                        simple_analysis = {}
+                        for key, value in file['analysis'].items():
+                            if isinstance(value, (str, int, float, bool)):
+                                simple_analysis[key] = value
+                            elif isinstance(value, (list, dict)):
+                                # Convert to string representation
+                                simple_analysis[key] = str(value)
+                        
+                        metadata["analysis_summary"] = simple_analysis
+                    
+                    documents.append({
+                        "id": chunk_id,
+                        "text": chunk,
+                        "metadata": metadata
+                    })
+            
+            # Add to vector store
+            self.add_git_zip_documents(documents, filename)
+            
+            return {
+                "metadata": repo_metadata,
+                "document_count": len(documents)
+            }
+        
+        finally:
+            # Clean up
+            try:
+                shutil.rmtree(extract_dir)
+                os.remove(zip_path)
+            except Exception as e:
+                logger.warning(f"Error cleaning up temporary files: {str(e)}")
+
+    def add_git_zip_documents(self, documents, filename):
+        """Add Git ZIP documents to the vector store"""
+        try:
+            # Get the collection
+            collection = self.get_or_create_collection("github_documents")  # Reuse the GitHub collection
+            
+            if not documents:
+                logger.warning(f"No documents extracted from ZIP: {filename}")
+                return
+            
+            # Add documents in batches
+            batch_size = 100
+            for i in range(0, len(documents), batch_size):
+                batch = documents[i:i+batch_size]
+                
+                # Extract data for ChromaDB
+                ids = [doc["id"] for doc in batch]
+                texts = [doc["text"] for doc in batch]
+                
+                # Clean metadata
+                cleaned_metadatas = []
+                for doc in batch:
+                    # Create a simplified metadata dict with only primitive types
+                    cleaned_metadata = {
+                        "source": "git_zip",
+                        "filename": filename,
+                        "file_path": doc["metadata"].get("file_path", ""),
+                        "language": doc["metadata"].get("language", ""),
+                        "chunk_index": doc["metadata"].get("chunk_index", 0),
+                        "total_chunks": doc["metadata"].get("total_chunks", 1),
+                        "upload_time": datetime.now().isoformat()
+                    }
+                    
+                    # Add any other primitive metadata that might be useful
+                    if "size" in doc["metadata"]:
+                        cleaned_metadata["size"] = doc["metadata"]["size"]
+                    
+                    cleaned_metadatas.append(cleaned_metadata)
+                
+                # Add to collection
+                collection.add(
+                    ids=ids,
+                    documents=texts,
+                    metadatas=cleaned_metadatas
+                )
+            
+            logger.info(f"Added {len(documents)} documents from Git ZIP file: {filename}")
+            
+        except Exception as e:
+            logger.error(f"Error adding Git ZIP documents: {str(e)}")
+            raise

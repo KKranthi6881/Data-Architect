@@ -1224,5 +1224,38 @@ async def get_architect_response(conversation_id: str):
         logger.error(f"Error generating architect response: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/git-zip/")
+async def upload_git_zip(file: UploadFile = File(...)):
+    """
+    Upload and process a Git repository ZIP file
+    """
+    try:
+        logger.info(f"Received Git ZIP file: {file.filename}")
+        
+        # Create a temporary directory for the ZIP extraction
+        temp_dir = tempfile.mkdtemp(prefix="git_zip_")
+        
+        # Save the uploaded file to a temporary file
+        temp_zip_path = os.path.join(temp_dir, file.filename)
+        with open(temp_zip_path, "wb") as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+        
+        # Process the ZIP file
+        result = db_manager.process_git_zip(temp_zip_path, file.filename)
+        
+        return {
+            "status": "success",
+            "message": f"Successfully processed Git ZIP file: {file.filename}",
+            "details": result
+        }
+    
+    except Exception as e:
+        logger.error(f"Error processing Git ZIP file: {str(e)}")
+        return {
+            "status": "error",
+            "message": f"Error processing Git ZIP file: {str(e)}"
+        }
+
 if __name__ == "__main__":
     main() 

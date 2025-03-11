@@ -28,7 +28,8 @@ import {
   Tooltip,
   Divider,
   Alert,
-  AlertIcon
+  AlertIcon,
+  FormHelperText
 } from '@chakra-ui/react'
 import { 
   IoCloudUpload, 
@@ -57,6 +58,7 @@ const FileUploadComponent = () => {
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadedFiles, setUploadedFiles] = useState([])
   const [useMultipleFiles, setUseMultipleFiles] = useState(false)
+  const [gitZipFile, setGitZipFile] = useState(null)
   const toast = useToast()
 
   // Single file handlers (keeping for backward compatibility)
@@ -111,74 +113,71 @@ const FileUploadComponent = () => {
     }
   }
 
-  const simulateUpload = (fileType, files) => {
+  const simulateUpload = (type, file) => {
     setIsUploading(true)
     setUploadProgress(0)
     
+    // Create a FormData object for the file upload
+    const formData = new FormData()
+    
+    if (type === 'sql' || type === 'pdf') {
+      // Handle multiple files
+      if (Array.isArray(file)) {
+        file.forEach((f, index) => {
+          formData.append('files', f)
+        })
+      } else {
+        formData.append('file', file)
+      }
+    } else if (type === 'github') {
+      formData.append('repo_url', file.name)
+    } else if (type === 'git_zip') {
+      formData.append('file', file.originalFile)
+    }
+    
+    // Create a simulated progress interval
     const interval = setInterval(() => {
       setUploadProgress(prev => {
-        if (prev >= 100) {
+        if (prev >= 95) {
           clearInterval(interval)
-          setIsUploading(false)
-          
-          // Add to uploaded files
-          if (Array.isArray(files)) {
-            // Multiple files
-            const newUploadedFiles = files.map(file => ({
-              id: Date.now() + Math.random(), // Ensure unique IDs
-              name: file.name,
-              type: fileType,
-              size: file.size,
-              uploadedAt: new Date().toISOString()
-            }))
-            
-            setUploadedFiles(prev => [...prev, ...newUploadedFiles])
-            
-            toast({
-              title: 'Upload complete',
-              description: `${files.length} ${fileType} files have been uploaded successfully.`,
-              status: 'success',
-              duration: 5000,
-              isClosable: true,
-            })
-          } else {
-            // Single file
-            setUploadedFiles(prev => [
-              ...prev, 
-              { 
-                id: Date.now(), 
-                name: files.name, 
-                type: fileType,
-                size: files.size,
-                uploadedAt: new Date().toISOString() 
-              }
-            ])
-            
-            toast({
-              title: 'Upload complete',
-              description: `${files.name} has been uploaded successfully.`,
-              status: 'success',
-              duration: 5000,
-              isClosable: true,
-            })
-          }
-          
-          // Reset form
-          if (fileType === 'sql') {
-            setSqlFile(null)
-            setSqlFiles([])
-          }
-          if (fileType === 'pdf') {
-            setPdfFile(null)
-            setPdfFiles([])
-          }
-          if (fileType === 'github') setRepoUrl('')
-          
-          return 0
+          return 95
         }
-        return prev + 10
+        return prev + 5
       })
-    }, 300)
+    }, 200)
+    
+    // Simulate an API call
+    setTimeout(() => {
+      clearInterval(interval)
+      setUploadProgress(100)
+      
+      // Add the file to the uploadedFiles list
+      const newFile = {
+        id: Date.now().toString(),
+        name: Array.isArray(file) ? `${file.length} files uploaded` : (type === 'github' ? file.name : file.name),
+        type: type === 'git_zip' ? 'github' : type, // Treat git_zip as github for display
+        size: Array.isArray(file) ? file.reduce((acc, f) => acc + f.size, 0) : (file.originalFile ? file.originalFile.size : 0),
+        uploadedAt: new Date().toISOString()
+      }
+      
+      setUploadedFiles(prev => [...prev, newFile])
+      
+      // Reset states
+      setIsUploading(false)
+      setSqlFile(null)
+      setPdfFile(null)
+      setSqlFiles([])
+      setPdfFiles([])
+      setRepoUrl('')
+      setGitZipFile(null)
+      
+      toast({
+        title: 'Upload successful',
+        description: `${type.toUpperCase()} ${Array.isArray(file) ? 'files' : 'file'} has been processed`,
+        status: 'success',
+        duration: 3000,
+      })
+    }, 3000)
   }
 
   const handleSqlUpload = () => {
@@ -204,20 +203,20 @@ const FileUploadComponent = () => {
   const isValidGitHubUrl = (url) => {
     try {
       // Parse the URL
-      const parsedUrl = new URL(url);
+      const parsedUrl = new URL(url)
       // Check if it's using http or https protocol
-      if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') return false;
+      if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') return false
       
       // Get path parts after removing leading/trailing slashes
-      const pathParts = parsedUrl.pathname.replace(/^\/|\/$/g, '').split('/');
+      const pathParts = parsedUrl.pathname.replace(/^\/|\/$/g, '').split('/')
       
       // Must have at least owner/repo format
-      return pathParts.length >= 2 && pathParts[0].length > 0 && pathParts[1].length > 0;
+      return pathParts.length >= 2 && pathParts[0].length > 0 && pathParts[1].length > 0
     } catch (e) {
       // Invalid URL format
-      return false;
+      return false
     }
-  };
+  }
 
   const handleGithubUpload = () => {
     if (!repoUrl) {
@@ -226,8 +225,8 @@ const FileUploadComponent = () => {
         description: 'Please enter a valid GitHub repository URL',
         status: 'error',
         duration: 3000,
-      });
-      return;
+      })
+      return
     }
     
     if (!isValidGitHubUrl(repoUrl)) {
@@ -236,12 +235,32 @@ const FileUploadComponent = () => {
         description: 'Please enter a valid GitHub URL in the format https://github.com/owner/repo or https://github.mycompany.com/owner/repo',
         status: 'error',
         duration: 5000,
-      });
-      return;
+      })
+      return
     }
     
     // Proceed with the upload
-    simulateUpload('github', { name: repoUrl });
+    simulateUpload('github', { name: repoUrl })
+  }
+
+  const handleGitZipFileChange = (e) => {
+    if (e.target.files[0]) {
+      setGitZipFile(e.target.files[0])
+    }
+  }
+
+  const handleGitZipUpload = () => {
+    if (!gitZipFile) {
+      toast({
+        title: 'ZIP file required',
+        description: 'Please select a ZIP file containing your Git repository',
+        status: 'error',
+        duration: 3000,
+      })
+      return
+    }
+    
+    simulateUpload('git_zip', { name: gitZipFile.name, originalFile: gitZipFile })
   }
 
   const getFileIcon = (fileType) => {
@@ -271,12 +290,12 @@ const FileUploadComponent = () => {
   }
 
   const formatFileSize = (bytes) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
+    if (bytes === 0) return '0 Bytes'
+    const k = 1024
+    const sizes = ['Bytes', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+  }
 
   return (
     <Box maxW="1000px" mx="auto" py={8} px={4}>
@@ -501,13 +520,13 @@ const FileUploadComponent = () => {
                         <InputLeftAddon children="URL" />
                         <Input
                           type="url"
-                          placeholder="https://github.com/username/repository or https://github.mycompany.com/org/repo"
+                          placeholder="https://github.com/username/repository or enterprise Git URL"
                           value={repoUrl}
                           onChange={handleRepoUrlChange}
                         />
                       </InputGroup>
                       <Text fontSize="xs" color="gray.500" mt={1}>
-                        Connect to a GitHub repository (standard or enterprise) to include code and documentation in your knowledge base
+                        Connect to a GitHub repository (standard or enterprise) to include code and documentation
                       </Text>
                     </FormControl>
                     
@@ -517,7 +536,7 @@ const FileUploadComponent = () => {
                       variant="solid"
                       onClick={handleGithubUpload}
                       isDisabled={!repoUrl || isUploading}
-                      isLoading={isUploading}
+                      isLoading={isUploading && !gitZipFile}
                       loadingText="Connecting..."
                       size="md"
                       width="100%"
@@ -525,10 +544,46 @@ const FileUploadComponent = () => {
                     >
                       Connect Repository
                     </Button>
+                  </VStack>
+                </CardBody>
+              </Card>
+              
+              <Divider />
+              
+              <Card variant="outline" p={4}>
+                <CardBody>
+                  <VStack spacing={4} align="stretch">
+                    <Text fontWeight="medium" color="gray.700">
+                      Or upload a ZIP file of your Git repository
+                    </Text>
                     
-                    {isUploading && (
-                      <Progress value={uploadProgress} size="sm" colorScheme="brand" borderRadius="md" />
-                    )}
+                    <FormControl>
+                      <FormLabel>Git Repository ZIP File</FormLabel>
+                      <Input
+                        type="file"
+                        accept=".zip"
+                        onChange={handleGitZipFileChange}
+                        p={1}
+                      />
+                      <FormHelperText>
+                        Export your repository as a ZIP file and upload it directly
+                      </FormHelperText>
+                    </FormControl>
+                    
+                    <Button
+                      leftIcon={<IoCloudUpload />}
+                      colorScheme="purple"
+                      variant="outline"
+                      onClick={handleGitZipUpload}
+                      isDisabled={!gitZipFile || isUploading}
+                      isLoading={isUploading && gitZipFile}
+                      loadingText="Uploading..."
+                      size="md"
+                      width="100%"
+                      mt={2}
+                    >
+                      Upload Repository ZIP
+                    </Button>
                   </VStack>
                 </CardBody>
               </Card>

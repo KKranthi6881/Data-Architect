@@ -26,9 +26,11 @@ import {
   AlertIcon,
   AlertTitle,
   AlertDescription,
-  Link
+  Link,
+  Progress
 } from '@chakra-ui/react'
 import { FaGithub, FaKey, FaUser, FaLock, FaCheck, FaTimes, FaExternalLinkAlt } from 'react-icons/fa'
+import { IoCloudUpload } from 'react-icons/io5'
 
 const GitHubConnectorPage = () => {
   const [isConnected, setIsConnected] = useState(false)
@@ -38,6 +40,9 @@ const GitHubConnectorPage = () => {
     token: '',
     usePersonalToken: true
   })
+  const [gitZipFile, setGitZipFile] = useState(null)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
   const toast = useToast()
   const codeBg = useColorModeValue('gray.50', 'gray.700')
 
@@ -95,6 +100,76 @@ const GitHubConnectorPage = () => {
       ...connectionDetails,
       usePersonalToken: !connectionDetails.usePersonalToken
     })
+  }
+
+  const handleGitZipFileChange = (e) => {
+    if (e.target.files[0]) {
+      setGitZipFile(e.target.files[0])
+    }
+  }
+
+  const handleGitZipUpload = () => {
+    if (!gitZipFile) {
+      toast({
+        title: 'ZIP file required',
+        description: 'Please select a ZIP file containing your Git repository',
+        status: 'error',
+        duration: 3000,
+      })
+      return
+    }
+    
+    setIsUploading(true)
+    setUploadProgress(0)
+    
+    const formData = new FormData()
+    formData.append('file', gitZipFile)
+    
+    // Create a simulated progress interval for visual feedback
+    const progressInterval = setInterval(() => {
+      setUploadProgress(prev => Math.min(prev + 5, 95))
+    }, 200)
+    
+    // Make the actual API call to upload the ZIP file
+    fetch('http://localhost:8000/git-zip/', {
+      method: 'POST',
+      body: formData,
+    })
+      .then(response => response.json())
+      .then(data => {
+        clearInterval(progressInterval)
+        setUploadProgress(100)
+        
+        if (data.status === 'success') {
+          toast({
+            title: 'Repository uploaded',
+            description: 'Git repository ZIP has been successfully processed',
+            status: 'success',
+            duration: 5000,
+          })
+          
+          // Reset form and fetch updated list
+          setGitZipFile(null)
+          fetchKnowledgeSources()
+        } else {
+          throw new Error(data.message || 'Unknown error occurred')
+        }
+      })
+      .catch(error => {
+        clearInterval(progressInterval)
+        setUploadProgress(0)
+        console.error('Error uploading ZIP:', error)
+        
+        toast({
+          title: 'Upload failed',
+          description: error.message || 'Failed to process Git repository ZIP',
+          status: 'error',
+          duration: 5000,
+        })
+      })
+      .finally(() => {
+        setIsUploading(false)
+      })
   }
 
   return (
@@ -261,6 +336,54 @@ const GitHubConnectorPage = () => {
           </CardBody>
         </Card>
       )}
+
+      {/* Add a divider */}
+      <Divider my={6} />
+
+      {/* ZIP Upload Section */}
+      <Card variant="outline">
+        <CardHeader>
+          <Heading size="md">Or Upload Repository ZIP File</Heading>
+        </CardHeader>
+        <CardBody>
+          <VStack spacing={4} align="stretch">
+            <Text>
+              If direct GitHub connection isn't working, you can upload a ZIP export of your repository.
+            </Text>
+            
+            <FormControl>
+              <FormLabel>Git Repository ZIP File</FormLabel>
+              <Input
+                type="file"
+                accept=".zip"
+                onChange={handleGitZipFileChange}
+                p={1}
+              />
+              <FormHelperText>
+                Export your repository as a ZIP file and upload it directly
+              </FormHelperText>
+            </FormControl>
+            
+            <Button
+              leftIcon={<IoCloudUpload />}
+              colorScheme="purple"
+              variant="outline"
+              onClick={handleGitZipUpload}
+              isDisabled={!gitZipFile || isUploading}
+              isLoading={isUploading && gitZipFile}
+              loadingText="Uploading..."
+              size="md"
+              width="100%"
+            >
+              Upload Repository ZIP
+            </Button>
+            
+            {isUploading && gitZipFile && (
+              <Progress value={uploadProgress} size="sm" colorScheme="purple" borderRadius="md" />
+            )}
+          </VStack>
+        </CardBody>
+      </Card>
     </Box>
   )
 }
