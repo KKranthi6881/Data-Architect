@@ -1,0 +1,80 @@
+{
+  "id": "fa864d5a-b027-431e-96fc-080f4c94b543",
+  "thread_id": "f904cb64-fbb4-4f22-ad8f-2538ebecb015",
+  "conversation_id": "d8105ffe-226e-4209-ba0c-d793de09fd79",
+  "timestamp": "2025-03-11T15:49:07.000198",
+  "parsed_question": {
+    "rephrased_question": "What are the detailed NYC trip statistics, including average hours, trip duration, and destination information, for trips originating from upper Manhattan and outer boroughs?",
+    "key_points": [
+      "The dataset provides trip records for yellow taxis and Uber cars in NYC.",
+      "Trips are filtered by pickup location to upper Manhattan and outer boroughs."
+    ],
+    "business_context": {
+      "domain": "Transportation",
+      "primary_objective": "Analyzing taxi and ride-hailing data to understand passenger behavior and trends.",
+      "key_entities": [
+        "NYC Taxi Data",
+        "Uber Data"
+      ],
+      "business_impact": "Informing business decisions on transportation services and optimizing routes."
+    },
+    "assumptions": [
+      "Trips are recorded with precise location coordinates, timestamps, and fare information.",
+      "The dataset is comprehensive, covering over 1.1 billion taxi trips from January 2009 to June 2015."
+    ],
+    "clarifying_questions": [
+      "What is the average duration of trips originating from upper Manhattan?",
+      "How does trip duration vary by borough?"
+    ],
+    "confidence_score": 0.85,
+    "thread_id": "f904cb64-fbb4-4f22-ad8f-2538ebecb015",
+    "conversation_id": "d8105ffe-226e-4209-ba0c-d793de09fd79"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    }
+  ]
+}

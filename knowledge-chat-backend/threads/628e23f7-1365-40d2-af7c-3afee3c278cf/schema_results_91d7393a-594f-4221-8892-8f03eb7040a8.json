@@ -1,0 +1,81 @@
+{
+  "id": "a3160a3e-9fbd-4904-96a8-78cccc85b785",
+  "thread_id": "628e23f7-1365-40d2-af7c-3afee3c278cf",
+  "conversation_id": "91d7393a-594f-4221-8892-8f03eb7040a8",
+  "timestamp": "2025-03-11T15:52:38.640676",
+  "parsed_question": {
+    "rephrased_question": "What are the typical travel times from Manhattan to NYC airports, and how many yellow taxis operate daily?",
+    "key_points": [
+      "The median taxi trip time from Midtown to JFK Airport between 4-5 PM is 64 minutes.",
+      "Uber has grown significantly in popularity at LaGuardia and JFK Airports, with over 100,000 monthly pickups."
+    ],
+    "business_context": {
+      "domain": "Transportation",
+      "primary_objective": "Understanding travel times and taxi operations for business decision-making",
+      "key_entities": [
+        "Manhattan",
+        "NYC airports",
+        "yellow taxis"
+      ],
+      "business_impact": "Informed decisions on transportation options and logistics"
+    },
+    "assumptions": [
+      "Assuming a typical weekday scenario with moderate traffic.",
+      "Assuming yellow taxi operations are the primary focus."
+    ],
+    "clarifying_questions": [
+      "What is the average travel time from other neighborhoods to NYC airports?",
+      "How do yellow taxi operations vary across different boroughs?"
+    ],
+    "confidence_score": 0.8,
+    "thread_id": "628e23f7-1365-40d2-af7c-3afee3c278cf",
+    "conversation_id": "91d7393a-594f-4221-8892-8f03eb7040a8"
+  },
+  "search_results": [
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    },
+    {
+      "schema_name": "unknown_schema",
+      "table_name": "unknown_table",
+      "columns": [],
+      "relevance_score": 0.7,
+      "description": "",
+      "explanation": "Automatically extracted from database schema",
+      "query_pattern": "SELECT * FROM schema.table LIMIT 10"
+    }
+  ]
+}
