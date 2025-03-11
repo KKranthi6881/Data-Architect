@@ -201,12 +201,47 @@ const FileUploadComponent = () => {
     }
   }
 
+  const isValidGitHubUrl = (url) => {
+    try {
+      // Parse the URL
+      const parsedUrl = new URL(url);
+      // Check if it's using https protocol
+      if (parsedUrl.protocol !== 'https:') return false;
+      
+      // Get path parts after removing leading/trailing slashes
+      const pathParts = parsedUrl.pathname.replace(/^\/|\/$/g, '').split('/');
+      
+      // Must have at least owner/repo format
+      return pathParts.length >= 2 && pathParts[0].length > 0 && pathParts[1].length > 0;
+    } catch (e) {
+      // Invalid URL format
+      return false;
+    }
+  };
+
   const handleGithubUpload = () => {
-    if (!repoUrl) return
+    if (!repoUrl) {
+      toast({
+        title: 'Repository URL required',
+        description: 'Please enter a valid GitHub repository URL',
+        status: 'error',
+        duration: 3000,
+      });
+      return;
+    }
     
-    // Extract repo name from URL
-    const repoName = repoUrl.split('/').pop() || 'repository'
-    simulateUpload('github', { name: repoName })
+    if (!isValidGitHubUrl(repoUrl)) {
+      toast({
+        title: 'Invalid GitHub URL',
+        description: 'Please enter a valid GitHub URL in the format https://github.com/owner/repo or https://github.mycompany.com/owner/repo',
+        status: 'error',
+        duration: 5000,
+      });
+      return;
+    }
+    
+    // Proceed with the upload
+    simulateUpload('github', { name: repoUrl });
   }
 
   const getFileIcon = (fileType) => {
@@ -466,13 +501,13 @@ const FileUploadComponent = () => {
                         <InputLeftAddon children="URL" />
                         <Input
                           type="url"
-                          placeholder="https://github.com/username/repository"
+                          placeholder="https://github.com/username/repository or https://github.mycompany.com/org/repo"
                           value={repoUrl}
                           onChange={handleRepoUrlChange}
                         />
                       </InputGroup>
                       <Text fontSize="xs" color="gray.500" mt={1}>
-                        Connect to a GitHub repository to include code and documentation in your knowledge base
+                        Connect to a GitHub repository (standard or enterprise) to include code and documentation in your knowledge base
                       </Text>
                     </FormControl>
                     

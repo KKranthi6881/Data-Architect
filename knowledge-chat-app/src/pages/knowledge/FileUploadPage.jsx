@@ -495,14 +495,24 @@ const FileUploadPage = () => {
                       <FormControl>
                         <FormLabel>GitHub Repository URL</FormLabel>
                         <Input
-                          placeholder="https://github.com/username/repository"
+                          placeholder="https://github.com/username/repository or https://github.enterprise.com/org/repo"
                           value={repoUrl}
                           onChange={handleRepoUrlChange}
                         />
                         <FormHelperText>
-                          Enter the full URL of the GitHub repository
+                          Supports standard GitHub and enterprise GitHub instances with custom domains
                         </FormHelperText>
                       </FormControl>
+                      
+                      <Alert status="info" size="sm" mt={2}>
+                        <AlertIcon />
+                        <Box fontSize="sm">
+                          <Text fontWeight="medium">Enterprise GitHub URLs supported</Text>
+                          <Text>
+                            For enterprise GitHub instances, use the complete URL including your custom domain (e.g., https://github.mycompany.com/org/repo)
+                          </Text>
+                        </Box>
+                      </Alert>
                       
                       <FormControl display="flex" alignItems="center">
                         <FormLabel htmlFor="use-token" mb="0">

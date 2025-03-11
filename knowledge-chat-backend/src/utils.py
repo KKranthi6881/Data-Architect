@@ -523,6 +523,7 @@ class ChromaDBManager:
     def process_github(self, repo_url: str, username: str = "", token: str = "") -> Dict[str, Any]:
         """
         Process a GitHub repository by cloning it and analyzing its contents.
+        Supports both standard github.com and enterprise GitHub instances.
         
         Args:
             repo_url: URL of the GitHub repository
@@ -534,19 +535,23 @@ class ChromaDBManager:
         """
         logger.info(f"Processing GitHub repository: {repo_url}")
         
-        # Parse the repository URL and remove .git if present
+        # Parse the repository URL
         parsed_url = urlparse(repo_url)
         path_parts = parsed_url.path.strip('/').split('/')
         
         if len(path_parts) < 2:
-            raise ValueError(f"Invalid GitHub URL format: {repo_url}")
+            raise ValueError(f"Invalid GitHub URL format: {repo_url}. URL should contain owner and repository name.")
         
+        # Get owner and repo name from the path
         owner = path_parts[0]
         repo_name = path_parts[1]
         
         # Remove .git suffix if present
         if repo_name.endswith('.git'):
             repo_name = repo_name[:-4]
+        
+        # Extract the hostname for enterprise GitHub support
+        hostname = parsed_url.netloc
         
         # Create a temporary directory for the repository
         temp_dir = tempfile.mkdtemp(prefix="github_repo_")
@@ -556,12 +561,12 @@ class ChromaDBManager:
         
         try:
             # Construct the clone URL with authentication if provided
-            base_clone_url = f"https://github.com/{owner}/{repo_name}.git"
+            base_clone_url = f"https://{hostname}/{owner}/{repo_name}.git"
             
             if username and token:
-                clone_url = f"https://{username}:{token}@github.com/{owner}/{repo_name}.git"
+                clone_url = f"https://{username}:{token}@{hostname}/{owner}/{repo_name}.git"
             elif token:
-                clone_url = f"https://{token}@github.com/{owner}/{repo_name}.git"
+                clone_url = f"https://{token}@{hostname}/{owner}/{repo_name}.git"
             else:
                 clone_url = base_clone_url
             
@@ -572,6 +577,7 @@ class ChromaDBManager:
             # Get repository metadata
             repo_metadata = {
                 "url": repo_url,
+                "hostname": hostname,
                 "owner": owner,
                 "name": repo_name,
                 "last_commit": str(repo.head.commit.hexsha),
@@ -688,8 +694,7 @@ class ChromaDBManager:
                     # Create metadata with only primitive types
                     metadata = {
                         "repo_url": repo_url,
-                        "repo_owner": owner,
-                        "repo_name": repo_name,
+                        "hostname": hostname,
                         "file_path": file['path'],
                         "language": file['language'],
                         "chunk_index": i,
@@ -771,6 +776,7 @@ class ChromaDBManager:
                     # Create a simplified metadata dict with only primitive types
                     cleaned_metadata = {
                         "repo_url": repo_url,
+                        "hostname": doc["metadata"].get("hostname", parsed_url.netloc),  # Include hostname
                         "file_path": doc["metadata"].get("file_path", ""),
                         "language": doc["metadata"].get("language", ""),
                         "chunk_index": doc["metadata"].get("chunk_index", 0),
