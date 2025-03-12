@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import {
   Box,
-  Flex,
+  Container,
   VStack,
   HStack,
   Text,
@@ -50,7 +50,8 @@ import {
   UnorderedList,
   ListItem,
   SimpleGrid,
-  useToast
+  useToast,
+  Icon
 } from '@chakra-ui/react'
 import { 
   IoSend, 
@@ -68,7 +69,8 @@ import {
   IoContract,
   IoCheckmark,
   IoClose,
-  IoRefresh
+  IoRefresh,
+  IoArrowForward
 } from 'react-icons/io5'
 import { useParams, useNavigate } from 'react-router-dom'
 import { CodeDisplay } from '../components/CodeDisplay'
@@ -603,6 +605,11 @@ const ChatPage = () => {
   const [feedbackRequired, setFeedbackRequired] = useState(false);
   const [feedbackData, setFeedbackData] = useState(null);
   const [feedbackMode, setFeedbackMode] = useState(null); // Track message ID that needs feedback
+
+  const bgColor = useColorModeValue('white', 'gray.900')
+  const textColor = useColorModeValue('gray.900', 'white')
+  const borderColor = useColorModeValue('gray.100', 'gray.700')
+  const primaryColor = 'orange.500'
 
   // Initialize or load conversation from ID
   useEffect(() => {
@@ -1154,166 +1161,73 @@ const ChatPage = () => {
   }, [messages]);
 
   return (
-    <Box height="100vh" overflow="hidden">
-      {/* Mobile drawer for conversation history */}
-      <Drawer isOpen={isOpen} placement="left" onClose={onClose}>
-        <DrawerOverlay />
-        <DrawerContent>
-          <DrawerCloseButton />
-          <DrawerHeader borderBottomWidth="1px">Conversation History</DrawerHeader>
-          <DrawerBody>
-            {/* Render conversation history sidebar */}
-            <VStack align="stretch" spacing={3} w="100%" p={3}>
-              <Button 
-                leftIcon={<IoAdd />} 
-                colorScheme="blue" 
-                onClick={startNewConversation}
-                mb={4}
-              >
-                New Conversation
-              </Button>
-              
-              <Divider mb={2} />
-              
-              {isHistoryLoading ? (
-                <Progress size="xs" isIndeterminate colorScheme="blue" />
-              ) : conversations.length === 0 ? (
-                <Text color="gray.500" textAlign="center" py={4}>No conversation history</Text>
-              ) : (
-                <VStack align="stretch" spacing={2}>
-                  {conversations
-                    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)) // Sort by timestamp, newest first
-                    .map((conv) => (
-                      <Box 
-                        key={conv.id}
-                        p={3}
-                        borderRadius="md"
-                        bg={activeConversationId === conv.id ? "blue.50" : "white"}
-                        borderWidth="1px"
-                        borderColor={activeConversationId === conv.id ? "blue.200" : "gray.200"}
-                        cursor="pointer"
-                        onClick={() => handleConversationSelect(conv.id)}
-                        _hover={{ 
-                          bg: activeConversationId === conv.id ? "blue.50" : "gray.50",
-                          borderColor: "blue.300"
-                        }}
-                        transition="all 0.2s"
-                      >
-                        <HStack justify="space-between" mb={1}>
-                          <Text 
-                            fontSize="sm" 
-                            color="gray.500"
-                            isTruncated
-                          >
-                            {new Date(conv.timestamp).toLocaleString()}
-                          </Text>
-                          {/* Only show badge for approved or needs improvement status */}
-                          {(conv.feedback_status === 'approved' || conv.feedback_status === 'needs_improvement') && (
-                            <Badge 
-                              colorScheme={
-                                conv.feedback_status === 'approved' ? 'green' : 'orange'
-                              }
-                              fontSize="xs"
-                            >
-                              {conv.feedback_status === 'approved' ? 'Approved' : 'Needs Review'}
-                            </Badge>
-                          )}
-                        </HStack>
-                        <Text 
-                          fontWeight="medium" 
-                          isTruncated
-                          color={activeConversationId === conv.id ? "blue.700" : "gray.800"}
-                        >
-                          {conv.preview}
-                        </Text>
-                      </Box>
-                    ))}
-                </VStack>
-              )}
-            </VStack>
-          </DrawerBody>
-        </DrawerContent>
-      </Drawer>
-      
-      <Flex h="100%" direction="column">
-        {/* Header with mobile menu */}
-        <Flex 
-          p={4} 
-          borderBottomWidth="1px" 
-          borderColor="gray.200" 
-          align="center"
-          justify="space-between"
-          bg="white"
-        >
-          <HStack>
-            <IconButton
-              icon={<IoMenu />}
-              aria-label="Open menu"
-              display={{ base: "flex", md: "none" }}
-              mr={3}
-              onClick={onOpen}
-            />
-            <Heading size="md">
-              {currentConversationId ? "Conversation" : "New Chat"}
-            </Heading>
-          </HStack>
-          
-          <Button
-            leftIcon={<IoClose />}
-            variant="ghost"
-            colorScheme="blue"
-            size="sm"
-            onClick={clearChat}
-            isDisabled={messages.length === 0}
-          >
-            Clear Chat
-          </Button>
-        </Flex>
-        
-        {/* Input area at the top */}
-        <Box 
-          p={4} 
-          borderBottomWidth="1px" 
-          borderColor="gray.200"
-          bg="white"
-        >
-          <HStack>
-            <Input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask about database schemas, data models, or SQL queries..."
-              onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-              disabled={loading}
-              size="lg"
-              py={6}
-              borderRadius="md"
-              _focus={{
-                borderColor: "blue.400",
-                boxShadow: "0 0 0 1px blue.400"
-              }}
-            />
-            <Button 
-              onClick={sendMessage} 
-              isLoading={loading}
-              colorScheme="blue"
-              size="lg"
-              px={8}
-              height="56px"
-              leftIcon={<IoSend />}
+    <Box minH="100vh" bg={bgColor}>
+      <Container maxW="container.lg" py={8}>
+        {messages.length === 0 ? (
+          // Initial empty state
+          <VStack spacing={8} align="center" textAlign="center" py={20}>
+            <Heading 
+              size="xl" 
+              color={textColor}
+              lineHeight="1.2"
             >
-              Send
-            </Button>
-          </HStack>
-        </Box>
-        
-        {/* Messages area below input */}
-        <Box 
-          flex="1" 
-          overflowY="auto" 
-          p={6} 
-          bg="gray.50"
-        >
-          <VStack spacing={6} mb={8} align="stretch">
+              Data Architect Assistant
+            </Heading>
+
+            <Text fontSize="lg" color="gray.600" maxW="600px">
+              Ask questions about your database schemas, data models, or get recommendations for SQL optimization
+            </Text>
+
+            <SimpleGrid columns={{ base: 1, md: 3 }} spacing={6} pt={8} w="full">
+              <VStack 
+                bg={useColorModeValue('gray.50', 'gray.800')} 
+                p={6}
+                borderRadius="lg"
+                spacing={3}
+                border="1px"
+                borderColor={borderColor}
+              >
+                <Icon as={IoServer} boxSize={6} color={primaryColor} />
+                <Text fontWeight="bold">Schema Design</Text>
+                <Text fontSize="sm" color="gray.600">
+                  "Help me optimize my database schema"
+                </Text>
+              </VStack>
+              
+              <VStack 
+                bg={useColorModeValue('gray.50', 'gray.800')} 
+                p={6}
+                borderRadius="lg"
+                spacing={3}
+                border="1px"
+                borderColor={borderColor}
+              >
+                <Icon as={IoCodeSlash} boxSize={6} color={primaryColor} />
+                <Text fontWeight="bold">dbt Models</Text>
+                <Text fontSize="sm" color="gray.600">
+                  "Review my dbt model structure"
+                </Text>
+              </VStack>
+              
+              <VStack 
+                bg={useColorModeValue('gray.50', 'gray.800')} 
+                p={6}
+                borderRadius="lg"
+                spacing={3}
+                border="1px"
+                borderColor={borderColor}
+              >
+                <Icon as={IoAnalytics} boxSize={6} color={primaryColor} />
+                <Text fontWeight="bold">Query Analysis</Text>
+                <Text fontSize="sm" color="gray.600">
+                  "Optimize this SQL query"
+                </Text>
+              </VStack>
+            </SimpleGrid>
+          </VStack>
+        ) : (
+          // Chat messages area
+          <VStack spacing={4} h="full">
             {messages.map((message) => renderMessage(message))}
             
             {processingStep && (
@@ -1336,26 +1250,48 @@ const ChatPage = () => {
             )}
             <div ref={messagesEndRef} />
           </VStack>
-        </Box>
-      </Flex>
+        )}
 
-      {/* Add this button near the chat messages */}
-      <Box position="absolute" top="4" right="4" zIndex="1">
-        <IconButton
-          icon={<IoRefresh />}
-          aria-label="Refresh conversation"
-          size="sm"
-          colorScheme="blue"
-          variant="ghost"
-          onClick={() => {
-            if (currentConversationId) {
-              setProcessingStep("Refreshing conversation...");
-              fetchConversation(currentConversationId)
-                .finally(() => setProcessingStep(null));
-            }
-          }}
-        />
-      </Box>
+        {/* Input Area */}
+        <Box 
+          position="fixed"
+          bottom={0}
+          left={0}
+          right={0}
+          p={4}
+          bg={bgColor}
+          borderTop="1px"
+          borderColor={borderColor}
+          zIndex={2}
+        >
+          <Container maxW="container.md">
+            <HStack spacing={4}>
+              <Input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Ask about database schemas, data models, or SQL queries..."
+                size="lg"
+                bg={useColorModeValue('white', 'gray.800')}
+                borderColor={borderColor}
+                _focus={{
+                  borderColor: primaryColor,
+                  boxShadow: `0 0 0 1px ${primaryColor}`
+                }}
+              />
+              <Button
+                colorScheme="orange"
+                size="lg"
+                px={8}
+                isLoading={loading}
+                onClick={sendMessage}
+                leftIcon={<IoSend />}
+              >
+                Send
+              </Button>
+            </HStack>
+          </Container>
+        </Box>
+      </Container>
     </Box>
   );
 };

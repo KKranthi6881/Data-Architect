@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Box,
+  Container,
   Heading,
   Text,
   Tabs,
@@ -32,7 +33,26 @@ import {
   Spinner,
   FormHelperText,
   Link,
-  Switch
+  Switch,
+  useColorModeValue,
+  Accordion,
+  AccordionItem,
+  AccordionButton,
+  AccordionPanel,
+  AccordionIcon,
+  Flex,
+  Image,
+  Stat,
+  StatLabel,
+  StatNumber,
+  StatGroup,
+  StatHelpText,
+  Table,
+  Thead,
+  Tr,
+  Th,
+  Tbody,
+  Td
 } from '@chakra-ui/react'
 import { 
   IoCloudUpload, 
@@ -45,9 +65,15 @@ import {
   IoFolder,
   IoInformationCircle,
   IoWarning,
-  IoKey
+  IoKey,
+  IoChevronDown,
+  IoArrowForward
 } from 'react-icons/io5'
 import { FaExternalLinkAlt } from 'react-icons/fa'
+
+// Import logos
+import snowflakeLogo from '../../assets/snowflake.png'
+import dbtLogo from '../../assets/dbt.png'
 
 // API URL - change this to your FastAPI backend URL
 const API_URL = 'http://localhost:8000';
@@ -65,6 +91,15 @@ const FileUploadPage = () => {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(null)
   const toast = useToast()
+
+  // Theme colors to match homepage
+  const bgColor = useColorModeValue('white', 'gray.900');
+  const borderColor = useColorModeValue('gray.200', 'gray.700');
+  const primaryColor = useColorModeValue('gray.800', 'gray.100');
+  const secondaryColor = useColorModeValue('gray.700', 'gray.300');
+  const cardBg = useColorModeValue('white', 'gray.800');
+  const textSecondary = useColorModeValue('gray.600', 'gray.400');
+  const accentColor = useColorModeValue('gray.900', 'gray.100');
 
   // Fetch uploaded files on component mount
   useEffect(() => {
@@ -375,36 +410,185 @@ const FileUploadPage = () => {
   };
 
   return (
-    <Box maxW="1200px" mx="auto" py={8} px={4}>
-      <Box mb={8}>
-        <Heading size="lg" mb={2}>Knowledge Sources</Heading>
-        <Text color="gray.600">
-          Upload documents, SQL scripts, and connect to GitHub repositories to build your knowledge base.
-        </Text>
-        <Alert status="info" mt={4} borderRadius="md">
-          <AlertIcon />
-          <Box>
-            <AlertTitle>How it works</AlertTitle>
-            <AlertDescription>
-              Files are processed, analyzed, and stored in a vector database for semantic search. The AI can then reference this knowledge when answering your questions.
-            </AlertDescription>
+    <Box bg={bgColor} minH="100vh" py={8}>
+      <Container maxW="container.xl">
+        {/* Header with Steps */}
+        <VStack spacing={6} align="stretch" mb={8}>
+          <Heading size="lg" color={primaryColor}>Data Architecture Knowledge Base</Heading>
+          
+          {/* Stats Bar */}
+          <Box 
+            borderWidth="1px"
+            borderColor={borderColor}
+            borderRadius="lg"
+            overflow="hidden"
+            mb={4}
+            bg={cardBg}
+          >
+            <Table variant="simple" size="sm">
+              <Thead bg="gray.50">
+                <Tr>
+                  <Th>Knowledge Source</Th>
+                  <Th textAlign="center">Count</Th>
+                  <Th>Type</Th>
+                  <Th>Status</Th>
+                </Tr>
+              </Thead>
+              <Tbody>
+                <Tr>
+                  <Td>
+                    <HStack spacing={2}>
+                      <Icon as={IoCodeSlash} color="blue.500" />
+                      <Text fontWeight="medium">SQL Scripts</Text>
+                    </HStack>
+                  </Td>
+                  <Td textAlign="center">
+                    <Badge colorScheme="blue" fontSize="md" px={2}>
+                      {uploadedFiles.filter(f => f.type === 'sql').length}
+                    </Badge>
+                  </Td>
+                  <Td>Snowflake Schemas</Td>
+                  <Td>
+                    {uploadedFiles.filter(f => f.type === 'sql').length > 0 ? 
+                      <Badge colorScheme="green">Ready</Badge> : 
+                      <Badge colorScheme="gray">Pending</Badge>
+                    }
+                  </Td>
+                </Tr>
+                <Tr>
+                  <Td>
+                    <HStack spacing={2}>
+                      <Icon as={IoDocument} color="red.500" />
+                      <Text fontWeight="medium">PDF Documents</Text>
+                    </HStack>
+                  </Td>
+                  <Td textAlign="center">
+                    <Badge colorScheme="red" fontSize="md" px={2}>
+                      {uploadedFiles.filter(f => f.type === 'pdf').length}
+                    </Badge>
+                  </Td>
+                  <Td>Business Content</Td>
+                  <Td>
+                    {uploadedFiles.filter(f => f.type === 'pdf').length > 0 ? 
+                      <Badge colorScheme="green">Ready</Badge> : 
+                      <Badge colorScheme="gray">Pending</Badge>
+                    }
+                  </Td>
+                </Tr>
+                <Tr>
+                  <Td>
+                    <HStack spacing={2}>
+                      <Icon as={IoLogoGithub} color="purple.500" />
+                      <Text fontWeight="medium">GitHub Repos</Text>
+                    </HStack>
+                  </Td>
+                  <Td textAlign="center">
+                    <Badge colorScheme="purple" fontSize="md" px={2}>
+                      {uploadedFiles.filter(f => f.type === 'github').length}
+                    </Badge>
+                  </Td>
+                  <Td>dbt Code</Td>
+                  <Td>
+                    {uploadedFiles.filter(f => f.type === 'github').length > 0 ? 
+                      <Badge colorScheme="green">Ready</Badge> : 
+                      <Badge colorScheme="gray">Pending</Badge>
+                    }
+                  </Td>
+                </Tr>
+              </Tbody>
+            </Table>
           </Box>
-        </Alert>
-      </Box>
+          
+          {/* Steps Card */}
+          <Box mb={8}>
+            <Heading size="md" mb={4} color={primaryColor}>Setup Process</Heading>
+            <SimpleGrid columns={{ base: 1, md: 3 }} spacing={4} mb={4}>
+              <HorizontalStepCard 
+                number="1" 
+                title="Snowflake Schema"
+                icon={IoServer}
+                description="Add your database schema information"
+                logo={snowflakeLogo}
+                instructions={[
+                  "Login to your Snowflake account",
+                  "Export table definitions using SHOW commands",
+                  "Save the output as .SQL file",
+                  "Upload the .SQL file using the form below"
+                ]}
+              />
+              
+              <HorizontalStepCard 
+                number="2" 
+                title="Business Context"
+                icon={IoDocument}
+                description="Add business knowledge and terminology"
+                instructions={[
+                  "Prepare PDF documents with business terms",
+                  "Include metrics definitions, SQl logic and KPIs",
+                  "Add relevant abbreviations and domain knowledge",
+                  "Upload PDFs using the form below"
+                ]}
+              />
+              
+              <HorizontalStepCard 
+                number="3" 
+                title="dbt Repository" 
+                icon={IoLogoGithub}
+                description="Connect your dbt code repository"
+                logo={dbtLogo}
+                instructions={[
+                  "Have your GitHub repository URL ready",
+                  "Ensure it contains dbt models and transformations",
+                  "Optionally prepare a personal access token",
+                  "Connect using the GitHub form below"
+                ]}
+              />
+            </SimpleGrid>
+          </Box>
+        </VStack>
 
-      <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={8}>
-        <Box>
-          <Tabs variant="enclosed" colorScheme="brand">
-            <TabList>
-              <Tab>SQL Schemas</Tab>
-              <Tab>PDF Documents</Tab>
-              <Tab>GitHub</Tab>
+        {/* Upload Tabs */}
+        <Box mb={8}>
+          <Tabs 
+            variant="soft-rounded" 
+            colorScheme="orange"
+            bg={cardBg}
+            borderRadius="lg"
+            boxShadow="sm"
+            p={4}
+          >
+            <TabList mb={4}>
+              <Tab 
+                _selected={{ color: 'white', bg: 'orange.500' }} 
+                fontWeight="medium"
+                mx={1}
+              >
+                <Icon as={IoCodeSlash} mr={2} />
+                SQL Schemas
+              </Tab>
+              <Tab 
+                _selected={{ color: 'white', bg: 'orange.500' }} 
+                fontWeight="medium"
+                mx={1}
+              >
+                <Icon as={IoDocument} mr={2} />
+                PDF Documents
+              </Tab>
+              <Tab 
+                _selected={{ color: 'white', bg: 'orange.500' }} 
+                fontWeight="medium"
+                mx={1}
+              >
+                <Icon as={IoLogoGithub} mr={2} />
+                GitHub
+              </Tab>
             </TabList>
+            
             <TabPanels>
               <TabPanel px={0}>
-                <Card>
-                  <CardHeader>
-                    <Heading size="md">Upload SQL Schema Scripts</Heading>
+                <Card borderRadius="lg" boxShadow="none" border="1px solid" borderColor={borderColor}>
+                  <CardHeader bg="gray.50" py={3} px={4} borderTopRadius="lg">
+                    <Heading size="md">Upload SQL Schema</Heading>
                   </CardHeader>
                   <CardBody>
                     <VStack spacing={4} align="stretch">
@@ -415,9 +599,11 @@ const FileUploadPage = () => {
                           accept=".sql"
                           onChange={handleSqlFileChange}
                           p={1}
+                          borderColor={borderColor}
+                          _hover={{ borderColor: primaryColor }}
                         />
-                        <FormHelperText>
-                          Upload .sql file scripts to analyze database schemas and queries
+                        <FormHelperText color={textSecondary}>
+                          Upload SQL files containing schema definitions and queries for analysis
                         </FormHelperText>
                       </FormControl>
                       
@@ -431,12 +617,14 @@ const FileUploadPage = () => {
                         size="md"
                         width="100%"
                         mt={2}
+                        bg="blue.500"
+                        _hover={{ bg: "blue.600" }}
                       >
                         Upload SQL File
                       </Button>
                       
                       {isUploading && (
-                        <Progress value={uploadProgress} size="sm" colorScheme="brand" borderRadius="md" />
+                        <Progress value={uploadProgress} size="sm" colorScheme="orange" borderRadius="md" />
                       )}
                     </VStack>
                   </CardBody>
@@ -444,8 +632,8 @@ const FileUploadPage = () => {
               </TabPanel>
               
               <TabPanel px={0}>
-                <Card>
-                  <CardHeader>
+                <Card borderRadius="lg" boxShadow="none" border="1px solid" borderColor={borderColor}>
+                  <CardHeader bg="gray.50" py={3} px={4} borderTopRadius="lg">
                     <Heading size="md">Upload PDF Document</Heading>
                   </CardHeader>
                   <CardBody>
@@ -457,8 +645,10 @@ const FileUploadPage = () => {
                           accept=".pdf"
                           onChange={handlePdfFileChange}
                           p={1}
+                          borderColor={borderColor}
+                          _hover={{ borderColor: primaryColor }}
                         />
-                        <FormHelperText>
+                        <FormHelperText color={textSecondary}>
                           Upload PDF documents to extract text and include in your knowledge base
                         </FormHelperText>
                       </FormControl>
@@ -478,7 +668,7 @@ const FileUploadPage = () => {
                       </Button>
                       
                       {isUploading && (
-                        <Progress value={uploadProgress} size="sm" colorScheme="brand" borderRadius="md" />
+                        <Progress value={uploadProgress} size="sm" colorScheme="orange" borderRadius="md" />
                       )}
                     </VStack>
                   </CardBody>
@@ -486,8 +676,8 @@ const FileUploadPage = () => {
               </TabPanel>
               
               <TabPanel px={0}>
-                <Card>
-                  <CardHeader>
+                <Card borderRadius="lg" boxShadow="none" border="1px solid" borderColor={borderColor} mb={6}>
+                  <CardHeader bg="gray.50" py={3} px={4} borderTopRadius="lg">
                     <Heading size="md">Connect GitHub Repository</Heading>
                   </CardHeader>
                   <CardBody>
@@ -498,18 +688,21 @@ const FileUploadPage = () => {
                           placeholder="https://github.com/username/repository or https://github.enterprise.com/org/repo"
                           value={repoUrl}
                           onChange={handleRepoUrlChange}
+                          borderColor={borderColor}
+                          _hover={{ borderColor: primaryColor }}
+                          _focus={{ borderColor: primaryColor, boxShadow: `0 0 0 1px ${primaryColor}` }}
                         />
-                        <FormHelperText>
+                        <FormHelperText color={textSecondary}>
                           Supports standard GitHub and enterprise GitHub instances with custom domains
                         </FormHelperText>
                       </FormControl>
                       
-                      <Alert status="info" size="sm" mt={2}>
-                        <AlertIcon />
+                      <Alert status="info" size="sm" mt={2} bg="blue.50" borderRadius="md">
+                        <AlertIcon color="blue.500"/>
                         <Box fontSize="sm">
-                          <Text fontWeight="medium">Enterprise GitHub URLs supported</Text>
-                          <Text>
-                            For enterprise GitHub instances, use the complete URL including your custom domain (e.g., https://github.mycompany.com/org/repo)
+                          <Text fontWeight="medium" color="blue.700">Enterprise GitHub URLs supported</Text>
+                          <Text color="blue.600">
+                            For enterprise GitHub instances, use the complete URL including your custom domain
                           </Text>
                         </Box>
                       </Alert>
@@ -522,12 +715,12 @@ const FileUploadPage = () => {
                           id="use-token" 
                           isChecked={usePersonalToken}
                           onChange={handleTogglePersonalToken}
-                          colorScheme="brand"
+                          colorScheme="orange"
                         />
                       </FormControl>
                       
                       {usePersonalToken && (
-                        <>
+                        <VStack spacing={3} align="stretch" ml={6} mt={2}>
                           <FormControl>
                             <FormLabel>GitHub Username</FormLabel>
                             <Input
@@ -567,7 +760,7 @@ const FileUploadPage = () => {
                               A token is required for private repositories and helps avoid rate limits.
                             </Text>
                           </Alert>
-                        </>
+                        </VStack>
                       )}
                       
                       <Button
@@ -585,7 +778,7 @@ const FileUploadPage = () => {
                       </Button>
                       
                       {isUploading && (
-                        <Progress value={uploadProgress} size="sm" colorScheme="brand" borderRadius="md" />
+                        <Progress value={uploadProgress} size="sm" colorScheme="orange" borderRadius="md" />
                       )}
                     </VStack>
                   </CardBody>
@@ -595,19 +788,25 @@ const FileUploadPage = () => {
           </Tabs>
         </Box>
         
-        <Box>
-          <Heading size="md" mb={4}>Knowledge Sources</Heading>
-          <Card variant="outline">
-            <CardHeader py={3} px={4} bg="gray.50">
-              <HStack justify="space-between">
-                <Text fontWeight="medium">Source</Text>
-                <Text fontWeight="medium">Status</Text>
-              </HStack>
-            </CardHeader>
-            <CardBody p={0}>
+        {/* Collapsible Knowledge Sources Section */}
+        <Accordion allowToggle borderRadius="lg" mt={6}>
+          <AccordionItem 
+            border="1px solid" 
+            borderColor={borderColor} 
+            borderRadius="lg" 
+            bg={cardBg}
+            mb={4}
+          >
+            <AccordionButton py={4} _expanded={{ bg: 'gray.50' }}>
+              <Box flex="1" textAlign="left">
+                <Heading size="md">Uploaded Knowledge Sources</Heading>
+              </Box>
+              <AccordionIcon />
+            </AccordionButton>
+            <AccordionPanel pb={4} px={4}>
               {isLoading ? (
                 <Box p={4} textAlign="center">
-                  <Spinner size="md" color="brand.500" mb={2} />
+                  <Spinner size="md" color={primaryColor} mb={2} />
                   <Text>Loading knowledge sources...</Text>
                 </Box>
               ) : error ? (
@@ -619,12 +818,12 @@ const FileUploadPage = () => {
                 </Box>
               ) : uploadedFiles.length === 0 ? (
                 <Box p={4} textAlign="center">
-                  <Text color="gray.500">No knowledge sources added yet</Text>
+                  <Text color={textSecondary}>No knowledge sources added yet</Text>
                 </Box>
               ) : (
                 <VStack spacing={0} align="stretch" divider={<Divider />}>
                   {uploadedFiles.map(file => (
-                    <Box key={file.id} py={3} px={4} _hover={{ bg: 'gray.50' }}>
+                    <Box key={file.id} py={3} px={4} _hover={{ bg: 'gray.50' }} transition="background 0.2s">
                       <HStack justify="space-between">
                         <HStack>
                           <Icon 
@@ -636,17 +835,17 @@ const FileUploadPage = () => {
                             <Text fontWeight="medium">{file.name}</Text>
                             <HStack spacing={2}>
                               {file.size > 0 && (
-                                <Text fontSize="xs" color="gray.500">
+                                <Text fontSize="xs" color={textSecondary}>
                                   {formatFileSize(file.size)}
                                 </Text>
                               )}
-                              <Text fontSize="xs" color="gray.500">
+                              <Text fontSize="xs" color={textSecondary}>
                                 Added {new Date(file.uploadedAt).toLocaleDateString()}
                               </Text>
                             </HStack>
                           </VStack>
                         </HStack>
-                        <Badge colorScheme="green">
+                        <Badge colorScheme="green" borderRadius="full" px={2} py={1}>
                           <HStack spacing={1}>
                             <Icon as={IoCheckmarkCircle} />
                             <Text>Processed</Text>
@@ -657,45 +856,103 @@ const FileUploadPage = () => {
                   ))}
                 </VStack>
               )}
-            </CardBody>
-          </Card>
+            </AccordionPanel>
+          </AccordionItem>
+        </Accordion>
+        
+        {/* CTA Section */}
 
-          <Box mt={6}>
-            <Heading size="md" mb={4}>Knowledge Stats</Heading>
-            <SimpleGrid columns={{ base: 1, sm: 3 }} spacing={4}>
-              <Card>
-                <CardBody>
-                  <VStack>
-                    <Icon as={IoDocument} boxSize={8} color="red.500" />
-                    <Text fontSize="2xl" fontWeight="bold">{uploadedFiles.filter(f => f.type === 'pdf').length}</Text>
-                    <Text fontSize="sm" color="gray.500">PDF Documents</Text>
-                  </VStack>
-                </CardBody>
-              </Card>
-              <Card>
-                <CardBody>
-                  <VStack>
-                    <Icon as={IoCodeSlash} boxSize={8} color="blue.500" />
-                    <Text fontSize="2xl" fontWeight="bold">{uploadedFiles.filter(f => f.type === 'sql').length}</Text>
-                    <Text fontSize="sm" color="gray.500">SQL Scripts</Text>
-                  </VStack>
-                </CardBody>
-              </Card>
-              <Card>
-                <CardBody>
-                  <VStack>
-                    <Icon as={IoLogoGithub} boxSize={8} color="purple.500" />
-                    <Text fontSize="2xl" fontWeight="bold">{uploadedFiles.filter(f => f.type === 'github').length}</Text>
-                    <Text fontSize="sm" color="gray.500">GitHub Repos</Text>
-                  </VStack>
-                </CardBody>
-              </Card>
-            </SimpleGrid>
-          </Box>
-        </Box>
-      </SimpleGrid>
+      </Container>
     </Box>
   )
 }
+
+// StepCard Component - New component for the steps
+const HorizontalStepCard = ({ number, title, icon, description, logo, instructions }) => {
+  return (
+    <VStack 
+      spacing={3} 
+      p={5} 
+      bg="gray.50" 
+      borderRadius="md" 
+      border="1px solid"
+      borderColor="gray.200"
+      position="relative"
+      overflow="hidden"
+      alignItems="stretch"
+      height="100%"
+    >
+      <HStack spacing={3} align="center">
+        <Flex
+          bg="gray.200"
+          color="gray.700"
+          borderRadius="full"
+          width="32px"
+          height="32px"
+          alignItems="center"
+          justifyContent="center"
+          fontWeight="bold"
+          flexShrink={0}
+        >
+          {number}
+        </Flex>
+        <Text fontWeight="bold" fontSize="md">{title}</Text>
+        <Icon as={icon} boxSize={5} color="gray.700" ml="auto" />
+      </HStack>
+      
+      <Divider />
+      
+      <Text fontSize="sm" color="gray.600" mb={2}>
+        {description}
+      </Text>
+      
+      {instructions && (
+        <VStack align="start" spacing={2} pl={2}>
+          {instructions.map((instruction, idx) => (
+            <HStack key={idx} align="start" spacing={2}>
+              <Text color="gray.500" fontWeight="bold" fontSize="xs" mt={0.5}>{idx+1}.</Text>
+              <Text fontSize="sm">{instruction}</Text>
+            </HStack>
+          ))}
+        </VStack>
+      )}
+      
+      {logo && (
+        <Image 
+          src={logo}
+          alt={title}
+          height="18px"
+          alignSelf="flex-end"
+          mt="auto"
+          pt={1}
+          opacity={0.8}
+        />
+      )}
+    </VStack>
+  );
+};
+
+// Add a new StatsCard component
+const StatsCard = ({ icon, color, value, label, bg, borderColor }) => {
+  return (
+    <Card 
+      bg={bg} 
+      borderWidth="1px" 
+      borderColor={borderColor} 
+      borderRadius="lg"
+      boxShadow="sm"
+      transition="transform 0.2s, box-shadow 0.2s"
+      _hover={{ transform: 'translateY(-2px)', boxShadow: 'md' }}
+    >
+      <CardBody>
+        <VStack spacing={2}>
+          <Icon as={icon} boxSize={8} color={color} />
+          <Text fontSize="2xl" fontWeight="bold">{value}</Text>
+          <Text fontSize="sm" color="gray.500">{label}</Text>
+        </VStack>
+      </CardBody>
+    </Card>
+  );
+};
 
 export default FileUploadPage 

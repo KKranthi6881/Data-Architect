@@ -6,77 +6,105 @@ import {
   HStack,
   Text,
   Badge,
-  Card,
-  CardBody,
-  Divider,
   Button,
   Flex,
   Spinner,
   Icon,
-  SimpleGrid,
-  Input,
-  InputGroup,
-  InputLeftElement,
   useColorModeValue,
   useToast,
-  Tab,
-  Tabs,
-  TabList,
-  TabPanel,
-  TabPanels,
-  Avatar,
-  Code,
   Accordion,
   AccordionItem,
   AccordionButton,
   AccordionPanel,
   AccordionIcon,
-  Container
+  Container,
+  Table,
+  Thead,
+  Tbody,
+  Tr,
+  Th,
+  Td,
+  IconButton,
+  Code,
+  Divider,
+  Tabs,
+  TabList,
+  Tab,
+  TabPanels,
+  TabPanel
 } from '@chakra-ui/react';
 import { 
-  IoSearch, 
   IoCalendar, 
-  IoCheckmarkCircle, 
-  IoTimeOutline,
-  IoAlertCircleOutline,
   IoChevronForward,
-  IoRefresh,
+  IoTrashOutline,
+  IoFilterOutline,
+  IoDownloadOutline,
+  IoDocumentTextOutline,
   IoChevronBack
 } from 'react-icons/io5';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 const ChatHistoryPage = () => {
-  console.log('ChatHistoryPage rendering...'); // Debug log
-
   const [conversations, setConversations] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [conversationDetails, setConversationDetails] = useState(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const toast = useToast();
   const navigate = useNavigate();
   const { conversationId } = useParams();
-  const cardBg = useColorModeValue('white', 'gray.700');
-  const hoverBg = useColorModeValue('gray.50', 'gray.600');
-  const messageBgUser = useColorModeValue('blue.50', 'blue.800');
-  const messageBgAssistant = useColorModeValue('white', 'gray.700');
 
+  // Theme colors
   const bgColor = useColorModeValue('white', 'gray.900');
-  const textColor = useColorModeValue('gray.900', 'white');
+  const borderColor = useColorModeValue('gray.200', 'gray.700');
+  const primaryColor = useColorModeValue('gray.800', 'gray.100');
+  const textSecondary = useColorModeValue('gray.600', 'gray.400');
+  const messageBgUser = useColorModeValue('orange.50', 'orange.800');
+  const messageBgAssistant = useColorModeValue('gray.50', 'gray.700');
 
-  // Fetch conversation history
+  useEffect(() => {
+    console.log("ChatHistoryPage mounted, fetching conversations");
+    fetchConversations();
+  }, []);
+
+  useEffect(() => {
+    if (conversationId) {
+      console.log("URL has conversation ID:", conversationId);
+      
+      // Always fetch the details when conversationId changes
+      fetchConversationDetails(conversationId);
+      
+      // Select the conversation if we have it in our list
+      const conversation = conversations.find(c => c.id === conversationId);
+      if (conversation) {
+        console.log("Found conversation in list, selecting:", conversation.id);
+        setSelectedConversation(conversation);
+      } else {
+        console.log("Conversation not in list yet, creating placeholder");
+        // Create a temporary placeholder
+        setSelectedConversation({
+          id: conversationId,
+          timestamp: new Date().toISOString(),
+          preview: "Loading conversation...",
+          feedback_status: "pending"
+        });
+      }
+    } else {
+      // Clear selection if no conversationId in URL
+      setSelectedConversation(null);
+      setConversationDetails(null);
+    }
+  }, [conversationId, conversations]);
+
   const fetchConversations = async () => {
-    console.log("Fetching conversations from:", 'http://localhost:8000/api/conversations');
-    
     try {
       setIsLoading(true);
       const response = await fetch('http://localhost:8000/api/conversations');
-      console.log("Response status:", response.status);
       
       if (!response.ok) {
         throw new Error(`Failed to fetch conversations: ${response.status} ${response.statusText}`);
       }
+      
       const data = await response.json();
       console.log("API Response:", data); // Debug log
       
@@ -87,22 +115,25 @@ const ChatHistoryPage = () => {
           timestamp: conv.timestamp || conv.created_at || '',
           preview: conv.preview || 'No preview available',
           feedback_status: conv.feedback_status || 'pending',
-          has_response: Boolean(conv.has_response)
+          has_response: Boolean(conv.has_response),
+          messages: conv.messages || []
         }));
         
-        console.log("Processed conversations:", validConversations); // Debug log
-        setConversations(validConversations);
-
-        // If a conversationId is in the URL, select that conversation
+        // Sort conversations by timestamp (newest first)
+        const sortedConversations = validConversations.sort((a, b) => {
+          return new Date(b.timestamp) - new Date(a.timestamp);
+        });
+        
+        setConversations(sortedConversations);
+        
+        // If conversationId is in the URL, select that conversation
         if (conversationId) {
-          const conversation = validConversations.find(c => c.id === conversationId);
+          const conversation = sortedConversations.find(c => c.id === conversationId);
           if (conversation) {
             setSelectedConversation(conversation);
-            fetchConversationDetails(conversationId);
           }
         }
       } else {
-        console.warn("Unexpected API response format:", data);
         toast({
           title: 'Warning',
           description: 'Received unexpected response format from server',
@@ -121,47 +152,18 @@ const ChatHistoryPage = () => {
         duration: 5000,
         isClosable: true,
       });
-      setConversations([]); // Clear conversations on error
+      setConversations([]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Load conversations on component mount
-  useEffect(() => {
-    console.log("ChatHistoryPage mounted, fetching conversations");
-    fetchConversations();
-    
-    // Diagnostic log to check URLs
-    console.log("Current pathname:", window.location.pathname);
-    console.log("Current URL:", window.location.href);
-  }, []);
-
-  // Format date for display
-  const formatDate = (dateString) => {
-    if (!dateString) return 'Unknown date';
-    
-    try {
-      const date = new Date(dateString);
-      return new Intl.DateTimeFormat('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit'
-      }).format(date);
-    } catch (e) {
-      return dateString;
-    }
-  };
-
-  // Fetch details for a specific conversation
+  // Fetch conversation details with thread messages
   const fetchConversationDetails = async (id) => {
     try {
       setIsLoadingDetail(true);
       console.log(`Fetching details for conversation: ${id}`);
       
-      // First, fetch the basic conversation data
       const response = await fetch(`http://localhost:8000/api/conversation/${id}`);
       
       if (!response.ok) {
@@ -172,252 +174,292 @@ const ChatHistoryPage = () => {
       console.log("Conversation details response:", data);
       
       if (data.status === 'success' && data.conversation) {
-        // Get the thread ID from the conversation data
-        const threadId = data.conversation.thread_id;
+        // Create a messages array with properly formatted messages
+        const messages = [];
+        const conversation = data.conversation;
         
-        if (threadId) {
-          // Fetch all messages in this thread
-          const threadResponse = await fetch(`http://localhost:8000/api/thread/${threadId}/conversations`);
-          
-          if (!threadResponse.ok) {
-            throw new Error(`Failed to fetch thread conversations: ${threadResponse.status}`);
+        // Add user query message
+        if (conversation.query) {
+          messages.push({
+            id: `${id}-user`,
+            role: 'user',
+            content: conversation.query,
+            timestamp: conversation.timestamp || conversation.created_at
+          });
+        }
+        
+        // Add assistant response message - handle architect_response specifically
+        if (conversation.architect_response) {
+          // Parse the JSON string to get the actual response text
+          try {
+            const architectResponseObj = JSON.parse(conversation.architect_response);
+            const responseText = architectResponseObj.response || "No response content";
+            
+            console.log("Extracted response text:", responseText.substring(0, 100) + "...");
+            
+            messages.push({
+              id: `${id}-assistant`,
+              role: 'assistant',
+              content: responseText,  // Use the extracted text directly
+              timestamp: conversation.timestamp || conversation.created_at
+            });
+          } catch (e) {
+            console.error("Error parsing architect_response:", e);
+            // Fall back to using the raw text
+            messages.push({
+              id: `${id}-assistant`,
+              role: 'assistant',
+              content: "Error displaying response: " + e.message,
+              timestamp: conversation.timestamp || conversation.created_at
+            });
           }
-          
-          const threadData = await threadResponse.json();
-          console.log("Thread data:", threadData);
-          
-          if (threadData.status === 'success') {
-            // Format the conversation details
-            const messages = [];
-            
-            // Process each conversation in the thread to create a message timeline
-            threadData.conversations.forEach(conv => {
-              // Add user message
-              if (conv.query) {
-                messages.push({
-                  id: `${conv.id}-query`,
-                  type: 'user',
-                  content: conv.query,
-                  timestamp: conv.timestamp
-                });
-              }
-              
-              // Add assistant response
-              if (conv.response) {
-                messages.push({
-                  id: `${conv.id}-response`,
-                  type: 'assistant',
-                  content: conv.response,
-                  timestamp: conv.timestamp,
-                  details: {
-                    conversation_id: conv.id,
-                    feedback_status: conv.feedback_status || 'pending'
-                  }
-                });
-              }
-            });
-            
-            // Sort messages by timestamp if available
-            messages.sort((a, b) => {
-              if (!a.timestamp) return -1;
-              if (!b.timestamp) return 1;
-              return new Date(a.timestamp) - new Date(b.timestamp);
-            });
-            
-            setConversationDetails({
-              id: id,
-              thread_id: threadId,
-              messages: messages,
-              metadata: data.conversation
-            });
-            
-            // Update URL to include the conversation ID without navigating
-            if (window.history.pushState) {
-              const newUrl = `${window.location.pathname.split('/').slice(0, -1).join('/')}/${id}`;
-              window.history.pushState({ path: newUrl }, '', newUrl);
-            }
-          }
+        } else if (conversation.response) {
+          messages.push({
+            id: `${id}-assistant`,
+            role: 'assistant',
+            content: conversation.response,
+            timestamp: conversation.timestamp || conversation.created_at
+          });
+        }
+        
+        console.log("Processed messages:", messages);
+        
+        setConversationDetails({
+          id: id,
+          thread_id: conversation.thread_id,
+          messages: messages,
+          metadata: conversation
+        });
+        
+        // Find and set the selected conversation
+        const matchedConversation = conversations.find(c => c.id === id);
+        if (matchedConversation) {
+          setSelectedConversation(matchedConversation);
         } else {
-          // No thread ID, just display the single conversation
-          const messages = [];
-          
-          if (data.conversation.query) {
-            messages.push({
-              id: `${id}-query`,
-              type: 'user',
-              content: data.conversation.query,
-              timestamp: data.conversation.timestamp
-            });
-          }
-          
-          if (data.conversation.response) {
-            messages.push({
-              id: `${id}-response`,
-              type: 'assistant',
-              content: data.conversation.response,
-              timestamp: data.conversation.timestamp,
-              details: {
-                conversation_id: id,
-                feedback_status: data.conversation.feedback.status || 'pending'
-              }
-            });
-          }
-          
-          setConversationDetails({
+          setSelectedConversation({
             id: id,
-            messages: messages,
-            metadata: data.conversation
+            timestamp: conversation.timestamp || conversation.created_at,
+            preview: conversation.query || "No preview available",
+            feedback_status: conversation.feedback_status || "pending"
           });
         }
       } else {
-        toast({
-          title: 'Error',
-          description: 'Failed to load conversation details',
-          status: 'error',
-          duration: 3000,
-        });
+        throw new Error("Invalid response format from server");
       }
     } catch (error) {
       console.error('Error fetching conversation details:', error);
       toast({
         title: 'Error',
-        description: error.message,
+        description: `Failed to load conversation details: ${error.message}`,
         status: 'error',
         duration: 5000,
+        isClosable: true,
       });
     } finally {
       setIsLoadingDetail(false);
     }
   };
 
-  // Handle conversation selection
-  const handleConversationSelect = (id) => {
-    console.log(`Selecting conversation: ${id}`);
+  const handleConversationSelect = (conversationId) => {
+    console.log(`Selecting conversation: ${conversationId}`);
     
-    // Find the conversation in our list
-    const conversation = conversations.find(conv => conv.id === id);
+    // Update URL without full page reload
+    navigate(`/history/${conversationId}`, { replace: false });
+    
+    // Set the selected conversation
+    const conversation = conversations.find(c => c.id === conversationId);
     if (conversation) {
       setSelectedConversation(conversation);
-      fetchConversationDetails(id);
+      
+      // Fetch full conversation details including messages
+      fetchConversationDetails(conversationId);
     } else {
-      console.error(`Conversation with ID ${id} not found`);
+      toast({
+        title: 'Error',
+        description: 'Conversation not found',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
     }
   };
 
-  // Clear selected conversation
   const clearSelectedConversation = () => {
     setSelectedConversation(null);
     setConversationDetails(null);
+    navigate('/history', { replace: true });
+  };
+
+  const handleDeleteConversation = async (conversationId, event) => {
+    event.stopPropagation();
     
-    // Update URL to remove the conversation ID
-    if (window.history.pushState) {
-      const newUrl = window.location.pathname.split('/').slice(0, -1).join('/');
-      window.history.pushState({ path: newUrl }, '', newUrl);
+    try {
+      const response = await fetch(`http://localhost:8000/api/conversations/${conversationId}`, {
+        method: 'DELETE',
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to delete conversation');
+      }
+      
+      setConversations(conversations.filter(conv => conv.id !== conversationId));
+      
+      toast({
+        title: 'Conversation deleted',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+    } catch (error) {
+      console.error('Error deleting conversation:', error);
+      toast({
+        title: 'Error deleting conversation',
+        description: error.message,
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
     }
   };
 
-  // Go to chat
-  const goToChat = (id) => {
-    navigate(`/chat/${id}`);
+  const formatDate = (dateStr) => {
+    if (!dateStr) return 'Unknown date';
+    const date = new Date(dateStr);
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    });
   };
 
-  // Start a new conversation
-  const startNewConversation = () => {
-    navigate('/chat');
+  const getTopicPreview = (conversation) => {
+    if (conversation.preview) {
+      return conversation.preview;
+    }
+    
+    if (conversation.messages && conversation.messages.length > 0) {
+      const firstUserMessage = conversation.messages.find(m => m.role === 'user');
+      if (firstUserMessage && firstUserMessage.content) {
+        return firstUserMessage.content.length > 80 
+          ? firstUserMessage.content.substring(0, 80) + '...' 
+          : firstUserMessage.content;
+      }
+    }
+    
+    if (conversation.title) {
+      return conversation.title;
+    }
+    
+    if (conversation.first_message) {
+      return conversation.first_message.length > 80
+        ? conversation.first_message.substring(0, 80) + '...'
+        : conversation.first_message;
+    }
+    
+    return 'Untitled Conversation';
   };
-
-  // Filter conversations based on search query
-  const filteredConversations = conversations.filter(conv => 
-    conv.preview.toLowerCase().includes(searchQuery.toLowerCase())
-  );
   
-  console.log("Rendering conversations:", filteredConversations.length, 
-    filteredConversations.map(c => ({id: c.id, preview: c.preview.substring(0, 20)})));
+  const goToChat = (conversationId) => {
+    console.log(`Navigating to chat with conversation: ${conversationId}`);
+    navigate(`/chat/${conversationId}`);
+  };
 
-  // Render a message in the conversation detail view
+  // Renders a single message in the detail view
   const renderMessage = (message) => {
+    console.log("Rendering message:", message);
+    
+    // Extract content based on message structure
+    let content = '';
+    let role = '';
+    
+    if (message.role === 'user') {
+      role = 'user';
+      content = message.content || '';
+    } else if (message.role === 'assistant') {
+      role = 'assistant';
+      content = message.content || '';
+    } else {
+      // If role is not explicitly defined, infer from content
+      if (message.query) {
+        role = 'user';
+        content = message.query;
+      } else if (message.response) {
+        role = 'assistant';
+        content = message.response;
+      } else if (message.content) {
+        // Default to user if unknown
+        role = message.content.includes('?') ? 'user' : 'assistant';
+        content = message.content;
+      }
+    }
+    
+    console.log(`Rendering message: role=${role}, content=${content.substring(0, 50)}...`);
+    
     return (
       <Box 
-        key={message.id}
-        bg={message.type === 'user' ? messageBgUser : messageBgAssistant}
-        p={4}
-        borderRadius="lg"
-        boxShadow="sm"
+        p={4} 
+        mb={4} 
+        borderRadius="md"
+        bg={role === 'user' ? messageBgUser : messageBgAssistant}
         borderWidth="1px"
-        borderColor={message.type === 'user' ? 'blue.100' : 'gray.200'}
-        maxW="90%"
-        alignSelf={message.type === 'user' ? 'flex-end' : 'flex-start'}
-        mb={4}
+        borderColor={borderColor}
       >
-        <HStack mb={2} spacing={2}>
-          {message.type === 'user' ? (
-            <Avatar size="xs" bg="blue.500" />
-          ) : (
-            <Avatar size="xs" bg="green.500" />
-          )}
-          <Text 
-            fontWeight="bold" 
-            fontSize="sm"
-            color={message.type === 'user' ? 'blue.600' : 'green.600'}
-          >
-            {message.type === 'user' ? 'You' : 'Assistant'}
+        <HStack mb={2} justify="space-between">
+          <Badge colorScheme={role === 'user' ? 'orange' : 'blue'}>
+            {role === 'user' ? 'You' : 'Assistant'}
+          </Badge>
+          <Text fontSize="xs" color={textSecondary}>
+            {formatDate(message.timestamp || message.created_at)}
           </Text>
-          {message.timestamp && (
-            <Text fontSize="xs" color="gray.500">
-              {formatDate(message.timestamp)}
-            </Text>
-          )}
-          {message.details?.feedback_status && (
-            <Badge 
-              colorScheme={
-                message.details.feedback_status === 'approved' ? 'green' : 
-                message.details.feedback_status === 'needs_improvement' ? 'orange' : 
-                'blue'
-              }
-              fontSize="xs"
-            >
-              {message.details.feedback_status === 'approved' ? 'Approved' : 
-               message.details.feedback_status === 'needs_improvement' ? 'Needs Review' : 
-               'Pending'}
-            </Badge>
-          )}
         </HStack>
         
-        <Text whiteSpace="pre-wrap">{message.content}</Text>
-        
-        {/* If the message has details, show them in an accordion */}
-        {message.details && message.details.parsed_question && (
-          <Accordion allowToggle mt={3}>
-            <AccordionItem border="none">
-              <AccordionButton px={0} _hover={{ bg: 'transparent' }}>
-                <Text fontSize="xs" color="blue.500" fontWeight="medium">
-                  Show Details
-                </Text>
-                <AccordionIcon ml={1} />
-              </AccordionButton>
-              <AccordionPanel pb={4} px={0}>
-                <Code p={3} borderRadius="md" fontSize="xs" width="100%" overflowX="auto">
-                  {JSON.stringify(message.details.parsed_question, null, 2)}
-                </Code>
-              </AccordionPanel>
-            </AccordionItem>
-          </Accordion>
-        )}
+        <Text whiteSpace="pre-wrap">
+          {content}
+        </Text>
       </Box>
     );
   };
 
+  // Debug function to help diagnose the issue
+  const debugConversationDetails = () => {
+    if (conversationDetails && conversationDetails.messages) {
+      console.log("Messages to render:", conversationDetails.messages);
+      
+      // Check if messages have content
+      conversationDetails.messages.forEach((msg, i) => {
+        console.log(`Message ${i}:`, {
+          role: msg.role,
+          contentLength: msg.content ? msg.content.length : 0,
+          content: msg.content ? msg.content.substring(0, 50) + '...' : 'MISSING',
+        });
+      });
+    } else {
+      console.log("No conversation details or messages available");
+    }
+  };
+
   return (
-    <Container maxW="container.xl">
-      <VStack spacing={8} align="stretch" py={8}>
-        <Heading color={textColor}>Chat History</Heading>
-        <Text color="gray.600">
-          View your previous conversations with the Data Architect Agent.
-        </Text>
-        {/* Main content */}
-        {selectedConversation ? (
+    <Box bg={bgColor} minH="calc(100vh - 64px)" py={8}>
+      {/* Debug element - remove this after fixing */}
+      {selectedConversation && (
+        <Box position="fixed" bottom="0" right="0" bg="black" color="white" p={4} zIndex={9999} maxW="300px" fontSize="xs">
+          <Text fontWeight="bold">Debug Info:</Text>
+          <Text>Selected: {selectedConversation?.id}</Text>
+          <Text>Details: {conversationDetails ? 'Yes' : 'No'}</Text>
+          <Text>Messages: {conversationDetails?.messages?.length || 0}</Text>
+          <Button size="xs" onClick={debugConversationDetails} mt={2}>
+            Log Messages
+          </Button>
+        </Box>
+      )}
+
+      <Container maxW="container.xl">
+        {selectedConversation && conversationDetails ? (
           // Conversation detail view
-          <Box maxW="1200px" mx="auto" p={6}>
+          <Box>
             <HStack mb={6} spacing={4}>
               <Button 
                 leftIcon={<IoChevronBack />} 
@@ -428,217 +470,314 @@ const ChatHistoryPage = () => {
               </Button>
               <Heading size="lg" flex="1">Conversation Details</Heading>
               <Button 
-                colorScheme="blue" 
+                colorScheme="orange" 
                 onClick={() => goToChat(selectedConversation.id)}
               >
                 Continue in Chat
               </Button>
             </HStack>
             
-            <Card mb={6}>
+            <Card mb={6} borderWidth="1px" borderColor={borderColor} borderRadius="lg">
               <CardBody>
                 <HStack justify="space-between" mb={3}>
-                  <Badge 
-                    colorScheme={
-                      selectedConversation.feedback_status === 'approved' ? 'green' : 
-                      selectedConversation.feedback_status === 'needs_improvement' ? 'orange' : 
-                      'blue'
-                    }
-                    fontSize="sm"
-                    p={2}
-                  >
-                    {selectedConversation.feedback_status === 'approved' ? 'Approved' : 
-                     selectedConversation.feedback_status === 'needs_improvement' ? 'Needs Review' : 
-                     'Pending'}
-                  </Badge>
+                  {selectedConversation.feedback_status && (
+                    <Badge 
+                      colorScheme={
+                        selectedConversation.feedback_status === 'approved' ? 'green' : 
+                        selectedConversation.feedback_status === 'needs_improvement' ? 'orange' : 
+                        'blue'
+                      }
+                      fontSize="sm"
+                      p={2}
+                    >
+                      {selectedConversation.feedback_status === 'approved' ? 'Approved' : 
+                       selectedConversation.feedback_status === 'needs_improvement' ? 'Needs Review' : 
+                       'Pending'}
+                    </Badge>
+                  )}
                   <Text fontSize="sm" color="gray.500">
                     Started on {formatDate(selectedConversation.timestamp)}
                   </Text>
                 </HStack>
                 
-                <Heading size="md" mb={2}>{selectedConversation.preview}</Heading>
+                <Heading size="md" mb={2}>{getTopicPreview(selectedConversation)}</Heading>
                 
                 <Divider my={4} />
                 
                 {isLoadingDetail ? (
                   <Flex justify="center" align="center" height="300px">
-                    <Spinner size="xl" color="blue.500" />
+                    <Spinner size="xl" color="orange.500" />
                   </Flex>
-                ) : conversationDetails ? (
-                  <VStack align="stretch" spacing={0}>
-                    <Tabs variant="enclosed" colorScheme="blue">
-                      <TabList>
-                        <Tab>Conversation</Tab>
-                        <Tab>Metadata</Tab>
-                      </TabList>
-                      
-                      <TabPanels>
-                        {/* Conversation Tab */}
-                        <TabPanel>
-                          <VStack align="stretch" spacing={4} p={2}>
-                            {conversationDetails.messages.length === 0 ? (
-                              <Text color="gray.500" textAlign="center" py={8}>
-                                No messages found for this conversation.
-                              </Text>
-                            ) : (
-                              <Flex direction="column" width="100%">
-                                {conversationDetails.messages.map(message => renderMessage(message))}
-                              </Flex>
-                            )}
-                          </VStack>
-                        </TabPanel>
-                        
-                        {/* Metadata Tab */}
-                        <TabPanel>
-                          <Box p={4} bg="gray.50" borderRadius="md">
-                            <Heading size="sm" mb={3}>Conversation Metadata</Heading>
-                            <Code p={4} borderRadius="md" width="100%" overflowX="auto">
-                              {JSON.stringify(conversationDetails.metadata, null, 2)}
-                            </Code>
-                          </Box>
-                        </TabPanel>
-                      </TabPanels>
-                    </Tabs>
-                  </VStack>
                 ) : (
-                  <Text color="gray.500" textAlign="center" py={8}>
-                    Failed to load conversation details.
-                  </Text>
+                  <Tabs variant="enclosed" colorScheme="orange">
+                    <TabList>
+                      <Tab>Conversation</Tab>
+                      <Tab>Metadata</Tab>
+                    </TabList>
+                    
+                    <TabPanels>
+                      {/* Conversation Tab */}
+                      <TabPanel>
+                        <VStack align="stretch" spacing={4} p={2}>
+                          {!conversationDetails ? (
+                            <Text color="gray.500" textAlign="center" py={8}>
+                              Loading conversation details...
+                            </Text>
+                          ) : conversationDetails.messages.length === 0 ? (
+                            <Text color="gray.500" textAlign="center" py={8}>
+                              No messages found for this conversation.
+                            </Text>
+                          ) : (
+                            <Flex direction="column" width="100%">
+                              {conversationDetails.messages.map((message, idx) => (
+                                <Box
+                                  key={message.id || `msg-${idx}`}
+                                  p={4}
+                                  mb={4}
+                                  borderRadius="md"
+                                  bg={message.role === 'user' ? messageBgUser : messageBgAssistant}
+                                  borderWidth="1px"
+                                  borderColor={borderColor}
+                                >
+                                  <HStack mb={2} justify="space-between">
+                                    <Badge colorScheme={message.role === 'user' ? 'orange' : 'blue'}>
+                                      {message.role === 'user' ? 'You' : 'Assistant'}
+                                    </Badge>
+                                    <Text fontSize="xs" color={textSecondary}>
+                                      {formatDate(message.timestamp || '')}
+                                    </Text>
+                                  </HStack>
+                                  
+                                  <Text whiteSpace="pre-wrap">
+                                    {message.content || "No content available"}
+                                  </Text>
+                                </Box>
+                              ))}
+                            </Flex>
+                          )}
+                        </VStack>
+                      </TabPanel>
+                      
+                      {/* Metadata Tab */}
+                      <TabPanel>
+                        <Box p={4} bg="gray.50" borderRadius="md">
+                          <Heading size="sm" mb={3}>Conversation Metadata</Heading>
+                          <Code p={4} borderRadius="md" width="100%" overflowX="auto">
+                            {JSON.stringify(conversationDetails.metadata, null, 2)}
+                          </Code>
+                        </Box>
+                      </TabPanel>
+                    </TabPanels>
+                  </Tabs>
                 )}
               </CardBody>
             </Card>
           </Box>
         ) : (
-          // Conversation list view
-          <Box maxW="1200px" mx="auto" p={6}>
-            <Heading size="lg" mb={6}>Conversation History</Heading>
-            
-            {/* Search and refresh controls */}
-            <Flex mb={6} justifyContent="space-between" alignItems="center">
-              <InputGroup maxW="400px">
-                <InputLeftElement pointerEvents="none">
-                  <Icon as={IoSearch} color="gray.400" />
-                </InputLeftElement>
-                <Input 
-                  placeholder="Search conversations..." 
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-              </InputGroup>
+          // Conversation list view (keep the current list view)
+          <>
+            <Flex justifyContent="space-between" alignItems="center" mb={6}>
+              <Heading size="lg" color={primaryColor}>Conversation History</Heading>
               
-              <HStack>
-                <Button 
-                  colorScheme="blue" 
-                  onClick={startNewConversation}
-                  mr={2}
-                >
-                  New Conversation
-                </Button>
-                <Button 
-                  leftIcon={<IoRefresh />} 
-                  onClick={fetchConversations}
-                  isLoading={isLoading}
-                  colorScheme="blue"
+              <HStack spacing={4}>
+                <Button
+                  leftIcon={<IoFilterOutline />}
                   variant="outline"
+                  size="sm"
                 >
-                  Refresh
+                  Filter
+                </Button>
+                <Button
+                  leftIcon={<IoDownloadOutline />}
+                  variant="outline"
+                  size="sm"
+                >
+                  Export
                 </Button>
               </HStack>
             </Flex>
             
-            {/* Conversations list */}
             {isLoading ? (
-              <Flex justify="center" align="center" height="300px">
-                <Spinner size="xl" color="blue.500" />
+              <Flex justify="center" align="center" height="200px">
+                <Spinner size="xl" color="orange.500" thickness="4px" />
               </Flex>
-            ) : filteredConversations.length === 0 ? (
-              <Box textAlign="center" p={10} bg="gray.50" borderRadius="md">
-                <Text fontSize="lg" color="gray.500">
-                  {searchQuery ? 'No conversations match your search' : 'No conversations found'}
-                </Text>
+            ) : conversations.length === 0 ? (
+              <Box 
+                p={10} 
+                borderRadius="lg" 
+                bg="gray.50" 
+                textAlign="center"
+                borderWidth="1px"
+                borderColor={borderColor}
+              >
+                <Icon as={IoDocumentTextOutline} boxSize={12} color="gray.400" mb={4} />
+                <Heading size="md" mb={2} color="gray.600">No conversations yet</Heading>
+                <Text color="gray.500" mb={6}>Start a new chat to see your conversation history here.</Text>
                 <Button 
-                  mt={4} 
-                  colorScheme="blue" 
-                  onClick={startNewConversation}
+                  as={Link} 
+                  to="/chat" 
+                  colorScheme="orange" 
+                  leftIcon={<IoChevronForward />}
                 >
-                  Start a new conversation
+                  Start a New Conversation
                 </Button>
               </Box>
             ) : (
-              <SimpleGrid columns={{ base: 1, md: 2, lg: 3 }} spacing={6}>
-                {filteredConversations.map((conversation) => (
-                  <Card 
+              <Accordion 
+                allowToggle 
+                defaultIndex={[]} 
+                width="100%"
+              >
+                {conversations.map((conversation) => (
+                  <AccordionItem 
                     key={conversation.id} 
-                    bg={cardBg}
-                    borderRadius="lg"
-                    boxShadow="md"
-                    cursor="pointer"
-                    transition="all 0.2s"
-                    _hover={{ 
-                      transform: 'translateY(-4px)', 
-                      boxShadow: 'lg',
-                      bg: hoverBg
-                    }}
-                    onClick={() => {
-                      console.log(`Clicked on conversation: ${conversation.id}`);
-                      handleConversationSelect(conversation.id);
-                    }}
+                    border="1px solid" 
+                    borderColor={borderColor}
+                    borderRadius="md"
+                    mb={3}
+                    overflow="hidden"
                   >
-                    <CardBody>
-                      <VStack align="stretch" spacing={3}>
-                        <HStack justify="space-between">
-                          <Badge 
-                            colorScheme={
-                              conversation.feedback_status === 'approved' ? 'green' : 
-                              conversation.feedback_status === 'needs_improvement' ? 'orange' : 
-                              'blue'
-                            }
-                            fontSize="xs"
-                          >
-                            {conversation.feedback_status === 'approved' ? 'Approved' : 
-                             conversation.feedback_status === 'needs_improvement' ? 'Needs Review' : 
-                             'Pending'}
-                          </Badge>
-                          <HStack spacing={1}>
-                            <Icon as={IoTimeOutline} color="gray.500" boxSize={3} />
-                            <Text fontSize="xs" color="gray.500">
-                              {formatDate(conversation.timestamp)}
-                            </Text>
-                          </HStack>
-                        </HStack>
-                        
-                        <Text 
-                          fontWeight="medium" 
-                          fontSize="md" 
-                          noOfLines={2}
+                    <AccordionButton 
+                      py={4} 
+                      px={5}
+                      _hover={{ bg: 'gray.50' }}
+                      _expanded={{ bg: 'gray.50', fontWeight: 'medium' }}
+                    >
+                      <HStack flex="1" spacing={4} textAlign="left">
+                        <Icon as={IoDocumentTextOutline} color="orange.500" boxSize={5} />
+                        <Box>
+                          <Text fontWeight="medium" fontSize="md">
+                            {getTopicPreview(conversation)}
+                          </Text>
+                          <Text fontSize="xs" color={textSecondary} mt={1}>
+                            <Icon as={IoCalendar} boxSize={3} mr={1} />
+                            {formatDate(conversation.timestamp || conversation.created_at)} 
+                            {conversation.messages && ` • ${conversation.messages.length} messages`}
+                          </Text>
+                        </Box>
+                      </HStack>
+                      <HStack spacing={3}>
+                        <IconButton
+                          icon={<IoTrashOutline />}
+                          variant="ghost"
+                          colorScheme="red"
+                          size="sm"
+                          aria-label="Delete conversation"
+                          onClick={(e) => handleDeleteConversation(conversation.id, e)}
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          colorScheme="orange"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleConversationSelect(conversation.id);
+                          }}
                         >
-                          {conversation.preview || "No preview available"}
-                        </Text>
+                          View
+                        </Button>
+                        <AccordionIcon />
+                      </HStack>
+                    </AccordionButton>
+                    
+                    <AccordionPanel pb={4} bg="white">
+                      <VStack align="stretch" spacing={4}>
+                        <Box>
+                          <Table variant="simple" size="sm">
+                            <Thead bg="gray.50">
+                              <Tr>
+                                <Th>Details</Th>
+                                <Th>Value</Th>
+                              </Tr>
+                            </Thead>
+                            <Tbody>
+                              <Tr>
+                                <Td fontWeight="medium">Created</Td>
+                                <Td>{formatDate(conversation.timestamp || conversation.created_at)}</Td>
+                              </Tr>
+                              {conversation.messages && (
+                                <Tr>
+                                  <Td fontWeight="medium">Messages</Td>
+                                  <Td>{conversation.messages.length}</Td>
+                                </Tr>
+                              )}
+                              <Tr>
+                                <Td fontWeight="medium">ID</Td>
+                                <Td>
+                                  <Code fontSize="xs">{conversation.id}</Code>
+                                </Td>
+                              </Tr>
+                            </Tbody>
+                          </Table>
+                        </Box>
                         
-                        {!conversation.has_response && (
-                          <Badge colorScheme="yellow" fontSize="xs">
-                            Awaiting Response
-                          </Badge>
+                        {conversation.messages && conversation.messages.length > 0 && (
+                          <Box>
+                            <Text fontWeight="medium" mb={2}>Messages Preview:</Text>
+                            <VStack align="stretch" spacing={2} maxH="200px" overflowY="auto" px={2}>
+                              {conversation.messages.slice(0, 3).map((message, idx) => (
+                                <HStack 
+                                  key={idx} 
+                                  bg={message.role === 'user' ? 'orange.50' : 'gray.50'} 
+                                  p={2} 
+                                  borderRadius="md"
+                                  borderLeftWidth="3px"
+                                  borderLeftColor={message.role === 'user' ? 'orange.400' : 'gray.400'}
+                                >
+                                  <Badge colorScheme={message.role === 'user' ? 'orange' : 'gray'}>
+                                    {message.role}
+                                  </Badge>
+                                  <Text fontSize="sm" noOfLines={2}>
+                                    {message.content}
+                                  </Text>
+                                </HStack>
+                              ))}
+                              {conversation.messages.length > 3 && (
+                                <Text fontSize="xs" color={textSecondary} textAlign="center">
+                                  + {conversation.messages.length - 3} more messages
+                                </Text>
+                              )}
+                            </VStack>
+                          </Box>
                         )}
                         
                         <Divider />
                         
-                        <HStack justify="flex-end">
-                          <Text fontSize="sm" color="blue.500">
-                            View Conversation
-                          </Text>
-                          <Icon as={IoChevronForward} color="blue.500" />
+                        <HStack>
+                          <Button
+                            colorScheme="orange"
+                            size="md"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleConversationSelect(conversation.id);
+                            }}
+                            flex="1"
+                          >
+                            View Full Conversation
+                          </Button>
+                          <Button
+                            colorScheme="orange"
+                            size="md"
+                            variant="outline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              goToChat(conversation.id);
+                            }}
+                            flex="1"
+                          >
+                            Continue Chat
+                          </Button>
                         </HStack>
                       </VStack>
-                    </CardBody>
-                  </Card>
+                    </AccordionPanel>
+                  </AccordionItem>
                 ))}
-              </SimpleGrid>
+              </Accordion>
             )}
-          </Box>
+          </>
         )}
-      </VStack>
-    </Container>
+      </Container>
+    </Box>
   );
 };
 
