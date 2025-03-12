@@ -15,6 +15,7 @@ import json  # Add this import at the top of the file
 from src.db.database import ChatDatabase
 from src.agents.data_architect.github_search import GitHubCodeSearchAgent
 from src.agents.data_architect.schema_search import SchemaSearchAgent
+from src.agents.data_architect.data_architect import DataArchitectAgent
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -45,11 +46,11 @@ class HumanFeedbackSystem:
         self.timeout_seconds = 300  # 5 minutes timeout
 
     async def process_feedback(self, 
-                              feedback_id: str, 
-                              approved: bool, 
-                              comments: Optional[str] = None,
-                              suggested_changes: Optional[Dict[str, Any]] = None,
-                              message_id: Optional[str] = None):
+                             feedback_id: str, 
+                             approved: bool, 
+                             comments: Optional[str] = None,
+                             suggested_changes: Optional[Dict[str, Any]] = None,
+                             message_id: Optional[str] = None):
         """Process feedback for a parsed question"""
         try:
             self.logger.info(f"Processing feedback: ID={feedback_id}, approved={approved}, comments={comments}")
@@ -68,18 +69,26 @@ class HumanFeedbackSystem:
             
             # Process based on approval status
             if approved:
+                self.logger.info(f"Processing approved feedback for conversation {conversation_id}")
                 # Process approved feedback
-                search_results = await self.process_approved_feedback(
+                architect_result = await self.process_approved_feedback(
                     feedback_id=feedback_id,
-                    conversation_id=conversation_id,
-                    parsed_question=feedback_request.get("parsed_question", {})
+                    conversation_id=conversation_id
                 )
+                
+                if architect_result.get('status') == 'error':
+                    self.logger.error(f"Error in architect processing: {architect_result.get('error')}")
+                    return {
+                        "status": "error",
+                        "message": f"Architect processing failed: {architect_result.get('error')}",
+                        "feedback_id": feedback_id
+                    }
                 
                 return {
                     "status": "success",
                     "feedback_id": feedback_id,
                     "approved": approved,
-                    "search_results": search_results,
+                    "architect_response": architect_result.get('architect_response'),
                     "message": "Feedback processed successfully"
                 }
             else:
@@ -442,89 +451,75 @@ class HumanFeedbackSystem:
             if conversation_id in self.pending_feedback:
                 del self.pending_feedback[conversation_id] 
 
-    async def process_approved_feedback(self, feedback_id: str, conversation_id: str, parsed_question: Dict[str, Any]):
-        """Process approved feedback by triggering GitHub code search and schema search"""
+    async def process_approved_feedback(self, feedback_id: str, conversation_id: str) -> Dict[str, Any]:
+        """Process approved feedback by generating architect response"""
         try:
-            self.logger.info(f"Processing approved feedback for ID: {feedback_id}")
+            self.logger.info(f"Starting architect processing for conversation {conversation_id}")
             
-            # Get thread_id from conversation
-            conversation = self.db.get_conversation(conversation_id)
-            thread_id = conversation.get("thread_id") if conversation else None
+            # Get the conversation data
+            conversation_data = self.db.get_conversation(conversation_id)
+            if not conversation_data:
+                raise ValueError(f"No conversation found for ID: {conversation_id}")
             
-            if not thread_id:
-                self.logger.warning(f"No thread_id found for conversation {conversation_id}")
-                return None
+            # Create data architect agent
+            architect_agent = DataArchitectAgent()
             
-            # Initialize GitHub code search agent
-            code_search_agent = GitHubCodeSearchAgent()
+            # Get the original question and technical details
+            original_question = conversation_data.get('query', '')
+            technical_details = {}
             
-            # Initialize Schema search agent
-            schema_search_agent = SchemaSearchAgent()
-            
-            # Search for relevant code
-            code_search_results = code_search_agent.search_code(parsed_question)
-            
-            # Search for relevant schemas
-            schema_search_results = schema_search_agent.search_schemas(parsed_question)
-            
-            # Save search results
-            if code_search_results:
-                code_search_agent.save_search_results(
-                    thread_id=thread_id,
-                    conversation_id=conversation_id,
-                    parsed_question=parsed_question,
-                    search_results=code_search_results
-                )
-            
-            if schema_search_results:
-                schema_search_agent.save_search_results(
-                    thread_id=thread_id,
-                    conversation_id=conversation_id,
-                    parsed_question=parsed_question,
-                    search_results=schema_search_results
-                )
-            
-            # Update conversation with search results
-            if conversation:
-                # Get existing technical details
+            try:
+                if isinstance(conversation_data.get('technical_details'), str):
+                    technical_details = json.loads(conversation_data.get('technical_details', '{}'))
+                else:
+                    technical_details = conversation_data.get('technical_details', {})
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Error parsing technical details: {e}")
                 technical_details = {}
-                if conversation.get("technical_details"):
-                    try:
-                        if isinstance(conversation["technical_details"], str):
-                            technical_details = json.loads(conversation["technical_details"])
-                        else:
-                            technical_details = conversation["technical_details"]
-                    except json.JSONDecodeError:
-                        technical_details = {}
-                
-                # Add search results to technical details
-                technical_details["github_search_results"] = code_search_results
-                technical_details["schema_search_results"] = schema_search_results
-                
-                # Update conversation
-                conversation_data = {
-                    "query": conversation.get("query", ""),
-                    "output": conversation.get("output", ""),
-                    "technical_details": json.dumps(technical_details),
-                    "code_context": conversation.get("code_context", "{}"),
-                    "feedback_status": "approved",
-                    "thread_id": thread_id
-                }
-                
-                # Save back to database
-                self.db.save_conversation(conversation_id, conversation_data)
+
+            self.logger.info(f"Generating architect response for question: {original_question}")
             
-            # Combine results
-            combined_results = {
-                "code_search_results": code_search_results,
-                "schema_search_results": schema_search_results
+            # Generate architect response
+            architect_response = architect_agent.generate_response(
+                parsed_question=technical_details,
+                schema_results=[],  # Add schema results if available
+                code_results=[],    # Add code results if available
+                original_question=original_question
+            )
+            
+            if not architect_response:
+                raise ValueError("Failed to generate architect response")
+
+            self.logger.info(f"Generated architect response: {architect_response}")
+            
+            # Update conversation data
+            updated_data = {
+                'query': original_question,
+                'technical_details': json.dumps(technical_details),
+                'architect_response': json.dumps(architect_response),
+                'feedback_status': 'approved',
+                'last_updated': datetime.now().isoformat(),
+                'thread_id': conversation_data.get('thread_id', conversation_id)
             }
             
-            return combined_results
+            # Save to database
+            self.db.save_conversation(conversation_id, updated_data)
+            
+            self.logger.info(f"Saved architect response for conversation {conversation_id}")
+            
+            return {
+                'status': 'success',
+                'architect_response': architect_response,
+                'conversation_id': conversation_id
+            }
             
         except Exception as e:
             self.logger.error(f"Error processing approved feedback: {e}", exc_info=True)
-            return None
+            return {
+                'status': 'error',
+                'error': str(e),
+                'conversation_id': conversation_id
+            }
 
     def _set_timeout(self, feedback_id: str, timeout_seconds: int):
         """Set a timeout for auto-approval of feedback"""

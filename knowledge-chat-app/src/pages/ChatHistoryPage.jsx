@@ -30,7 +30,8 @@ import {
   AccordionItem,
   AccordionButton,
   AccordionPanel,
-  AccordionIcon
+  AccordionIcon,
+  Container
 } from '@chakra-ui/react';
 import { 
   IoSearch, 
@@ -45,6 +46,8 @@ import {
 import { useNavigate, useParams } from 'react-router-dom';
 
 const ChatHistoryPage = () => {
+  console.log('ChatHistoryPage rendering...'); // Debug log
+
   const [conversations, setConversations] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -58,6 +61,9 @@ const ChatHistoryPage = () => {
   const hoverBg = useColorModeValue('gray.50', 'gray.600');
   const messageBgUser = useColorModeValue('blue.50', 'blue.800');
   const messageBgAssistant = useColorModeValue('white', 'gray.700');
+
+  const bgColor = useColorModeValue('white', 'gray.900');
+  const textColor = useColorModeValue('gray.900', 'white');
 
   // Fetch conversation history
   const fetchConversations = async () => {
@@ -402,231 +408,237 @@ const ChatHistoryPage = () => {
   };
 
   return (
-    <Box>
-      {/* Main content */}
-      {selectedConversation ? (
-        // Conversation detail view
-        <Box maxW="1200px" mx="auto" p={6}>
-          <HStack mb={6} spacing={4}>
-            <Button 
-              leftIcon={<IoChevronBack />} 
-              onClick={clearSelectedConversation}
-              variant="outline"
-            >
-              Back to List
-            </Button>
-            <Heading size="lg" flex="1">Conversation Details</Heading>
-            <Button 
-              colorScheme="blue" 
-              onClick={() => goToChat(selectedConversation.id)}
-            >
-              Continue in Chat
-            </Button>
-          </HStack>
-          
-          <Card mb={6}>
-            <CardBody>
-              <HStack justify="space-between" mb={3}>
-                <Badge 
-                  colorScheme={
-                    selectedConversation.feedback_status === 'approved' ? 'green' : 
-                    selectedConversation.feedback_status === 'needs_improvement' ? 'orange' : 
-                    'blue'
-                  }
-                  fontSize="sm"
-                  p={2}
-                >
-                  {selectedConversation.feedback_status === 'approved' ? 'Approved' : 
-                   selectedConversation.feedback_status === 'needs_improvement' ? 'Needs Review' : 
-                   'Pending'}
-                </Badge>
-                <Text fontSize="sm" color="gray.500">
-                  Started on {formatDate(selectedConversation.timestamp)}
-                </Text>
-              </HStack>
-              
-              <Heading size="md" mb={2}>{selectedConversation.preview}</Heading>
-              
-              <Divider my={4} />
-              
-              {isLoadingDetail ? (
-                <Flex justify="center" align="center" height="300px">
-                  <Spinner size="xl" color="blue.500" />
-                </Flex>
-              ) : conversationDetails ? (
-                <VStack align="stretch" spacing={0}>
-                  <Tabs variant="enclosed" colorScheme="blue">
-                    <TabList>
-                      <Tab>Conversation</Tab>
-                      <Tab>Metadata</Tab>
-                    </TabList>
-                    
-                    <TabPanels>
-                      {/* Conversation Tab */}
-                      <TabPanel>
-                        <VStack align="stretch" spacing={4} p={2}>
-                          {conversationDetails.messages.length === 0 ? (
-                            <Text color="gray.500" textAlign="center" py={8}>
-                              No messages found for this conversation.
-                            </Text>
-                          ) : (
-                            <Flex direction="column" width="100%">
-                              {conversationDetails.messages.map(message => renderMessage(message))}
-                            </Flex>
-                          )}
-                        </VStack>
-                      </TabPanel>
-                      
-                      {/* Metadata Tab */}
-                      <TabPanel>
-                        <Box p={4} bg="gray.50" borderRadius="md">
-                          <Heading size="sm" mb={3}>Conversation Metadata</Heading>
-                          <Code p={4} borderRadius="md" width="100%" overflowX="auto">
-                            {JSON.stringify(conversationDetails.metadata, null, 2)}
-                          </Code>
-                        </Box>
-                      </TabPanel>
-                    </TabPanels>
-                  </Tabs>
-                </VStack>
-              ) : (
-                <Text color="gray.500" textAlign="center" py={8}>
-                  Failed to load conversation details.
-                </Text>
-              )}
-            </CardBody>
-          </Card>
-        </Box>
-      ) : (
-        // Conversation list view
-        <Box maxW="1200px" mx="auto" p={6}>
-          <Heading size="lg" mb={6}>Conversation History</Heading>
-          
-          {/* Search and refresh controls */}
-          <Flex mb={6} justifyContent="space-between" alignItems="center">
-            <InputGroup maxW="400px">
-              <InputLeftElement pointerEvents="none">
-                <Icon as={IoSearch} color="gray.400" />
-              </InputLeftElement>
-              <Input 
-                placeholder="Search conversations..." 
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </InputGroup>
-            
-            <HStack>
+    <Container maxW="container.xl">
+      <VStack spacing={8} align="stretch" py={8}>
+        <Heading color={textColor}>Chat History</Heading>
+        <Text color="gray.600">
+          View your previous conversations with the Data Architect Agent.
+        </Text>
+        {/* Main content */}
+        {selectedConversation ? (
+          // Conversation detail view
+          <Box maxW="1200px" mx="auto" p={6}>
+            <HStack mb={6} spacing={4}>
               <Button 
-                colorScheme="blue" 
-                onClick={startNewConversation}
-                mr={2}
-              >
-                New Conversation
-              </Button>
-              <Button 
-                leftIcon={<IoRefresh />} 
-                onClick={fetchConversations}
-                isLoading={isLoading}
-                colorScheme="blue"
+                leftIcon={<IoChevronBack />} 
+                onClick={clearSelectedConversation}
                 variant="outline"
               >
-                Refresh
+                Back to List
+              </Button>
+              <Heading size="lg" flex="1">Conversation Details</Heading>
+              <Button 
+                colorScheme="blue" 
+                onClick={() => goToChat(selectedConversation.id)}
+              >
+                Continue in Chat
               </Button>
             </HStack>
-          </Flex>
-          
-          {/* Conversations list */}
-          {isLoading ? (
-            <Flex justify="center" align="center" height="300px">
-              <Spinner size="xl" color="blue.500" />
-            </Flex>
-          ) : filteredConversations.length === 0 ? (
-            <Box textAlign="center" p={10} bg="gray.50" borderRadius="md">
-              <Text fontSize="lg" color="gray.500">
-                {searchQuery ? 'No conversations match your search' : 'No conversations found'}
-              </Text>
-              <Button 
-                mt={4} 
-                colorScheme="blue" 
-                onClick={startNewConversation}
-              >
-                Start a new conversation
-              </Button>
-            </Box>
-          ) : (
-            <SimpleGrid columns={{ base: 1, md: 2, lg: 3 }} spacing={6}>
-              {filteredConversations.map((conversation) => (
-                <Card 
-                  key={conversation.id} 
-                  bg={cardBg}
-                  borderRadius="lg"
-                  boxShadow="md"
-                  cursor="pointer"
-                  transition="all 0.2s"
-                  _hover={{ 
-                    transform: 'translateY(-4px)', 
-                    boxShadow: 'lg',
-                    bg: hoverBg
-                  }}
-                  onClick={() => {
-                    console.log(`Clicked on conversation: ${conversation.id}`);
-                    handleConversationSelect(conversation.id);
-                  }}
+            
+            <Card mb={6}>
+              <CardBody>
+                <HStack justify="space-between" mb={3}>
+                  <Badge 
+                    colorScheme={
+                      selectedConversation.feedback_status === 'approved' ? 'green' : 
+                      selectedConversation.feedback_status === 'needs_improvement' ? 'orange' : 
+                      'blue'
+                    }
+                    fontSize="sm"
+                    p={2}
+                  >
+                    {selectedConversation.feedback_status === 'approved' ? 'Approved' : 
+                     selectedConversation.feedback_status === 'needs_improvement' ? 'Needs Review' : 
+                     'Pending'}
+                  </Badge>
+                  <Text fontSize="sm" color="gray.500">
+                    Started on {formatDate(selectedConversation.timestamp)}
+                  </Text>
+                </HStack>
+                
+                <Heading size="md" mb={2}>{selectedConversation.preview}</Heading>
+                
+                <Divider my={4} />
+                
+                {isLoadingDetail ? (
+                  <Flex justify="center" align="center" height="300px">
+                    <Spinner size="xl" color="blue.500" />
+                  </Flex>
+                ) : conversationDetails ? (
+                  <VStack align="stretch" spacing={0}>
+                    <Tabs variant="enclosed" colorScheme="blue">
+                      <TabList>
+                        <Tab>Conversation</Tab>
+                        <Tab>Metadata</Tab>
+                      </TabList>
+                      
+                      <TabPanels>
+                        {/* Conversation Tab */}
+                        <TabPanel>
+                          <VStack align="stretch" spacing={4} p={2}>
+                            {conversationDetails.messages.length === 0 ? (
+                              <Text color="gray.500" textAlign="center" py={8}>
+                                No messages found for this conversation.
+                              </Text>
+                            ) : (
+                              <Flex direction="column" width="100%">
+                                {conversationDetails.messages.map(message => renderMessage(message))}
+                              </Flex>
+                            )}
+                          </VStack>
+                        </TabPanel>
+                        
+                        {/* Metadata Tab */}
+                        <TabPanel>
+                          <Box p={4} bg="gray.50" borderRadius="md">
+                            <Heading size="sm" mb={3}>Conversation Metadata</Heading>
+                            <Code p={4} borderRadius="md" width="100%" overflowX="auto">
+                              {JSON.stringify(conversationDetails.metadata, null, 2)}
+                            </Code>
+                          </Box>
+                        </TabPanel>
+                      </TabPanels>
+                    </Tabs>
+                  </VStack>
+                ) : (
+                  <Text color="gray.500" textAlign="center" py={8}>
+                    Failed to load conversation details.
+                  </Text>
+                )}
+              </CardBody>
+            </Card>
+          </Box>
+        ) : (
+          // Conversation list view
+          <Box maxW="1200px" mx="auto" p={6}>
+            <Heading size="lg" mb={6}>Conversation History</Heading>
+            
+            {/* Search and refresh controls */}
+            <Flex mb={6} justifyContent="space-between" alignItems="center">
+              <InputGroup maxW="400px">
+                <InputLeftElement pointerEvents="none">
+                  <Icon as={IoSearch} color="gray.400" />
+                </InputLeftElement>
+                <Input 
+                  placeholder="Search conversations..." 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+              </InputGroup>
+              
+              <HStack>
+                <Button 
+                  colorScheme="blue" 
+                  onClick={startNewConversation}
+                  mr={2}
                 >
-                  <CardBody>
-                    <VStack align="stretch" spacing={3}>
-                      <HStack justify="space-between">
-                        <Badge 
-                          colorScheme={
-                            conversation.feedback_status === 'approved' ? 'green' : 
-                            conversation.feedback_status === 'needs_improvement' ? 'orange' : 
-                            'blue'
-                          }
-                          fontSize="xs"
-                        >
-                          {conversation.feedback_status === 'approved' ? 'Approved' : 
-                           conversation.feedback_status === 'needs_improvement' ? 'Needs Review' : 
-                           'Pending'}
-                        </Badge>
-                        <HStack spacing={1}>
-                          <Icon as={IoTimeOutline} color="gray.500" boxSize={3} />
-                          <Text fontSize="xs" color="gray.500">
-                            {formatDate(conversation.timestamp)}
-                          </Text>
+                  New Conversation
+                </Button>
+                <Button 
+                  leftIcon={<IoRefresh />} 
+                  onClick={fetchConversations}
+                  isLoading={isLoading}
+                  colorScheme="blue"
+                  variant="outline"
+                >
+                  Refresh
+                </Button>
+              </HStack>
+            </Flex>
+            
+            {/* Conversations list */}
+            {isLoading ? (
+              <Flex justify="center" align="center" height="300px">
+                <Spinner size="xl" color="blue.500" />
+              </Flex>
+            ) : filteredConversations.length === 0 ? (
+              <Box textAlign="center" p={10} bg="gray.50" borderRadius="md">
+                <Text fontSize="lg" color="gray.500">
+                  {searchQuery ? 'No conversations match your search' : 'No conversations found'}
+                </Text>
+                <Button 
+                  mt={4} 
+                  colorScheme="blue" 
+                  onClick={startNewConversation}
+                >
+                  Start a new conversation
+                </Button>
+              </Box>
+            ) : (
+              <SimpleGrid columns={{ base: 1, md: 2, lg: 3 }} spacing={6}>
+                {filteredConversations.map((conversation) => (
+                  <Card 
+                    key={conversation.id} 
+                    bg={cardBg}
+                    borderRadius="lg"
+                    boxShadow="md"
+                    cursor="pointer"
+                    transition="all 0.2s"
+                    _hover={{ 
+                      transform: 'translateY(-4px)', 
+                      boxShadow: 'lg',
+                      bg: hoverBg
+                    }}
+                    onClick={() => {
+                      console.log(`Clicked on conversation: ${conversation.id}`);
+                      handleConversationSelect(conversation.id);
+                    }}
+                  >
+                    <CardBody>
+                      <VStack align="stretch" spacing={3}>
+                        <HStack justify="space-between">
+                          <Badge 
+                            colorScheme={
+                              conversation.feedback_status === 'approved' ? 'green' : 
+                              conversation.feedback_status === 'needs_improvement' ? 'orange' : 
+                              'blue'
+                            }
+                            fontSize="xs"
+                          >
+                            {conversation.feedback_status === 'approved' ? 'Approved' : 
+                             conversation.feedback_status === 'needs_improvement' ? 'Needs Review' : 
+                             'Pending'}
+                          </Badge>
+                          <HStack spacing={1}>
+                            <Icon as={IoTimeOutline} color="gray.500" boxSize={3} />
+                            <Text fontSize="xs" color="gray.500">
+                              {formatDate(conversation.timestamp)}
+                            </Text>
+                          </HStack>
                         </HStack>
-                      </HStack>
-                      
-                      <Text 
-                        fontWeight="medium" 
-                        fontSize="md" 
-                        noOfLines={2}
-                      >
-                        {conversation.preview || "No preview available"}
-                      </Text>
-                      
-                      {!conversation.has_response && (
-                        <Badge colorScheme="yellow" fontSize="xs">
-                          Awaiting Response
-                        </Badge>
-                      )}
-                      
-                      <Divider />
-                      
-                      <HStack justify="flex-end">
-                        <Text fontSize="sm" color="blue.500">
-                          View Conversation
+                        
+                        <Text 
+                          fontWeight="medium" 
+                          fontSize="md" 
+                          noOfLines={2}
+                        >
+                          {conversation.preview || "No preview available"}
                         </Text>
-                        <Icon as={IoChevronForward} color="blue.500" />
-                      </HStack>
-                    </VStack>
-                  </CardBody>
-                </Card>
-              ))}
-            </SimpleGrid>
-          )}
-        </Box>
-      )}
-    </Box>
+                        
+                        {!conversation.has_response && (
+                          <Badge colorScheme="yellow" fontSize="xs">
+                            Awaiting Response
+                          </Badge>
+                        )}
+                        
+                        <Divider />
+                        
+                        <HStack justify="flex-end">
+                          <Text fontSize="sm" color="blue.500">
+                            View Conversation
+                          </Text>
+                          <Icon as={IoChevronForward} color="blue.500" />
+                        </HStack>
+                      </VStack>
+                    </CardBody>
+                  </Card>
+                ))}
+              </SimpleGrid>
+            )}
+          </Box>
+        )}
+      </VStack>
+    </Container>
   );
 };
 

@@ -13,6 +13,7 @@ from sqlite3 import connect
 from threading import Lock
 import json
 from datetime import datetime
+import re
 
 from src.tools import SearchTools
 from src.db.database import ChatDatabase
@@ -22,12 +23,24 @@ logger = logging.getLogger(__name__)
 # Define default analysis structure at module level
 DEFAULT_ANALYSIS = {
     "rephrased_question": "",
+    "question_type": "unknown",  # New field to identify question type
     "key_points": [],
     "business_context": {
         "domain": "Unknown",
         "primary_objective": "Not specified",
         "key_entities": [],
         "business_impact": "Not analyzed"
+    },
+    "technical_context": {  # New section for technical analysis
+        "data_stack": [],
+        "relevant_components": [],
+        "dependencies": [],
+        "technical_considerations": []
+    },
+    "implementation_guidance": {  # New section for code/implementation guidance
+        "approach": "",
+        "suggested_steps": [],
+        "code_references": []
     },
     "assumptions": [],
     "clarifying_questions": [],
@@ -45,10 +58,13 @@ class ParserState(TypedDict):
 
 # Define structured outputs
 class BusinessAnalysis(BaseModel):
-    rephrased_question: str = Field(description="Clear business-focused restatement")
-    key_points: List[str] = Field(description="Key business points and objectives")
+    rephrased_question: str = Field(description="Clear restatement of the question")
+    question_type: str = Field(description="Type of question (business, technical, hybrid)")
+    key_points: List[str] = Field(description="Key points and objectives")
     business_context: Dict[str, Any] = Field(description="Business context information")
-    assumptions: List[str] = Field(description="Business assumptions to verify")
+    technical_context: Dict[str, Any] = Field(description="Technical context information")
+    implementation_guidance: Dict[str, Any] = Field(description="Implementation and code guidance")
+    assumptions: List[str] = Field(description="Assumptions to verify")
     clarifying_questions: List[str] = Field(description="Questions about requirements")
     confidence_score: float = Field(description="Confidence in analysis (0-1)")
 
@@ -65,7 +81,7 @@ def create_parser_agent(tools: SearchTools):
     output_parser = PydanticOutputParser(pydantic_object=BusinessAnalysis)
 
     # Create prompt template
-    template = """You are an expert business analyst helping users understand their data requirements.
+    template = """You are an expert data consultant helping users understand and solve both business and technical data questions.
 
 USER QUESTION:
 {question}
@@ -77,38 +93,63 @@ SQL SCHEMA INFORMATION:
 {sql_context}
 
 TASK:
-Analyze this question using our business documentation and SQL schema information to provide a structured understanding.
+Analyze this question, determine if it's a business question, technical question, or hybrid, and provide a structured understanding with relevant information.
 
 GUIDELINES:
-- Focus on business objectives and requirements
-- Only reference information found in our documentation and schema
-- Identify any missing business context
-- Keep technical details for later analysis
-- Use SQL schema information to better understand data relationships
+- First, identify the question type (business, technical, or hybrid)
+- Never generalize the content. If you do not find specific info, acknowledge the limitation
+- For business questions: focus on objectives, requirements, and impact
+- For technical questions: focus on implementation details, code patterns, and technical considerations
+- For hybrid questions: balance both aspects appropriately
+- Only reference information found in documentation and schema
+- Identify any missing context or information
+- Provide specific guidance relevant to the tech stack (especially Snowflake and dbt)
+
+QUESTION TYPES TO IDENTIFY:
+1. BUSINESS QUESTIONS: About metrics, KPIs, reporting needs, business processes
+2. TECHNICAL QUESTIONS: About implementation, code, data pipelines, testing, architecture
+   - Development: Creating new code/models/tables
+   - Enhancement: Modifying existing code/models/tables
+   - Debugging: Fixing issues or understanding errors
+   - Performance: Optimization and efficiency
+   - Architecture: Design patterns and structure
+3. HYBRID QUESTIONS: Combining business and technical aspects
 
 IMPORTANT: Your response must be a valid JSON object with the following structure (no markdown, no explanations, just the JSON):
-{{
-    "rephrased_question": "Clear business-focused restatement of the question",
+{
+    "rephrased_question": "Clear restatement of the question",
+    "question_type": "business|technical|hybrid",
     "key_points": [
-        "Key business point 1",
-        "Key business point 2"
+        "Key point 1",
+        "Key point 2"
     ],
-    "business_context": {{
+    "business_context": {
         "domain": "Business domain area",
         "primary_objective": "Main business goal",
         "key_entities": ["Entity 1", "Entity 2"],
         "business_impact": "How this affects business"
-    }},
+    },
+    "technical_context": {
+        "data_stack": ["Snowflake", "dbt", "Other relevant technologies"],
+        "relevant_components": ["Tables", "Models", "Scripts"],
+        "dependencies": ["Related systems", "Prerequisites"],
+        "technical_considerations": ["Performance concerns", "Design patterns"]
+    },
+    "implementation_guidance": {
+        "approach": "High-level approach to solving",
+        "suggested_steps": ["Step 1", "Step 2"],
+        "code_references": ["Reference to relevant code patterns"]
+    },
     "assumptions": [
-        "Business assumption 1",
-        "Business assumption 2"
+        "Assumption 1",
+        "Assumption 2"
     ],
     "clarifying_questions": [
         "Question about requirement 1",
         "Question about requirement 2"
     ],
     "confidence_score": 0.85
-}}"""
+}"""
 
     prompt = PromptTemplate(
         template=template,
@@ -123,6 +164,10 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
             doc_context = state.get('doc_context', {})
             sql_context = state.get('sql_context', {})
             
+            # Check if we have any context documents or schemas
+            has_context = (len(doc_context.get('results', [])) > 0 or 
+                          len(sql_context.get('results', [])) > 0)
+            
             # Format documentation context
             formatted_doc_context = "\n".join([
                 f"[{doc.get('type', 'Doc')}]\n{doc.get('content', '')}\n---"
@@ -134,6 +179,50 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
                 f"[{sql.get('type', 'SQL')}]\n{sql.get('content', '')}\n---"
                 for sql in sql_context.get('results', [])
             ])
+            
+            # If no context is available, create a special response
+            if not has_context:
+                logger.warning("No context documents or schemas available for question processing")
+                no_context_analysis = DEFAULT_ANALYSIS.copy()
+                no_context_analysis.update({
+                    "rephrased_question": question,
+                    "question_type": "no_context",
+                    "key_points": ["No relevant documentation or schema information is available"],
+                    "business_context": {
+                        "domain": "Information Required",
+                        "primary_objective": "Please upload relevant files or schemas first",
+                        "key_entities": [],
+                        "business_impact": "Cannot analyze without context"
+                    },
+                    "technical_context": {
+                        "data_stack": [],
+                        "relevant_components": [],
+                        "dependencies": [],
+                        "technical_considerations": ["Upload dbt models, SQL files, or documentation to enable analysis"]
+                    },
+                    "implementation_guidance": {
+                        "approach": "Please upload relevant files to proceed",
+                        "suggested_steps": [
+                            "Upload dbt models and schema files to provide context",
+                            "Upload SQL files if working directly with Snowflake",
+                            "Upload documentation files for business context"
+                        ],
+                        "code_references": []
+                    },
+                    "assumptions": ["No data available to analyze"],
+                    "clarifying_questions": [
+                        "Do you have dbt models you can upload?",
+                        "Do you have Snowflake SQL scripts available?",
+                        "Is there documentation that describes your data models?"
+                    ],
+                    "confidence_score": 0.0
+                })
+                return {
+                    **state,
+                    "business_analysis": no_context_analysis,
+                    "feedback_status": "pending",
+                    "confidence_score": 0.0
+                }
             
             # Generate analysis
             formatted_prompt = prompt.format(
@@ -153,36 +242,72 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
                 # Log the raw response for debugging
                 logger.debug(f"Raw LLM response: {response_text}")
                 
-                # Extract JSON if wrapped in any markers
-                if '```' in response_text:
-                    # Find the last occurrence of ``` before the JSON
-                    start = response_text.rfind('```') + 3
-                    # Find the next occurrence of ``` after the JSON
-                    end = response_text.find('```', start)
-                    if end == -1:  # If no closing ```, take the rest of the text
-                        response_text = response_text[start:].strip()
-                    else:
-                        response_text = response_text[start:end].strip()
-                
-                # Remove any language identifier if present
-                if response_text.startswith('json'):
-                    response_text = response_text[4:].strip()
-                
-                # Remove any leading/trailing whitespace or quotes
-                response_text = response_text.strip('`\'" \n\t')
-                
-                # Log cleaned text for debugging
-                logger.debug(f"Cleaned response text: {response_text}")
-                
                 # Parse JSON
                 try:
-                    analysis = json.loads(response_text)
+                    # First, try to extract a JSON block if the response contains markdown code blocks
+                    json_pattern = r"```(?:json)?\s*([\s\S]*?)\s*```"
+                    json_match = re.search(json_pattern, response_text)
+                    
+                    if json_match:
+                        # Found a JSON code block, use its content
+                        analysis = json.loads(json_match.group(1))
+                    else:
+                        # Check if the response starts with a JSON object
+                        response_text = response_text.strip()
+                        if response_text.startswith('{') and response_text.endswith('}'):
+                            analysis = json.loads(response_text)
+                        else:
+                            # Try to clean up the response and parse again
+                            cleaned_text = response_text
+                            # Replace single quotes with double quotes for JSON
+                            cleaned_text = re.sub(r"'([^']*)':", r'"\1":', cleaned_text)
+                            # Remove newlines and extra whitespace
+                            cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
+                            # Try to extract anything that looks like JSON
+                            json_obj_match = re.search(r'({.*})', cleaned_text)
+                            if json_obj_match:
+                                analysis = json.loads(json_obj_match.group(1))
+                            else:
+                                raise ValueError("Could not find valid JSON in the response")
                 except json.JSONDecodeError as je:
                     logger.error(f"JSON decode error: {je}\nAttempting to fix malformed JSON...")
                     # Try to fix common JSON formatting issues
                     response_text = response_text.replace("'", '"')  # Replace single quotes with double quotes
-                    response_text = response_text.replace('\n', '')  # Remove newlines
-                    analysis = json.loads(response_text)
+                    response_text = re.sub(r'\n\s*', ' ', response_text)  # Remove newlines
+                    response_text = re.sub(r',\s*}', '}', response_text)  # Remove trailing commas
+                    response_text = re.sub(r',\s*]', ']', response_text)  # Remove trailing commas in arrays
+                    
+                    # Try one more time with the fixed JSON
+                    try:
+                        analysis = json.loads(response_text)
+                    except json.JSONDecodeError:
+                        # If all else fails, create a minimal valid response
+                        logger.error(f"Failed to parse JSON after fixing: {response_text[:100]}...")
+                        analysis = {
+                            "rephrased_question": question,
+                            "question_type": "unknown",
+                            "key_points": ["Error parsing response"],
+                            "business_context": {
+                                "domain": "Error recovery",
+                                "primary_objective": "Failed to parse model response",
+                                "key_entities": [],
+                                "business_impact": "Unknown"
+                            },
+                            "technical_context": {
+                                "data_stack": [],
+                                "relevant_components": [],
+                                "dependencies": [],
+                                "technical_considerations": ["Error occurred during analysis"]
+                            },
+                            "implementation_guidance": {
+                                "approach": "Please try again with a clearer question",
+                                "suggested_steps": [],
+                                "code_references": []
+                            },
+                            "assumptions": ["Processing error occurred"],
+                            "clarifying_questions": ["Could you rephrase your question?"],
+                            "confidence_score": 0.0
+                        }
                 
                 # Create a new analysis with defaults
                 validated_analysis = DEFAULT_ANALYSIS.copy()
@@ -191,8 +316,11 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
                 # Validate and ensure required fields
                 required_fields = {
                     "rephrased_question": str,
+                    "question_type": str,
                     "key_points": list,
                     "business_context": dict,
+                    "technical_context": dict,
+                    "implementation_guidance": dict,
                     "assumptions": list,
                     "clarifying_questions": list,
                     "confidence_score": (int, float)
@@ -201,8 +329,8 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
                 # Update with valid fields from the response
                 for field, expected_type in required_fields.items():
                     if field in analysis and isinstance(analysis[field], expected_type):
-                        if field == "business_context":
-                            validated_analysis["business_context"].update(analysis["business_context"])
+                        if field in ["business_context", "technical_context", "implementation_guidance"]:
+                            validated_analysis[field].update(analysis[field])
                         else:
                             validated_analysis[field] = analysis[field]
                 
@@ -234,17 +362,40 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
                 }
                 
         except Exception as e:
+            # Create a better error message for the user
             logger.error(f"Error in question processing: {e}")
             error_analysis = DEFAULT_ANALYSIS.copy()
             error_analysis.update({
-                "rephrased_question": "Error analyzing question",
-                "key_points": ["Unable to analyze business requirements"],
+                "rephrased_question": question,
+                "question_type": "error",
+                "key_points": ["An error occurred processing your question"],
                 "business_context": {
-                    "domain": "Error",
-                    "primary_objective": str(e),
+                    "domain": "System Error",
+                    "primary_objective": "Please try again with a clearer or simpler question",
                     "key_entities": [],
-                    "business_impact": "Analysis failed"
-                }
+                    "business_impact": "Unable to process request"
+                },
+                "technical_context": {
+                    "data_stack": [],
+                    "relevant_components": [],
+                    "dependencies": [],
+                    "technical_considerations": ["Internal processing error occurred"]
+                },
+                "implementation_guidance": {
+                    "approach": "Please try a different approach to your question",
+                    "suggested_steps": [
+                        "Simplify your question",
+                        "Break complex questions into smaller parts",
+                        "Check if you've uploaded relevant context documents"
+                    ],
+                    "code_references": []
+                },
+                "assumptions": [],
+                "clarifying_questions": [
+                    "Could you rephrase your question more simply?",
+                    "Are you looking for business or technical information?"
+                ],
+                "confidence_score": 0.0
             })
             return {
                 **state,

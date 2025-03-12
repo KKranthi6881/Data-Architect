@@ -260,7 +260,7 @@ const FileUploadPage = () => {
     if (!repoUrl) return;
     
     // Validate GitHub URL format
-    const githubUrlPattern = /^https:\/\/github\.com\/[^\/]+\/[^\/]+/;
+    const githubUrlPattern = /^https:\/\/[^\/]+\/[^\/]+\/[^\/]+/;
     if (!githubUrlPattern.test(repoUrl)) {
       toast({
         title: 'Invalid GitHub URL',

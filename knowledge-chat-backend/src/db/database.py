@@ -3,72 +3,69 @@ from pathlib import Path
 from datetime import datetime
 import json
 from threading import Lock
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Union
 import uuid
+import logging
 
 class ChatDatabase:
     def __init__(self):
         self.db_path = str(Path(__file__).parent.parent.parent / "chat_history.db")
         self._init_db()
+        self._lock = Lock()
+        self.logger = logging.getLogger(__name__)
 
     def _init_db(self):
-        """Initialize database tables"""
-        with sqlite3.connect(self.db_path) as conn:
-            # Check if conversations table exists
+        """Initialize the database with required tables"""
+        with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'")
-            table_exists = cursor.fetchone() is not None
             
-            if not table_exists:
-                # Create conversations table with thread_id as a required field
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS conversations (
-                        id TEXT PRIMARY KEY,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        query TEXT,
-                        output TEXT,
-                        code_context TEXT,
-                        technical_details TEXT,
-                        feedback_status TEXT,
-                        feedback_comments TEXT,
-                        thread_id TEXT NOT NULL,
-                        cleared BOOLEAN DEFAULT 0
-                    )
-                """)
-            else:
-                # Check if thread_id column exists
-                cursor.execute("PRAGMA table_info(conversations)")
-                columns = [column[1] for column in cursor.fetchall()]
-                
-                # If thread_id doesn't exist, add it with a default value
-                if "thread_id" not in columns:
-                    conn.execute("ALTER TABLE conversations ADD COLUMN thread_id TEXT")
-                    # Update existing rows to use id as thread_id
-                    conn.execute("UPDATE conversations SET thread_id = id WHERE thread_id IS NULL")
+            # Create conversations table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id TEXT PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    query TEXT,
+                    output TEXT,
+                    code_context TEXT,
+                    technical_details TEXT,
+                    architect_response TEXT,  -- Add architect_response column
+                    feedback_status TEXT,
+                    feedback_comments TEXT,
+                    thread_id TEXT,
+                    cleared INTEGER DEFAULT 0
+                )
+            ''')
             
             # Create checkpoints table
-            conn.execute("""
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS checkpoints (
-                    thread_id TEXT NOT NULL,
-                    checkpoint_id TEXT NOT NULL,
-                    parent_checkpoint_id TEXT,
+                    thread_id TEXT,
+                    checkpoint_id TEXT PRIMARY KEY,
                     type TEXT,
                     checkpoint TEXT,
                     metadata TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (thread_id, checkpoint_id)
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            """)
+            ''')
             
-            # Create index on thread_id for faster lookups
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_conversations_thread_id 
-                ON conversations(thread_id)
-            """)
+            # Add architect_response column if it doesn't exist
+            cursor.execute('''
+                SELECT COUNT(*) FROM pragma_table_info('conversations') 
+                WHERE name='architect_response'
+            ''')
+            if cursor.fetchone()[0] == 0:
+                cursor.execute('''
+                    ALTER TABLE conversations 
+                    ADD COLUMN architect_response TEXT
+                ''')
+            
+            conn.commit()
 
-    def _get_connection(self):
-        """Get a new database connection"""
-        return sqlite3.connect(self.db_path)
+    def _get_connection(self) -> sqlite3.Connection:
+        """Get a database connection with proper settings"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
 
     def init_db(self):
         """Initialize the database with proper chat history table"""
@@ -88,85 +85,94 @@ class ChatDatabase:
             """)
             conn.commit()
 
-    def save_conversation(self, conversation_id: str, data: dict):
-        """Save a conversation to the database"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Check if thread_id column exists
-            cursor.execute("PRAGMA table_info(conversations)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
-            # Build the query based on available columns
-            fields = ["id", "query", "output", "code_context", "technical_details", "created_at"]
-            values = ["?", "?", "?", "?", "?", "?"]
-            params = [
-                conversation_id,
-                data.get('query', ''),
-                json.dumps(data.get('output', {})),
-                json.dumps(data.get('code_context', {})),
-                json.dumps(data.get('technical_details', '')),
-                datetime.now()
-            ]
-            
-            # Add thread_id if it exists in the schema
-            if "thread_id" in columns:
-                fields.append("thread_id")
-                values.append("?")
-                # If thread_id is not in data, use conversation_id as the thread_id
-                params.append(data.get('thread_id', conversation_id))
-            
-            # Add feedback fields if they exist in the data
-            if "feedback_status" in columns and "feedback_status" in data:
-                fields.append("feedback_status")
-                values.append("?")
-                params.append(data.get('feedback_status'))
+    def save_conversation(self, conversation_id: str, data: Dict[str, Any]):
+        """Save or update a conversation with proper logging"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
                 
-            if "feedback_comments" in columns and "feedback_comments" in data:
-                fields.append("feedback_comments")
-                values.append("?")
-                params.append(data.get('feedback_comments'))
-            
-            # Build and execute the query
-            query = f"""
-                INSERT OR REPLACE INTO conversations 
-                ({', '.join(fields)})
-                VALUES ({', '.join(values)})
-            """
-            cursor.execute(query, params)
-            conn.commit()
+                # Log the incoming data
+                self.logger.info(f"Saving conversation {conversation_id} with data: {json.dumps(data, indent=2)}")
+                
+                # Extract architect response if present
+                architect_response = data.get('architect_response')
+                if isinstance(architect_response, dict):
+                    architect_response = json.dumps(architect_response)
+                
+                # Ensure technical_details is JSON string
+                technical_details = data.get('technical_details')
+                if isinstance(technical_details, dict):
+                    technical_details = json.dumps(technical_details)
+                
+                # Create query with all fields
+                cursor.execute('''
+                    INSERT OR REPLACE INTO conversations (
+                        id,
+                        created_at,
+                        query,
+                        output,
+                        code_context,
+                        technical_details,
+                        architect_response,
+                        feedback_status,
+                        feedback_comments,
+                        thread_id,
+                        cleared
+                    ) VALUES (?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    conversation_id,
+                    data.get('created_at'),
+                    data.get('query', ''),
+                    data.get('output', ''),
+                    data.get('code_context', '{}'),
+                    technical_details,
+                    architect_response,
+                    data.get('feedback_status'),
+                    data.get('feedback_comments'),
+                    data.get('thread_id', conversation_id),  # Default to conversation_id if no thread_id
+                    data.get('cleared', 0)
+                ))
+                
+                conn.commit()
+                self.logger.info(f"Successfully saved conversation {conversation_id}")
+                
+        except Exception as e:
+            self.logger.error(f"Error saving conversation {conversation_id}: {e}", exc_info=True)
+            raise
 
-    def get_conversation(self, conversation_id: str):
-        """Retrieve a conversation from the database with better output handling"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM conversations WHERE id = ?",
-                (conversation_id,)
-            )
-            row = cursor.fetchone()
-            
-            if row:
-                # Get column names
-                column_names = [description[0] for description in cursor.description]
+    def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """Get a conversation by ID"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, created_at, query, output, code_context, 
+                           technical_details, architect_response, feedback_status, 
+                           feedback_comments, thread_id, cleared
+                    FROM conversations 
+                    WHERE id = ?
+                ''', (conversation_id,))
                 
-                # Create a dictionary with column names as keys
-                result = {}
-                for i, column in enumerate(column_names):
-                    result[column] = row[i]
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        'id': row[0],
+                        'created_at': row[1],
+                        'query': row[2],
+                        'output': row[3],
+                        'code_context': row[4],
+                        'technical_details': row[5],
+                        'architect_response': row[6],
+                        'feedback_status': row[7],
+                        'feedback_comments': row[8],
+                        'thread_id': row[9],
+                        'cleared': row[10]
+                    }
+                return None
                 
-                # Handle JSON fields
-                for field in ['output', 'code_context', 'technical_details']:
-                    if field in result and result[field]:
-                        try:
-                            if isinstance(result[field], str):
-                                result[field] = json.loads(result[field])
-                        except json.JSONDecodeError:
-                            # Keep as string if not valid JSON
-                            pass
-                
-                return result
-            return None
+        except Exception as e:
+            print(f"Error getting conversation: {e}")
+            raise
 
     def get_recent_conversations(self, limit=10):
         """Get recent conversations with safe handling of missing columns"""
@@ -586,3 +592,79 @@ class ChatDatabase:
                     print("Added thread_id column to conversations table")
         except Exception as e:
             print(f"Error ensuring thread_id column: {e}") 
+
+    def create_tables(self):
+        """Create necessary tables if they don't exist"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Create conversations table with architect_response column
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        id TEXT PRIMARY KEY,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        query TEXT,
+                        output TEXT,
+                        code_context TEXT,
+                        technical_details TEXT,
+                        architect_response TEXT,  -- Add this column
+                        feedback_status TEXT,
+                        feedback_comments TEXT,
+                        thread_id TEXT,
+                        cleared INTEGER DEFAULT 0
+                    )
+                ''')
+                
+                # Add architect_response column if it doesn't exist
+                cursor.execute('''
+                    SELECT COUNT(*) FROM pragma_table_info('conversations') 
+                    WHERE name='architect_response'
+                ''')
+                if cursor.fetchone()[0] == 0:
+                    cursor.execute('''
+                        ALTER TABLE conversations 
+                        ADD COLUMN architect_response TEXT
+                    ''')
+                
+                conn.commit()
+                
+        except Exception as e:
+            print(f"Error creating tables: {e}")
+            raise
+
+    def save_conversation(self, conversation_id: str, data: Dict[str, Any]):
+        """Save or update a conversation"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Extract architect response if present
+                architect_response = data.get('architect_response')
+                if isinstance(architect_response, dict):
+                    architect_response = json.dumps(architect_response)
+                
+                cursor.execute('''
+                    INSERT OR REPLACE INTO conversations (
+                        id, query, output, code_context, technical_details, 
+                        architect_response, feedback_status, feedback_comments, 
+                        thread_id, cleared
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    conversation_id,
+                    data.get('query', ''),
+                    data.get('output', ''),
+                    data.get('code_context', '{}'),
+                    data.get('technical_details', '{}'),
+                    architect_response,
+                    data.get('feedback_status'),
+                    data.get('feedback_comments'),
+                    data.get('thread_id'),
+                    data.get('cleared', 0)
+                ))
+                
+                conn.commit()
+                
+        except Exception as e:
+            print(f"Error saving conversation: {e}")
+            raise 

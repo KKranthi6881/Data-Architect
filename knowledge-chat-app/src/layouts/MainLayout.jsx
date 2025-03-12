@@ -1,20 +1,16 @@
-import { Box, Flex } from '@chakra-ui/react'
-import { Outlet } from 'react-router-dom'
-import Navbar from '../components/common/Navbar'
-import Sidebar from '../components/common/Sidebar'
+import React from 'react';
+import { Box } from '@chakra-ui/react';
+import AppHeader from '../components/AppHeader';
 
-const MainLayout = () => {
+const MainLayout = ({ children }) => {
   return (
-    <Flex direction="column" minH="100vh">
-      <Navbar />
-      <Flex flex="1">
-        <Sidebar />
-        <Box as="main" flex="1" p={4} overflowY="auto">
-          <Outlet />
-        </Box>
-      </Flex>
-    </Flex>
-  )
-}
+    <>
+      <AppHeader />
+      <Box as="main" pt={4}>
+        {children}
+      </Box>
+    </>
+  );
+};
 
-export default MainLayout 
+export default MainLayout; 

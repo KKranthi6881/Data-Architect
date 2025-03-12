@@ -68,12 +68,33 @@ const ConversationHistory = ({ onSelectConversation, onNewChat }) => {
     if (!expandedThreads[threadId] && !threadConversations[threadId]) {
       try {
         const response = await fetchConversationsByThread(threadId);
+        console.log('Thread conversations response:', response); // Debug log
+        
         if (response.status === 'success') {
+          // Transform the conversations to include architect response
+          const enhancedConversations = response.conversations.map(conv => {
+            // Parse technical details to get architect response
+            let architectResponse = null;
+            try {
+              const technicalDetails = JSON.parse(conv.technical_details || '{}');
+              if (technicalDetails.architect_response) {
+                architectResponse = technicalDetails.architect_response;
+              }
+            } catch (err) {
+              console.error('Error parsing technical details:', err);
+            }
+
+            return {
+              ...conv,
+              architect_response: architectResponse
+            };
+          });
+
           setThreadConversations(prev => ({
             ...prev,
-            [threadId]: response.conversations
+            [threadId]: enhancedConversations
           }));
-          console.log(`Loaded conversations for thread ${threadId}:`, response.conversations);
+          console.log(`Enhanced conversations for thread ${threadId}:`, enhancedConversations);
         }
       } catch (err) {
         console.error(`Error loading conversations for thread ${threadId}:`, err);
@@ -109,6 +130,109 @@ const ConversationHistory = ({ onSelectConversation, onNewChat }) => {
         duration: 3000,
       });
     }
+  };
+
+  const renderThreadConversations = (conversations) => {
+    return (
+      <VStack spacing={2} align="stretch">
+        {conversations.map((conv, index) => {
+          // Parse technical details if needed
+          let architectResponse = conv.architect_response;
+          if (!architectResponse && conv.technical_details) {
+            try {
+              const technicalDetails = JSON.parse(conv.technical_details);
+              architectResponse = technicalDetails.architect_response;
+            } catch (err) {
+              console.error('Error parsing technical details:', err);
+            }
+          }
+
+          return (
+            <Box 
+              key={conv.id}
+              borderWidth="1px"
+              borderRadius="md"
+              p={3}
+              bg={architectResponse ? "purple.50" : "white"}
+            >
+              {/* User Query */}
+              <Flex direction="column" mb={2}>
+                <Text fontSize="sm" fontWeight="medium">
+                  <Badge colorScheme="blue" mr={2}>User</Badge>
+                  {conv.query}
+                </Text>
+                <Text fontSize="xs" color="gray.500">
+                  {new Date(conv.timestamp).toLocaleString()}
+                </Text>
+              </Flex>
+
+              {/* Assistant Response */}
+              {conv.response && (
+                <Flex direction="column" mb={2} pl={4}>
+                  <Text fontSize="sm">
+                    <Badge colorScheme="green" mr={2}>Assistant</Badge>
+                    {conv.response}
+                  </Text>
+                </Flex>
+              )}
+
+              {/* Data Architect Response */}
+              {architectResponse && (
+                <Flex direction="column" pl={4} mt={2}>
+                  <Text fontSize="sm">
+                    <Badge colorScheme="purple" mr={2}>Data Architect</Badge>
+                    {architectResponse.response}
+                  </Text>
+                  {architectResponse.sections && (
+                    <Accordion allowToggle size="sm" mt={2}>
+                      <AccordionItem>
+                        <AccordionButton>
+                          <Box flex="1" textAlign="left">
+                            View Details
+                          </Box>
+                          <AccordionIcon />
+                        </AccordionButton>
+                        <AccordionPanel>
+                          {Object.entries(architectResponse.sections).map(([key, value]) => (
+                            <Box key={key} mb={2}>
+                              <Text fontSize="sm" fontWeight="bold" color="purple.600">
+                                {key.replace(/_/g, ' ').toUpperCase()}
+                              </Text>
+                              <Text fontSize="sm" whiteSpace="pre-wrap">{value}</Text>
+                            </Box>
+                          ))}
+                        </AccordionPanel>
+                      </AccordionItem>
+                    </Accordion>
+                  )}
+                </Flex>
+              )}
+
+              {/* Feedback Status */}
+              <Flex justify="space-between" align="center" mt={2}>
+                <Badge 
+                  colorScheme={
+                    conv.feedback_status === 'approved' ? 'green' : 
+                    conv.feedback_status === 'pending' ? 'yellow' : 
+                    'red'
+                  }
+                >
+                  {conv.feedback_status || 'pending'}
+                </Badge>
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  colorScheme="red"
+                  onClick={(e) => handleClearConversation(conv.id, e)}
+                >
+                  <IoTrash />
+                </Button>
+              </Flex>
+            </Box>
+          );
+        })}
+      </VStack>
+    );
   };
 
   if (loading && threads.length === 0) {
@@ -150,95 +274,57 @@ const ConversationHistory = ({ onSelectConversation, onNewChat }) => {
           threads.map(thread => (
             <Card key={thread.thread_id} variant="outline" mb={2}>
               <CardBody p={3}>
-                <Flex 
-                  justify="space-between" 
-                  align="center" 
-                  onClick={() => onSelectConversation(thread.first_conversation_id)}
-                  cursor="pointer"
-                  _hover={{ bg: "gray.50" }}
-                  p={2}
-                  borderRadius="md"
-                >
-                  <Box>
-                    <Text fontWeight="medium" noOfLines={1}>
-                      {thread.preview}
-                    </Text>
+                <Box>
+                  <Flex justify="space-between" align="center" mb={2}>
+                    <Text fontWeight="bold" fontSize="sm">Thread Started</Text>
                     <Text fontSize="xs" color="gray.500">
                       {new Date(thread.timestamp).toLocaleString()}
                     </Text>
-                    {thread.conversation_count > 1 && (
-                      <Badge colorScheme="blue" mt={1}>
-                        {thread.conversation_count} messages
-                      </Badge>
-                    )}
-                  </Box>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    colorScheme="red"
-                    onClick={(e) => handleClearConversation(thread.first_conversation_id, e)}
+                  </Flex>
+                  
+                  <Box 
+                    bg="gray.50" 
+                    p={2} 
+                    borderRadius="md" 
+                    mb={2}
+                    cursor="pointer"
+                    onClick={() => onSelectConversation(thread.first_conversation_id)}
+                    _hover={{ bg: "gray.100" }}
                   >
-                    <IoTrash />
-                  </Button>
-                </Flex>
-                
-                {thread.conversation_count > 1 && (
-                  <Accordion allowToggle mt={2}>
-                    <AccordionItem border="none">
-                      <AccordionButton 
-                        p={2} 
-                        _hover={{ bg: "gray.50" }}
-                        onClick={() => toggleThreadExpansion(thread.thread_id)}
-                      >
-                        <Box flex="1" textAlign="left" fontSize="sm">
-                          Show all conversations in this thread
-                        </Box>
-                        <AccordionIcon />
-                      </AccordionButton>
-                      <AccordionPanel pb={4}>
-                        {threadConversations[thread.thread_id] ? (
-                          <VStack spacing={2} align="stretch">
-                            {threadConversations[thread.thread_id].map(conv => (
-                              <Flex
-                                key={conv.id}
-                                p={2}
-                                borderRadius="md"
-                                borderWidth="1px"
-                                borderColor="gray.200"
-                                justify="space-between"
-                                align="center"
-                                _hover={{ bg: "blue.50" }}
-                                cursor="pointer"
-                                onClick={() => onSelectConversation(conv.id)}
-                              >
-                                <Box>
-                                  <Text fontSize="sm" fontWeight="medium" noOfLines={1}>
-                                    {conv.preview}
-                                  </Text>
-                                  <Text fontSize="xs" color="gray.500">
-                                    {new Date(conv.timestamp).toLocaleString()}
-                                  </Text>
-                                </Box>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  colorScheme="red"
-                                  onClick={(e) => handleClearConversation(conv.id, e)}
-                                >
-                                  <IoTrash />
-                                </Button>
-                              </Flex>
-                            ))}
-                          </VStack>
-                        ) : (
-                          <Text fontSize="sm" color="gray.500" textAlign="center">
-                            Loading conversations...
-                          </Text>
-                        )}
-                      </AccordionPanel>
-                    </AccordionItem>
-                  </Accordion>
-                )}
+                    <Text fontWeight="medium" noOfLines={2}>
+                      {thread.preview}
+                    </Text>
+                  </Box>
+
+                  {thread.conversation_count > 1 && (
+                    <Accordion allowToggle>
+                      <AccordionItem border="none">
+                        <AccordionButton 
+                          p={2} 
+                          _hover={{ bg: "gray.50" }}
+                          onClick={() => toggleThreadExpansion(thread.thread_id)}
+                        >
+                          <Box flex="1" textAlign="left" fontSize="sm">
+                            <Badge colorScheme="blue" mr={2}>
+                              {thread.conversation_count} messages
+                            </Badge>
+                            View Thread
+                          </Box>
+                          <AccordionIcon />
+                        </AccordionButton>
+                        <AccordionPanel pb={4}>
+                          {threadConversations[thread.thread_id] ? (
+                            renderThreadConversations(threadConversations[thread.thread_id])
+                          ) : (
+                            <Text fontSize="sm" color="gray.500" textAlign="center">
+                              Loading conversations...
+                            </Text>
+                          )}
+                        </AccordionPanel>
+                      </AccordionItem>
+                    </Accordion>
+                  )}
+                </Box>
               </CardBody>
             </Card>
           ))

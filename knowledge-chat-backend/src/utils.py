@@ -87,6 +87,13 @@ class ChromaDBManager:
                 chunk_overlap=50
             )
             
+            # Initialize code analyzer
+            from src.code_analyzer import CodeAnalyzer
+            self.code_analyzer = CodeAnalyzer()
+            
+            # Initialize analysis cache
+            self._analysis_cache = {}
+            
         except Exception as e:
             logger.error(f"Error initializing ChromaDBManager: {str(e)}")
             raise
@@ -149,28 +156,36 @@ class ChromaDBManager:
         try:
             logger.info(f"Loading {language} code file: {file_path}")
             
-            # Initialize code analyzer if not already done
-            if not hasattr(self, 'code_analyzer'):
-                self.code_analyzer = CodeAnalyzer()
+            # Detect if this is a dbt file
+            is_dbt_file = self.code_analyzer._is_dbt_file(file_path)
             
             # Analyze code once and cache the results
-            if not hasattr(self, '_analysis_cache'):
-                self._analysis_cache = {}
-            
             cache_key = f"{file_path}:{language}"
             if cache_key not in self._analysis_cache:
-                analysis = self.code_analyzer.analyze_file(file_path, language)
+                if is_dbt_file:
+                    if file_path.endswith('.yml') or file_path.endswith('.yaml'):
+                        analysis = self.code_analyzer.analyze_dbt_schema(file_path)
+                    else:
+                        analysis = self.code_analyzer.analyze_dbt(file_path)
+                else:
+                    analysis = self.code_analyzer.analyze_file(file_path, language)
                 self._analysis_cache[cache_key] = analysis
             else:
                 analysis = self._analysis_cache[cache_key]
             
-            logger.info(f"Code analysis complete: {analysis}")
+            logger.info(f"Code analysis complete for {file_path}")
             
             # Flatten and stringify analysis for ChromaDB metadata
             flattened_metadata = self._prepare_metadata_for_chroma(analysis)
             
-            # Set language-specific splitting
-            if hasattr(Language, language.upper()):
+            # Set language-specific splitting with special handling for dbt files
+            if is_dbt_file:
+                # For dbt files, use smaller chunks with more overlap for better context
+                self.code_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=300,
+                    chunk_overlap=100
+                )
+            elif hasattr(Language, language.upper()):
                 self.code_splitter = RecursiveCharacterTextSplitter.from_language(
                     language=getattr(Language, language.upper()),
                     chunk_size=500,
@@ -181,14 +196,30 @@ class ChromaDBManager:
             with open(file_path, 'r') as f:
                 content = f.read()
             
-            # Create initial document
+            # Create initial document with enhanced metadata for dbt
+            metadata = {
+                'source': file_path,
+                'language': language,
+                **flattened_metadata
+            }
+            
+            # Add special metadata for dbt files
+            if is_dbt_file:
+                metadata['is_dbt'] = True
+                metadata['dbt_type'] = 'schema' if file_path.endswith(('.yml', '.yaml')) else 'model'
+                
+                # For dbt models, add refs and dependencies 
+                if 'jinja_references' in analysis:
+                    metadata['dbt_refs'] = ','.join(analysis.get('jinja_references', []))
+                
+                # For schemas, add model definitions
+                if 'models' in analysis:
+                    model_names = [model.get('name', '') for model in analysis.get('models', [])]
+                    metadata['dbt_models'] = ','.join(model_names)
+            
             doc = Document(
                 page_content=content,
-                metadata={
-                    'source': file_path,
-                    'language': language,
-                    **flattened_metadata  # Use flattened metadata
-                }
+                metadata=metadata
             )
             
             # Split into chunks
@@ -196,11 +227,7 @@ class ChromaDBManager:
             
             # Enhance chunks with metadata
             for chunk in chunks:
-                chunk.metadata.update({
-                    'language': language,
-                    'file_path': str(file_path),
-                    **flattened_metadata  # Use flattened metadata
-                })
+                chunk.metadata.update(metadata)
             
             logger.info(f"Split code into {len(chunks)} chunks with analysis metadata")
             return chunks
@@ -210,11 +237,63 @@ class ChromaDBManager:
             raise
 
     def _prepare_metadata_for_chroma(self, analysis: Dict[str, Any]) -> Dict[str, str]:
-        """Prepare analysis metadata for ChromaDB by flattening and converting to primitive types."""
+        """Prepare analysis metadata for ChromaDB with enhanced dbt support."""
         flattened = {}
         
         try:
-            # Handle tables
+            # Check if this is a dbt analysis
+            if analysis.get('file_type', '').startswith('dbt_'):
+                # Handle dbt-specific metadata
+                flattened['dbt_type'] = analysis.get('file_type', 'dbt')
+                flattened['model_name'] = analysis.get('model_name', '')
+                
+                # Add model materialization if available
+                if 'materialization' in analysis:
+                    flattened['materialization'] = analysis['materialization']
+                
+                # Add model description
+                if 'description' in analysis:
+                    flattened['description'] = analysis['description']
+                
+                # Add references to other models
+                if 'jinja_references' in analysis:
+                    flattened['references'] = ','.join(analysis['jinja_references'])
+                
+                # Add sources
+                if 'jinja_sources' in analysis:
+                    sources = [f"{s[0]}.{s[1]}" for s in analysis['jinja_sources']]
+                    flattened['sources'] = ','.join(sources)
+                
+                # Add column information
+                if 'columns' in analysis:
+                    if isinstance(analysis['columns'], list):
+                        flattened['columns'] = ','.join(analysis['columns'])
+                
+                # Add column descriptions if available
+                if 'column_descriptions' in analysis and isinstance(analysis['column_descriptions'], dict):
+                    col_descs = []
+                    for col, desc in analysis['column_descriptions'].items():
+                        if isinstance(desc, dict) and 'description' in desc:
+                            col_descs.append(f"{col}: {desc['description']}")
+                        else:
+                            col_descs.append(f"{col}: {desc}")
+                    flattened['column_descriptions'] = ' | '.join(col_descs)
+                
+                # Handle schema.yml specific data
+                if 'models' in analysis:
+                    model_names = [model.get('name', '') for model in analysis.get('models', [])]
+                    flattened['schema_models'] = ','.join(model_names)
+                
+                # Add sources from schema.yml
+                if 'sources' in analysis:
+                    source_names = []
+                    for source in analysis.get('sources', []):
+                        source_name = source.get('name', '')
+                        for table in source.get('tables', []):
+                            source_names.append(f"{source_name}.{table.get('name', '')}")
+                    flattened['schema_sources'] = ','.join(source_names)
+            
+            # Original generic metadata handling
             if 'tables' in analysis:
                 flattened['tables'] = ','.join(sorted([str(t) for t in analysis['tables']]))
             
@@ -226,29 +305,11 @@ class ChromaDBManager:
                     relationships.append(rel_str)
                 flattened['relationships'] = '|'.join(relationships)
             
-            # Handle column lineage
-            if 'column_lineage' in analysis and analysis['column_lineage']:
-                lineage = []
-                for item in analysis['column_lineage']:
-                    source = item.get('source', {})
-                    lineage_str = f"{source.get('table')}.{source.get('column')} -> {item.get('target_column')}"
-                    lineage.append(lineage_str)
-                flattened['column_lineage'] = '|'.join(lineage)
-            
-            # Handle business context
-            if 'business_context' in analysis and analysis['business_context']:
-                contexts = []
-                for ctx in analysis['business_context']:
-                    ctx_str = f"{ctx.get('category')}: {ctx.get('description')}"
-                    contexts.append(ctx_str)
-                flattened['business_context'] = '|'.join(contexts)
-            
-            # Handle query patterns
-            if 'query_patterns' in analysis and analysis['query_patterns']:
-                flattened['query_patterns'] = str(analysis['query_patterns'])
-            
             # Add analysis summary
-            flattened['analysis_summary'] = f"Analyzed {len(analysis.get('tables', []))} tables with {len(analysis.get('relationships', []))} relationships"
+            if analysis.get('file_type', '').startswith('dbt_'):
+                flattened['analysis_summary'] = f"dbt {analysis.get('model_type', 'model')} {analysis.get('model_name', '')} with {len(analysis.get('jinja_references', []))} references and {len(analysis.get('jinja_sources', []))} sources"
+            else:
+                flattened['analysis_summary'] = f"Analyzed {len(analysis.get('tables', []))} tables with {len(analysis.get('relationships', []))} relationships"
             
             # Ensure all values are strings
             for key, value in flattened.items():
@@ -263,34 +324,6 @@ class ChromaDBManager:
                 'error': str(e),
                 'analysis_status': 'failed'
             }
-
-    def _flatten_analysis(self, analysis: Dict[str, Any], prefix: str = '') -> Dict[str, str]:
-        """Flatten nested analysis dictionary into string values."""
-        flattened = {}
-        
-        if isinstance(analysis, dict):
-            if 'error' in analysis:
-                # Handle error case
-                flattened['analysis_error'] = str(analysis['error'])
-                return flattened
-            
-            for key, value in analysis.items():
-                new_key = f"{prefix}_{key}" if prefix else key
-                
-                if isinstance(value, (dict, list)):
-                    # Convert complex structures to string representation
-                    flattened[new_key] = str(value)
-                elif isinstance(value, (str, int, float, bool)):
-                    # Keep primitive types as is
-                    flattened[new_key] = value
-                else:
-                    # Convert any other types to string
-                    flattened[new_key] = str(value)
-        else:
-            # If analysis is not a dict, store as string
-            flattened['analysis'] = str(analysis)
-        
-        return flattened
 
     def add_documents(self, collection_name: str, documents: List[Document], metadata: Optional[Dict] = None):
         """Add documents with embeddings to collection."""
@@ -593,9 +626,6 @@ class ChromaDBManager:
             processed_files = []
             language_counts = {}
             
-            # Initialize code analyzer
-            analyzer = CodeAnalyzer()
-            
             # Walk through the repository directory
             for root, dirs, files in os.walk(temp_dir):
                 # Skip .git directory
@@ -628,6 +658,9 @@ class ChromaDBManager:
                     _, ext = os.path.splitext(file)
                     ext = ext.lstrip('.').lower()
                     
+                    # Check for dbt files first
+                    is_dbt_file = self.code_analyzer._is_dbt_file(file_path)
+                    
                     # Determine language
                     language = self._get_language_from_extension(ext)
                     
@@ -642,10 +675,15 @@ class ChromaDBManager:
                         # Analyze file with CodeAnalyzer based on language
                         analysis = None
                         try:
-                            if language == 'python':
-                                analysis = analyzer.analyze_python(file_path)
+                            if is_dbt_file:
+                                if ext in ['yml', 'yaml']:
+                                    analysis = self.code_analyzer.analyze_dbt_schema(file_path)
+                                else:
+                                    analysis = self.code_analyzer.analyze_dbt(file_path)
+                            elif language == 'python':
+                                analysis = self.code_analyzer.analyze_python(file_path)
                             elif language == 'sql':
-                                analysis = analyzer.analyze_sql(file_path)
+                                analysis = self.code_analyzer.analyze_sql(file_path)
                             elif language in ['javascript', 'typescript']:
                                 # Use a generic analysis for JS/TS if specific methods aren't available
                                 analysis = {"file_type": language, "path": rel_path}
@@ -661,6 +699,7 @@ class ChromaDBManager:
                         processed_files.append({
                             "path": rel_path,
                             "language": language,
+                            "is_dbt": is_dbt_file,
                             "content": content,
                             "analysis": analysis,
                             "size": os.path.getsize(file_path)
@@ -668,6 +707,9 @@ class ChromaDBManager:
                         
                     except Exception as e:
                         logger.warning(f"Error processing file {rel_path}: {str(e)}")
+            
+            # Post-processing for dbt project to link models and dependencies
+            self._link_dbt_dependencies(processed_files)
             
             # Update repository metadata
             repo_metadata["file_count"] = len(processed_files)
@@ -701,7 +743,9 @@ class ChromaDBManager:
                         "language": file['language'],
                         "chunk_index": i,
                         "total_chunks": len(chunks),
-                        "size": file.get('size', 0)
+                        "repo_owner": owner,
+                        "repo_name": repo_name,
+                        "upload_time": datetime.now().isoformat()
                     }
                     
                     # Add simplified analysis data if available
@@ -717,7 +761,6 @@ class ChromaDBManager:
                         
                         metadata["analysis_summary"] = simple_analysis
                     
-                    # Add the document
                     documents.append({
                         "id": chunk_id,
                         "text": chunk,
@@ -1106,3 +1149,99 @@ class ChromaDBManager:
         except Exception as e:
             logger.error(f"Error adding Git ZIP documents: {str(e)}")
             raise
+
+    def _link_dbt_dependencies(self, processed_files: List[Dict[str, Any]]) -> None:
+        """
+        Link dbt models and their dependencies after all files have been processed.
+        This enhances the analysis with inter-model relationships.
+        """
+        try:
+            # Create a mapping of model names to file paths
+            model_map = {}
+            schema_map = {}
+            
+            # First pass to identify all models and schemas
+            for file in processed_files:
+                analysis = file.get('analysis', {})
+                
+                if not file.get('is_dbt', False):
+                    continue
+                
+                path = file.get('path', '')
+                
+                if path.endswith('.sql'):
+                    model_name = analysis.get('model_name', '')
+                    if model_name:
+                        model_map[model_name] = {
+                            'path': path,
+                            'file': file
+                        }
+                
+                if path.endswith(('.yml', '.yaml')):
+                    # Map models defined in this schema file
+                    for model in analysis.get('models', []):
+                        model_name = model.get('name', '')
+                        if model_name:
+                            schema_map[model_name] = {
+                                'schema_path': path,
+                                'schema_file': file,
+                                'model_schema': model
+                            }
+            
+            # Second pass to enhance each model with its dependencies
+            for file in processed_files:
+                if not file.get('is_dbt', False) or not file.get('path', '').endswith('.sql'):
+                    continue
+                
+                analysis = file.get('analysis', {})
+                model_name = analysis.get('model_name', '')
+                
+                if not model_name:
+                    continue
+                
+                # Add schema information if available
+                if model_name in schema_map:
+                    schema_info = schema_map[model_name]['model_schema']
+                    
+                    # Only update if not already present in the analysis
+                    if 'description' not in analysis and 'description' in schema_info:
+                        analysis['description'] = schema_info.get('description', '')
+                    
+                    if 'columns' in schema_info:
+                        analysis['schema_columns'] = schema_info.get('columns', [])
+                    
+                    if 'tests' in schema_info:
+                        analysis['schema_tests'] = schema_info.get('tests', [])
+                
+                # Add references to models that depend on this model
+                dependents = []
+                jinja_refs = analysis.get('jinja_references', [])
+                for ref_model in jinja_refs:
+                    if ref_model in model_map:
+                        ref_path = model_map[ref_model]['path']
+                        dependents.append({
+                            'model': ref_model,
+                            'path': ref_path
+                        })
+                
+                if dependents:
+                    if 'dependencies' not in analysis:
+                        analysis['dependencies'] = {'depends_on': {}, 'supports': []}
+                    
+                    analysis['dependencies']['depends_on']['models'] = jinja_refs
+                    
+                    # Update the supports field on referenced models
+                    for ref_model in jinja_refs:
+                        if ref_model in model_map:
+                            ref_file = model_map[ref_model]['file']
+                            ref_analysis = ref_file.get('analysis', {})
+                            
+                            if 'dependencies' not in ref_analysis:
+                                ref_analysis['dependencies'] = {'depends_on': {}, 'supports': []}
+                            
+                            ref_analysis['dependencies']['supports'].append(model_name)
+            
+            logger.info(f"Linked dependencies for {len(model_map)} dbt models")
+            
+        except Exception as e:
+            logger.error(f"Error linking dbt dependencies: {str(e)}")

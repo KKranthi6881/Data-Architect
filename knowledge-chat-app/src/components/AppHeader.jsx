@@ -1,110 +1,78 @@
 import React from 'react';
 import {
   Box,
+  Container,
   Flex,
-  Heading,
-  Button,
   HStack,
+  Heading,
+  Text,
+  Button,
   useColorModeValue,
-  Spacer,
   Icon
 } from '@chakra-ui/react';
-import { Link as RouterLink, useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { 
-  IoCheckmarkCircle, 
   IoChatbubbles, 
-  IoTime, 
-  IoHome, 
-  IoCloudUpload 
+  IoCloudUpload, 
+  IoTime 
 } from 'react-icons/io5';
 
 const AppHeader = () => {
   const location = useLocation();
-  const bgColor = useColorModeValue('white', 'gray.800');
-  const borderColor = useColorModeValue('gray.200', 'gray.700');
-  
-  // Check current route to highlight active link
-  const isActive = (path) => {
-    return location.pathname.startsWith(path);
-  };
-  
+  const bgColor = useColorModeValue('white', 'gray.900');
+  const borderColor = useColorModeValue('gray.100', 'gray.700');
+
+  const isActive = (path) => location.pathname.startsWith(path);
+
   return (
-    <Box 
-      as="header" 
-      bg={bgColor} 
-      borderBottomWidth="1px" 
-      borderColor={borderColor}
-      position="sticky"
-      top="0"
-      zIndex="10"
-      boxShadow="sm"
-      width="100%"
-    >
-      <Flex 
-        maxW="1400px" 
-        mx="auto" 
-        px={4} 
-        py={3} 
-        align="center"
-      >
-        <Heading 
-          size="md" 
-          color="blue.600"
-          display="flex"
-          alignItems="center"
-        >
-          <Icon as={IoCheckmarkCircle} mr={2} />
-          Knowledge Chat
-        </Heading>
-        
-        <Spacer />
-        
-        <HStack spacing={2}>
-          <Button
-            as={RouterLink}
-            to="/"
-            colorScheme={isActive('/') && !isActive('/chat') && !isActive('/upload') && !isActive('/history') ? 'blue' : 'gray'}
-            variant={isActive('/') && !isActive('/chat') && !isActive('/upload') && !isActive('/history') ? 'solid' : 'ghost'}
-            leftIcon={<IoHome />}
-            size="md"
-          >
-            Home
-          </Button>
-          
-          <Button
-            as={RouterLink}
-            to="/chat"
-            colorScheme={isActive('/chat') ? 'blue' : 'gray'}
-            variant={isActive('/chat') ? 'solid' : 'ghost'}
-            leftIcon={<IoChatbubbles />}
-            size="md"
-          >
-            Chat
-          </Button>
-          
-          <Button
-            as={RouterLink}
-            to="/upload"
-            colorScheme={isActive('/upload') ? 'blue' : 'gray'}
-            variant={isActive('/upload') ? 'solid' : 'ghost'}
-            leftIcon={<IoCloudUpload />}
-            size="md"
-          >
-            Upload
-          </Button>
-          
-          <Button
-            as={RouterLink}
-            to="/history"
-            colorScheme={isActive('/history') ? 'blue' : 'gray'}
-            variant={isActive('/history') ? 'solid' : 'ghost'}
-            leftIcon={<IoTime />}
-            size="md"
-          >
-            History
-          </Button>
-        </HStack>
-      </Flex>
+    <Box bg={bgColor} borderBottom="1px" borderColor={borderColor}>
+      <Container maxW="container.xl">
+        <Flex justify="space-between" align="center" h="16">
+          <Link to="/">
+            <HStack spacing={2}>
+              <Heading size="md">
+                Data
+                <Text as="span" color="orange.500">
+                  NEURO
+                </Text>
+                <Text as="span" color="gray.500">
+                  .AI
+                </Text>
+              </Heading>
+            </HStack>
+          </Link>
+
+          <HStack spacing={4}>
+            <Button
+              as={Link}
+              to="/chat"
+              leftIcon={<IoChatbubbles />}
+              variant={isActive('/chat') ? 'solid' : 'ghost'}
+              colorScheme="orange"
+            >
+              Chat
+            </Button>
+            <Button
+              as={Link}
+              to="/upload"
+              leftIcon={<IoCloudUpload />}
+              variant={isActive('/upload') ? 'solid' : 'ghost'}
+              colorScheme="orange"
+            >
+              Upload
+            </Button>
+            <Button
+              as={Link}
+              to="/history"
+              leftIcon={<IoTime />}
+              variant={isActive('/history') ? 'solid' : 'ghost'}
+              colorScheme="orange"
+            >
+              History
+            </Button>
+          </HStack>
+        </Flex>
+      </Container>
     </Box>
   );
 };

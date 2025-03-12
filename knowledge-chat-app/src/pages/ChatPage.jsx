@@ -67,9 +67,11 @@ import {
   IoExpand,
   IoContract,
   IoCheckmark,
-  IoClose
+  IoClose,
+  IoRefresh
 } from 'react-icons/io5'
 import { useParams, useNavigate } from 'react-router-dom'
+import { CodeDisplay } from '../components/CodeDisplay'
 
 // Sample chat history data
 const chatHistory = [
@@ -477,6 +479,111 @@ const InlineFeedback = ({ message, onFeedbackSubmit }) => {
   );
 };
 
+// Add this component for section display
+const ArchitectSection = ({ title, content }) => {
+  // Extract code blocks if present
+  const codeBlocks = content.match(/```(\w+)?\s*([\s\S]*?)```/g) || [];
+  const textContent = content.replace(/```(\w+)?\s*([\s\S]*?)```/g, '').trim();
+
+  return (
+    <Box mb={6} borderLeft="4px" borderColor="purple.200" pl={4}>
+      <Heading size="md" mb={3} color="purple.700">
+        {title}
+      </Heading>
+      
+      {textContent && (
+        <VStack align="stretch" spacing={2} mb={codeBlocks.length > 0 ? 4 : 0}>
+          {textContent.split('\n').map((line, i) => {
+            if (line.trim().startsWith('-')) {
+              return (
+                <HStack key={i} align="start" spacing={2}>
+                  <Box color="purple.500">•</Box>
+                  <Text>{line.replace('-', '').trim()}</Text>
+                </HStack>
+              );
+            }
+            if (line.trim().startsWith('1.') || line.trim().startsWith('2.') || line.trim().startsWith('3.')) {
+              return (
+                <Text key={i} pl={4} fontWeight="medium">
+                  {line.trim()}
+                </Text>
+              );
+            }
+            return <Text key={i}>{line}</Text>;
+          })}
+        </VStack>
+      )}
+
+      {codeBlocks.map((block, index) => {
+        const [, lang, code] = block.match(/```(\w+)?\s*([\s\S]*?)```/) || [];
+        return (
+          <CodeDisplay
+            key={index}
+            code={code.trim()}
+            language={lang?.toLowerCase() || 'sql'}
+          />
+        );
+      })}
+    </Box>
+  );
+};
+
+// Update the architect response rendering in your message component
+const renderArchitectResponse = (architectResponse) => {
+  if (!architectResponse?.sections) return null;
+
+  return (
+    <Box 
+      bg="purple.50" 
+      p={6} 
+      borderRadius="lg" 
+      border="1px" 
+      borderColor="purple.200"
+      mt={4}
+    >
+      <Heading size="lg" mb={6} color="purple.800">
+        Data Architect Analysis
+      </Heading>
+
+      {Object.entries(architectResponse.sections).map(([key, content]) => (
+        <ArchitectSection 
+          key={key} 
+          title={key.split('_').map(word => 
+            word.charAt(0).toUpperCase() + word.slice(1)
+          ).join(' ')} 
+          content={content} 
+        />
+      ))}
+
+      {architectResponse.implementation && (
+        <Box mt={6}>
+          <Heading size="md" mb={4} color="purple.700">
+            Implementation Details
+          </Heading>
+          
+          {architectResponse.implementation.sql?.map((sql, i) => (
+            <CodeDisplay
+              key={`sql-${i}`}
+              code={sql}
+              language="sql"
+              fileName={`model_${i + 1}.sql`}
+            />
+          ))}
+          
+          {architectResponse.implementation.yaml?.map((yaml, i) => (
+            <CodeDisplay
+              key={`yaml-${i}`}
+              code={yaml}
+              language="yaml"
+              fileName={`schema_${i + 1}.yml`}
+            />
+          ))}
+        </Box>
+      )}
+    </Box>
+  );
+};
+
 const ChatPage = () => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -495,6 +602,7 @@ const ChatPage = () => {
   const [currentThreadId, setCurrentThreadId] = useState(null);
   const [feedbackRequired, setFeedbackRequired] = useState(false);
   const [feedbackData, setFeedbackData] = useState(null);
+  const [feedbackMode, setFeedbackMode] = useState(null); // Track message ID that needs feedback
 
   // Initialize or load conversation from ID
   useEffect(() => {
@@ -538,45 +646,72 @@ const ChatPage = () => {
   // Fetch a specific conversation
   const fetchConversation = async (id) => {
     try {
-      setLoading(true);
-      setActiveConversationId(id);
+      setProcessingStep("Loading conversation...");
+      console.log("Fetching conversation with ID:", id);
       
-      const response = await fetch(`http://localhost:8000/api/chat/${id}`);
+      const response = await fetch(`http://localhost:8000/api/conversation/${id}`);
       if (!response.ok) {
-        throw new Error('Failed to fetch conversation');
+        throw new Error(`Error fetching conversation: ${response.statusText}`);
       }
       
       const data = await response.json();
-      console.log("Fetched conversation:", data);
+      console.log("Conversation data:", data);
       
-      // Format messages for display
+      if (!data.conversation) {
+        throw new Error("No conversation data received");
+      }
+      
+      // Extract conversation data
+      const conversation = data.conversation;
+      
+      // Create properly formatted messages
       const formattedMessages = [];
       
-      if (data.messages && Array.isArray(data.messages)) {
-        data.messages.forEach(msg => {
-          formattedMessages.push({
-            id: msg.id || formattedMessages.length,
-            role: msg.role || 'assistant',
-            content: msg.content || '',
-            details: msg.details || {},
-          });
+      // Add user message
+      if (conversation.query) {
+        formattedMessages.push({
+          id: `user-${id}`,
+          role: 'user',
+          content: conversation.query,
+          timestamp: conversation.timestamp
         });
       }
       
+      // Add assistant message
+      if (conversation.response) {
+        formattedMessages.push({
+          id: `assistant-${id}`,
+          role: 'assistant',
+          content: conversation.response,
+          details: {
+            ...conversation.technical_details,
+            feedback_id: conversation.technical_details?.feedback_id || "",
+            conversation_id: id,
+            feedback_status: conversation.feedback?.status || "pending",
+            requires_confirmation: 
+              conversation.feedback?.status !== 'approved' && 
+              conversation.feedback?.status !== 'rejected'
+          },
+          timestamp: conversation.timestamp
+        });
+      }
+      
+      // Update state
       setMessages(formattedMessages);
+      setActiveConversationId(id);
       setCurrentConversationId(id);
-      setCurrentThreadId(data.thread_id || null);
       
     } catch (error) {
       console.error('Error fetching conversation:', error);
       toast({
-        title: 'Error',
-        description: 'Failed to load conversation',
+        title: 'Error Loading Conversation',
+        description: error.message,
         status: 'error',
-        duration: 3000,
+        duration: 5000,
+        isClosable: true,
       });
     } finally {
-      setLoading(false);
+      setProcessingStep(null);
     }
   };
 
@@ -653,62 +788,88 @@ const ChatPage = () => {
     }
   };
 
-  // Update the handleFeedbackSubmit function to include architect response generation
+  // Update handleFeedbackSubmit function
   const handleFeedbackSubmit = async (feedback) => {
-    console.log("Submitting feedback:", feedback);
-    
     try {
+      setProcessingStep("Processing your feedback...");
+      
+      // Send feedback to the server
       const response = await fetch('http://localhost:8000/feedback/', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(feedback)
+        body: JSON.stringify({
+          feedback_id: feedback.feedback_id,
+          conversation_id: feedback.conversation_id,
+          approved: feedback.approved,
+          comments: feedback.comments,
+          process_architect: true  // Add this flag to trigger architect processing
+        })
       });
       
       if (!response.ok) {
-        throw new Error('Failed to submit feedback');
+        throw new Error(`Error submitting feedback: ${response.statusText}`);
       }
       
-      const data = await response.json();
-      console.log("Feedback response:", data);
+      const result = await response.json();
+      console.log("Feedback submission result:", result);
+
+      // Wait briefly to allow backend processing
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Get data architect analysis
+      setProcessingStep("Getting detailed analysis...");
+      const architectResponse = await fetch(`http://localhost:8000/chat/architect/${feedback.conversation_id}`);
       
-      toast({
-        title: 'Feedback Submitted',
-        description: 'Thank you for your feedback',
-        status: 'success',
-        duration: 3000,
-      });
-      
-      // Update messages to reflect feedback status
-      setMessages(prev => prev.map(message => {
-        if (message.details?.feedback_id === feedback.feedback_id) {
-          return {
-            ...message,
-            details: {
-              ...message.details,
-              feedback_status: feedback.approved ? 'approved' : 'needs_improvement'
-            }
-          };
-        }
-        return message;
-      }));
-      
-      // If feedback was approved, generate architect response
-      if (feedback.approved) {
-        setTimeout(() => {
-          handleArchitectResponse(feedback.conversation_id);
-        }, 500);
+      if (!architectResponse.ok) {
+        throw new Error('Failed to get architect analysis');
       }
+      
+      const architectData = await architectResponse.json();
+      console.log("Architect response:", architectData);
+      
+      if (architectData.status === 'success') {
+        // Add architect's response to messages
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          type: 'architect',
+          content: architectData.response,
+          id: `architect-${Date.now()}`,
+          details: {
+            conversation_id: feedback.conversation_id,
+            schema_results: architectData.schema_results,
+            code_results: architectData.code_results,
+            sections: architectData.sections,
+            is_architect_response: true,
+            feedback_status: feedback.approved ? 'approved' : 'updated'
+          }
+        }]);
+
+        toast({
+          title: 'Analysis Complete',
+          description: feedback.approved ? 
+            'Proceeding with detailed analysis' : 
+            'I\'ve updated my response with detailed analysis',
+          status: 'success',
+          duration: 3000
+        });
+      }
+      
+      // Clear feedback mode
+      setFeedbackMode(null);
       
     } catch (error) {
-      console.error('Error submitting feedback:', error);
+      console.error('Error processing feedback:', error);
+      setProcessingStep(null);
       toast({
         title: 'Error',
-        description: 'Failed to submit feedback',
+        description: error.message,
         status: 'error',
-        duration: 3000,
+        duration: 5000,
       });
+    } finally {
+      setProcessingStep(null);
     }
   };
 
@@ -812,28 +973,45 @@ const ChatPage = () => {
     }
   };
 
-  // Render a message
+  // Update the renderMessage function to better handle architect responses
   const renderMessage = (message) => {
-    const isUser = message.role === 'user';
-    const isArchitectResponse = message.details?.is_architect_response;
+    if (!message) return null;
     
+    const isUser = message.role === 'user';
+    const isArchitectResponse = message.role === 'assistant' && message.type === 'architect';
+    const isClarification = message.details?.is_clarification;
+    const feedbackStatus = message.details?.feedback_status;
+    
+    console.log("Rendering message:", {
+      id: message.id,
+      role: message.role,
+      type: message.type,
+      isArchitectResponse,
+      details: message.details
+    });
+
     return (
-      <Box 
+      <Box
         key={message.id}
-        bg={isUser ? 'blue.50' : isArchitectResponse ? 'purple.50' : 'white'}
-        p={4}
-        borderRadius="lg"
-        borderWidth="1px"
-        borderColor={
-          isUser ? 'blue.200' : 
-          isArchitectResponse ? 'purple.200' : 
-          'gray.200'
+        bg={
+          isUser ? 'blue.50' : 
+          isArchitectResponse ? 'purple.50' : 
+          isClarification ? 'teal.50' : 
+          'white'
         }
-        maxW={isArchitectResponse ? "95%" : "90%"}
+        p={4}
+        borderRadius="md"
+        maxWidth={isUser ? '70%' : '90%'}
         alignSelf={isUser ? 'flex-end' : 'flex-start'}
         boxShadow="sm"
         mb={4}
-        width={isArchitectResponse ? "95%" : "auto"}
+        border="1px solid"
+        borderColor={
+          isUser ? 'blue.100' : 
+          isArchitectResponse ? 'purple.100' : 
+          isClarification ? 'teal.100' : 
+          'gray.200'
+        }
       >
         <VStack align="stretch" spacing={3}>
           <HStack>
@@ -858,173 +1036,93 @@ const ChatPage = () => {
               {isUser ? 'You' : isArchitectResponse ? 'Data Architect' : 'Assistant'}
             </Text>
             
-            {message.details?.feedback_status && (
+            {feedbackStatus && (
               <Badge 
                 colorScheme={
-                  message.details.feedback_status === 'approved' ? 'green' : 
-                  message.details.feedback_status === 'needs_improvement' ? 'orange' : 
-                  'blue'
+                  feedbackStatus === 'approved' ? 'green' : 
+                  feedbackStatus === 'pending' ? 'blue' : 
+                  'purple'
                 }
               >
-                {message.details.feedback_status === 'approved' ? 'Approved' : 
-                message.details.feedback_status === 'needs_improvement' ? 'Needs Review' : 
-                'Pending'}
+                {feedbackStatus === 'approved' ? 'Approved' : 
+                 feedbackStatus === 'pending' ? 'Pending' : 
+                 'Updated'}
               </Badge>
             )}
           </HStack>
           
-          <Text whiteSpace="pre-wrap">{message.content}</Text>
+          <FormattedMessage content={message.content} />
           
-          {/* If message has details with feedback required, show feedback UI */}
-          {message.details?.requires_confirmation && (
+          {/* Show code results for architect responses */}
+          {isArchitectResponse && message.details?.code_results && (
+            <Box mt={3}>
+              <Text fontWeight="medium" mb={2}>Relevant Code Examples:</Text>
+              <VStack align="stretch" spacing={2}>
+                {message.details.code_results.map((code, idx) => (
+                  <Box 
+                    key={idx}
+                    p={3}
+                    bg="gray.50"
+                    borderRadius="md"
+                    borderLeft="3px solid"
+                    borderColor="purple.300"
+                  >
+                    <Text fontWeight="medium">{code.file_path}</Text>
+                    <Code p={2} mt={2} fontSize="sm" overflowX="auto" whiteSpace="pre">
+                      {code.code_snippet || code.development_steps?.[0]?.code_block || 'No code snippet available'}
+                    </Code>
+                  </Box>
+                ))}
+              </VStack>
+            </Box>
+          )}
+          
+          {/* Show feedback form for messages requiring confirmation */}
+          {message.details?.requires_confirmation && !isArchitectResponse && (
             <Box mt={3} p={3} bg="gray.50" borderRadius="md">
               <Text fontWeight="medium" mb={2}>
-                Is this response helpful?
+                {isClarification ? 
+                  "Is this clarified response helpful?" : 
+                  "Is this response helpful?"}
               </Text>
               <HStack>
                 <Button 
                   colorScheme="green" 
                   size="sm" 
                   onClick={() => handleFeedbackSubmit({
-                    feedback_id: message.details.feedback_id,
-                    conversation_id: message.details.conversation_id,
+                    feedback_id: message.details?.feedback_id,
+                    conversation_id: message.details?.conversation_id,
                     approved: true,
                     comments: "User approved"
                   })}
                 >
-                  Yes, this is helpful
+                  Yes, This Helps
                 </Button>
                 <Button 
-                  colorScheme="orange" 
+                  colorScheme="blue" 
                   size="sm"
-                  onClick={() => handleFeedbackSubmit({
-                    feedback_id: message.details.feedback_id,
-                    conversation_id: message.details.conversation_id,
-                    approved: false,
-                    comments: "User requested improvements"
-                  })}
+                  onClick={() => setFeedbackMode(message.id)}
                 >
-                  No, needs improvement
+                  Need More Details
                 </Button>
               </HStack>
             </Box>
           )}
           
-          {/* If the message has parsed question details, show them in an accordion */}
-          {message.details?.parsed_question && (
-            <Accordion allowToggle>
-              <AccordionItem border="none">
-                <AccordionButton px={0} _hover={{ bg: 'transparent' }}>
-                  <Text fontSize="sm" color="blue.500">Show analysis details</Text>
-                  <AccordionIcon />
-                </AccordionButton>
-                <AccordionPanel pb={4} px={0}>
-                  <Code p={2} fontSize="xs" variant="subtle" borderRadius="md" whiteSpace="pre-wrap">
-                    {JSON.stringify(message.details.parsed_question, null, 2)}
-                  </Code>
-                </AccordionPanel>
-              </AccordionItem>
-            </Accordion>
-          )}
-          
-          {/* If message is an architect response with sections, show them */}
-          {isArchitectResponse && message.details?.sections && (
-            <Accordion allowToggle width="100%" defaultIndex={[0]}>
-              <AccordionItem border="none" borderTop="1px solid" borderColor="purple.200">
-                <AccordionButton py={3} _hover={{ bg: "purple.50" }}>
-                  <Box flex="1" textAlign="left">
-                    <Text fontSize="15px" color="purple.600" fontWeight="500">
-                      View Technical Implementation Details
-                    </Text>
-                  </Box>
-                  <AccordionIcon />
-                </AccordionButton>
-                <AccordionPanel pb={4} pt={2}>
-                  <VStack align="stretch" spacing={4}>
-                    {Object.entries(message.details.sections).map(([sectionName, sectionContent], idx) => (
-                      <Box key={idx}>
-                        <Text fontWeight="bold" mb={2} color="purple.700">{sectionName}:</Text>
-                        <Box 
-                          pl={4} 
-                          borderLeft="2px solid" 
-                          borderColor="purple.100"
-                          fontSize="15px"
-                          lineHeight="1.6"
-                          whiteSpace="pre-wrap"
-                        >
-                          {sectionContent}
-                        </Box>
-                      </Box>
-                    ))}
-                  </VStack>
-                </AccordionPanel>
-              </AccordionItem>
-            </Accordion>
-          )}
-          
-          {/* For architect responses, show schema and code results */}
-          {isArchitectResponse && (message.details?.schema_results || message.details?.code_results) && (
-            <Accordion allowToggle width="100%">
-              <AccordionItem border="none" borderTop="1px solid" borderColor="purple.200">
-                <AccordionButton py={3} _hover={{ bg: "purple.50" }}>
-                  <Box flex="1" textAlign="left">
-                    <Text fontSize="15px" color="purple.600" fontWeight="500">
-                      View Referenced Data & Code
-                    </Text>
-                  </Box>
-                  <AccordionIcon />
-                </AccordionButton>
-                <AccordionPanel pb={4} pt={2}>
-                  {message.details.schema_results && message.details.schema_results.length > 0 && (
-                    <Box mb={4}>
-                      <Text fontWeight="bold" mb={2} color="purple.700">Database Schemas:</Text>
-                      <VStack align="stretch" spacing={2}>
-                        {message.details.schema_results.map((schema, idx) => (
-                          <Box 
-                            key={idx} 
-                            p={3} 
-                            bg="gray.50" 
-                            borderRadius="md" 
-                            borderLeft="3px solid" 
-                            borderColor="purple.300"
-                          >
-                            <Text fontWeight="medium">{schema.table_name || schema.name}</Text>
-                            {schema.description && (
-                              <Text fontSize="sm" color="gray.600" mt={1}>{schema.description}</Text>
-                            )}
-                          </Box>
-                        ))}
-                      </VStack>
-                    </Box>
-                  )}
-                  
-                  {message.details.code_results && message.details.code_results.length > 0 && (
-                    <Box>
-                      <Text fontWeight="bold" mb={2} color="purple.700">Code References:</Text>
-                      <VStack align="stretch" spacing={2}>
-                        {message.details.code_results.map((code, idx) => (
-                          <Box 
-                            key={idx} 
-                            p={3} 
-                            bg="gray.50" 
-                            borderRadius="md" 
-                            borderLeft="3px solid" 
-                            borderColor="blue.300"
-                          >
-                            <Text fontWeight="medium">{code.file_path || code.name}</Text>
-                            {code.snippet && (
-                              <Code p={2} mt={2} fontSize="xs" overflowX="auto" whiteSpace="pre">
-                                {code.snippet}
-                              </Code>
-                            )}
-                          </Box>
-                        ))}
-                      </VStack>
-                    </Box>
-                  )}
-                </AccordionPanel>
-              </AccordionItem>
-            </Accordion>
+          {/* Feedback input form */}
+          {feedbackMode === message.id && (
+            <FeedbackForm 
+              onSubmit={(comments) => {
+                handleFeedbackSubmit({
+                  feedback_id: message.details.feedback_id,
+                  conversation_id: message.details.conversation_id,
+                  approved: false,
+                  comments: comments
+                });
+                setFeedbackMode(null);
+              }}
+              onCancel={() => setFeedbackMode(null)}
+            />
           )}
         </VStack>
       </Box>
@@ -1240,6 +1338,63 @@ const ChatPage = () => {
           </VStack>
         </Box>
       </Flex>
+
+      {/* Add this button near the chat messages */}
+      <Box position="absolute" top="4" right="4" zIndex="1">
+        <IconButton
+          icon={<IoRefresh />}
+          aria-label="Refresh conversation"
+          size="sm"
+          colorScheme="blue"
+          variant="ghost"
+          onClick={() => {
+            if (currentConversationId) {
+              setProcessingStep("Refreshing conversation...");
+              fetchConversation(currentConversationId)
+                .finally(() => setProcessingStep(null));
+            }
+          }}
+        />
+      </Box>
+    </Box>
+  );
+};
+
+// Add this new FeedbackForm component after the ChatPage component
+const FeedbackForm = ({ onSubmit, onCancel }) => {
+  const [comments, setComments] = useState("");
+  
+  return (
+    <Box mt={3} p={4} bg="blue.50" borderRadius="md" borderLeftWidth="4px" borderLeftColor="blue.500">
+      <Text fontWeight="medium" mb={2}>
+        Please provide more details to help me understand:
+      </Text>
+      <Textarea
+        value={comments}
+        onChange={(e) => setComments(e.target.value)}
+        placeholder="What aspects need improvement? Any specific details I should focus on?"
+        size="sm"
+        mb={3}
+        resize="vertical"
+        bg="white"
+      />
+      <HStack spacing={3}>
+        <Button
+          colorScheme="blue"
+          size="sm"
+          isDisabled={!comments.trim()}
+          onClick={() => onSubmit(comments)}
+        >
+          Submit Feedback
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onCancel}
+        >
+          Cancel
+        </Button>
+      </HStack>
     </Box>
   );
 };

@@ -59,50 +59,356 @@ class CodeAnalyzer:
         }
 
     def analyze_file(self, file_path: str, language: str = None) -> Dict[str, Any]:
+        """Analyze a file based on its detected language"""
+        try:
+            # Determine language if not provided
+            if not language:
+                _, ext = os.path.splitext(file_path)
+                language = self._determine_language(file_path, ext.lower().lstrip('.'))
+            
+            # Check if this is a dbt file
+            if self._is_dbt_file(file_path):
+                # Handle dbt-specific files
+                if file_path.endswith('.yml') or file_path.endswith('.yaml'):
+                    return self.analyze_dbt_schema(file_path)
+                elif file_path.endswith('.sql'):
+                    return self.analyze_dbt(file_path)
+            
+            # Proceed with regular language-specific analysis
+            if language == 'python':
+                return self.analyze_python(file_path)
+            elif language == 'sql':
+                return self.analyze_sql(file_path)
+            # ... other languages
+            
+            return {"file_path": file_path, "language": language or "unknown"}
+            
+        except Exception as e:
+            logger.error(f"Error analyzing file {file_path}: {str(e)}")
+            return {"file_path": file_path, "error": str(e), "language": language or "unknown"}
+    
+    def _is_dbt_file(self, file_path: str) -> bool:
+        """Determine if a file is part of a dbt project"""
+        # Check if path contains dbt project directories
+        dbt_dirs = ['models', 'macros', 'snapshots', 'seeds', 'analyses', 'tests']
+        file_parts = file_path.split(os.sep)
+        
+        for dbt_dir in dbt_dirs:
+            if dbt_dir in file_parts:
+                return True
+        
+        # Check for dbt_project.yml in parent directories
+        dir_path = os.path.dirname(file_path)
+        while dir_path and dir_path != os.path.dirname(dir_path):
+            if os.path.exists(os.path.join(dir_path, 'dbt_project.yml')):
+                return True
+            dir_path = os.path.dirname(dir_path)
+        
+        # Check file content for dbt patterns if it's a SQL file
+        if file_path.endswith('.sql'):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read(1000)  # Read just the first 1000 chars
+                    if '{{ ref(' in content or '{{ source(' in content:
+                        return True
+            except:
+                pass
+                
+        return False
+    
+    def analyze_dbt_schema(self, file_path: str) -> Dict[str, Any]:
         """
-        Analyze a file based on its extension or specified language.
+        Analyze a dbt schema.yml file to extract metadata.
         
         Args:
-            file_path: Path to the file
-            language: Optional language override
+            file_path: Path to the dbt schema file
+            
+        Returns:
+            Dictionary with schema analysis results
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            try:
+                yaml_data = yaml.safe_load(content)
+            except Exception as e:
+                logger.warning(f"Error parsing YAML file {file_path}: {str(e)}")
+                return {
+                    "file_path": file_path,
+                    "file_type": "dbt_schema",
+                    "error": f"Invalid YAML: {str(e)}",
+                    "size": os.path.getsize(file_path)
+                }
+            
+            # Initialize schema analysis
+            schema_analysis = {
+                "file_path": file_path,
+                "file_type": "dbt_schema",
+                "models": [],
+                "sources": [],
+                "size": os.path.getsize(file_path)
+            }
+            
+            # Extract models
+            if yaml_data and 'models' in yaml_data:
+                for model in yaml_data['models']:
+                    model_info = {
+                        "name": model.get('name', ''),
+                        "description": model.get('description', ''),
+                        "columns": [],
+                        "tests": model.get('tests', []),
+                        "config": model.get('config', {})
+                    }
+                    
+                    # Extract columns
+                    if 'columns' in model:
+                        for col_name, col_data in model['columns'].items():
+                            column_info = {
+                                "name": col_name,
+                                "description": col_data.get('description', ''),
+                                "tests": col_data.get('tests', []),
+                                "meta": col_data.get('meta', {})
+                            }
+                            model_info["columns"].append(column_info)
+                    
+                    schema_analysis["models"].append(model_info)
+            
+            # Extract sources
+            if yaml_data and 'sources' in yaml_data:
+                for source in yaml_data['sources']:
+                    source_info = {
+                        "name": source.get('name', ''),
+                        "description": source.get('description', ''),
+                        "database": source.get('database', ''),
+                        "schema": source.get('schema', ''),
+                        "tables": []
+                    }
+                    
+                    # Extract tables
+                    if 'tables' in source:
+                        for table in source['tables']:
+                            table_info = {
+                                "name": table.get('name', ''),
+                                "description": table.get('description', ''),
+                                "columns": [],
+                                "tests": table.get('tests', []),
+                                "meta": table.get('meta', {})
+                            }
+                            
+                            # Extract columns
+                            if 'columns' in table:
+                                for col_name, col_data in table['columns'].items():
+                                    column_info = {
+                                        "name": col_name,
+                                        "description": col_data.get('description', ''),
+                                        "tests": col_data.get('tests', []),
+                                        "meta": col_data.get('meta', {})
+                                    }
+                                    table_info["columns"].append(column_info)
+                            
+                            source_info["tables"].append(table_info)
+                    
+                    schema_analysis["sources"].append(source_info)
+            
+            # Extract exposures if present
+            if yaml_data and 'exposures' in yaml_data:
+                schema_analysis["exposures"] = yaml_data['exposures']
+            
+            # Extract metrics if present
+            if yaml_data and 'metrics' in yaml_data:
+                schema_analysis["metrics"] = yaml_data['metrics']
+            
+            return schema_analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing dbt schema file: {str(e)}")
+            return {
+                "file_path": file_path,
+                "file_type": "dbt_schema",
+                "error": str(e),
+                "size": os.path.getsize(file_path)
+            }
+
+    def analyze_dbt(self, file_path: str) -> Dict[str, Any]:
+        """
+        Analyze a DBT SQL file to extract metadata, handling Jinja templates.
+        
+        Args:
+            file_path: Path to the DBT file
             
         Returns:
             Dictionary with analysis results
         """
-        if not language:
-            _, ext = os.path.splitext(file_path)
-            ext = ext.lower().lstrip('.')
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
             
-            # Map extension to language
-            if ext == 'py':
-                language = 'python'
-            elif ext in ['sql', 'ddl', 'dml']:
-                language = 'sql'
-            elif ext in ['yml', 'yaml']:
-                language = 'yaml'
-            elif ext in ['js', 'jsx']:
-                language = 'javascript'
-            elif ext in ['ts', 'tsx']:
-                language = 'typescript'
-            elif ext in ['md', 'markdown']:
-                language = 'markdown'
-            elif ext in ['sql.jinja', 'sql.j2', 'sql.jinja2', 'sql.dbt']:
-                language = 'dbt'
+            # Extract YAML frontmatter if present (between --- markers)
+            yaml_data = {}
+            yaml_match = re.search(r'---\s+(.*?)\s+---', content, re.DOTALL)
+            if yaml_match:
+                try:
+                    yaml_text = yaml_match.group(1)
+                    yaml_data = yaml.safe_load(yaml_text)
+                    # Remove the YAML frontmatter for SQL parsing
+                    content = content.replace(yaml_match.group(0), '')
+                except Exception as e:
+                    logger.warning(f"Error parsing YAML frontmatter: {str(e)}")
             
-        # Analyze based on language
-        if language == 'python':
-            return self.analyze_python(file_path)
-        elif language == 'sql':
-            return self.analyze_sql(file_path)
-        elif language == 'dbt':
-            return self.analyze_dbt(file_path)
-        else:
-            # Basic analysis for unsupported languages
+            # Extract Jinja macros and references
+            jinja_refs = re.findall(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', content)
+            jinja_sources = re.findall(r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}', content)
+            jinja_macros = re.findall(r'{{\s*([a-zA-Z0-9_]+)\(', content)
+            
+            # Extract tests
+            jinja_tests = []
+            for line in content.split('\n'):
+                if '{{' in line and 'test' in line.lower():
+                    jinja_tests.append(line.strip())
+            
+            # Extract model name from file path or YAML
+            model_name = os.path.basename(file_path).split('.')[0]
+            if yaml_data and 'name' in yaml_data:
+                model_name = yaml_data['name']
+            
+            # Determine model type from path
+            model_type = self._determine_dbt_model_type(file_path)
+            
+            # Create an enhanced analysis result
+            dbt_analysis = {
+                "file_path": file_path,
+                "file_type": f"dbt_{model_type}",
+                "model_name": model_name,
+                "model_type": model_type,
+                "yaml_config": yaml_data,
+                "jinja_references": jinja_refs,
+                "jinja_sources": jinja_sources,
+                "jinja_macros": jinja_macros,
+                "jinja_tests": jinja_tests,
+                "size": os.path.getsize(file_path),
+                "documentation": yaml_data.get('description', '')
+            }
+            
+            # Extract model type and materialization
+            if yaml_data:
+                if 'config' in yaml_data and 'materialized' in yaml_data['config']:
+                    dbt_analysis["materialization"] = yaml_data['config']['materialized']
+                
+                if 'description' in yaml_data:
+                    dbt_analysis["description"] = yaml_data['description']
+                    
+                # Extract column descriptions if available
+                if 'columns' in yaml_data:
+                    dbt_analysis["column_descriptions"] = yaml_data['columns']
+            
+            # Extract materialization from SQL config if present
+            materialization_match = re.search(r'{{\s*config\s*\(\s*materialized\s*=\s*[\'"]([^\'"]+)[\'"]', content)
+            if materialization_match:
+                dbt_analysis["materialization"] = materialization_match.group(1)
+            
+            # Extract schema from SQL config if present
+            schema_match = re.search(r'{{\s*config\s*\(\s*schema\s*=\s*[\'"]([^\'"]+)[\'"]', content)
+            if schema_match:
+                dbt_analysis["schema"] = schema_match.group(1)
+            
+            # Try to extract SQL by removing/simplifying Jinja
+            # Replace {{ ref('...') }} with table_name
+            simplified_sql = re.sub(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', r'\1', content)
+            # Replace {{ source('...', '...') }} with source_table_name
+            simplified_sql = re.sub(r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}', r'\2', simplified_sql)
+            # Remove Jinja control structures
+            simplified_sql = re.sub(r'{%.*?%}', '', simplified_sql)
+            # Replace other Jinja expressions with placeholders
+            simplified_sql = re.sub(r'{{.*?}}', 'placeholder', simplified_sql)
+            
+            # Extract tables using regex (more reliable for DBT files)
+            tables = self._extract_tables_basic(simplified_sql)
+            dbt_analysis["tables"] = tables
+            
+            # Extract dependencies between models
+            dependencies = {
+                "depends_on": {
+                    "models": jinja_refs,
+                    "sources": [f"{source[0]}.{source[1]}" for source in jinja_sources]
+                },
+                "supports": []  # Models that depend on this model (populated later)
+            }
+            dbt_analysis["dependencies"] = dependencies
+            
+            # Extract columns using regex from the simplified SQL
+            columns = self._extract_columns_from_sql(simplified_sql)
+            if columns:
+                dbt_analysis["columns"] = columns
+            
+            # Extract SQL comments for additional documentation
+            sql_comments = re.findall(r'--\s*(.*?)(?:\n|$)', content)
+            if sql_comments:
+                dbt_analysis["sql_comments"] = sql_comments
+            
+            # Extract doc blocks (multiline comments)
+            doc_blocks = re.findall(r'/\*\*(.*?)\*/', content, re.DOTALL)
+            if doc_blocks:
+                dbt_analysis["doc_blocks"] = [block.strip() for block in doc_blocks]
+            
+            return dbt_analysis
+            
+        except Exception as e:
+            logger.error(f"Error analyzing DBT file: {str(e)}")
             return {
                 "file_path": file_path,
-                "language": language or "unknown",
+                "file_type": "dbt",
+                "error": str(e),
                 "size": os.path.getsize(file_path)
             }
+    
+    def _extract_columns_from_sql(self, sql_content: str) -> List[str]:
+        """Extract column names from SQL content using regex"""
+        try:
+            # Look for column definitions in SELECT statements
+            selects = re.findall(r'select\s+(.*?)(?:from|where|group by|having|order by|limit|$)', 
+                               sql_content.lower(), re.DOTALL)
+            
+            columns = []
+            if selects:
+                for select_clause in selects:
+                    # Split the select clause by commas, handling subqueries and functions
+                    select_parts = []
+                    bracket_level = 0
+                    current_part = ""
+                    
+                    for char in select_clause:
+                        if char == ',' and bracket_level == 0:
+                            select_parts.append(current_part.strip())
+                            current_part = ""
+                        else:
+                            current_part += char
+                            if char == '(':
+                                bracket_level += 1
+                            elif char == ')':
+                                bracket_level -= 1
+                    
+                    if current_part.strip():
+                        select_parts.append(current_part.strip())
+                    
+                    # Extract column names from each part
+                    for part in select_parts:
+                        # Handle aliased columns (using AS keyword)
+                        as_match = re.search(r'(?:as\s+)?([a-zA-Z0-9_]+)$', part.strip(), re.IGNORECASE)
+                        if as_match:
+                            columns.append(as_match.group(1))
+                        else:
+                            # If no AS, use the last part of the expression
+                            col_parts = part.split('.')
+                            if col_parts and col_parts[-1].strip() != '*':
+                                columns.append(col_parts[-1].strip())
+            
+            # Remove duplicates and return
+            return list(set(columns))
+            
+        except Exception as e:
+            logger.warning(f"Error extracting columns: {str(e)}")
+            return []
 
     def analyze_python(self, file_path: str) -> Dict[str, Any]:
         """
@@ -213,120 +519,6 @@ class CodeAnalyzer:
             return {
                 "file_path": file_path,
                 "language": "sql",
-                "error": str(e),
-                "size": os.path.getsize(file_path)
-            }
-
-    def analyze_dbt(self, file_path: str) -> Dict[str, Any]:
-        """
-        Analyze a DBT SQL file to extract metadata, handling Jinja templates.
-        
-        Args:
-            file_path: Path to the DBT file
-            
-        Returns:
-            Dictionary with analysis results
-        """
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Extract YAML frontmatter if present (between --- markers)
-            yaml_data = {}
-            yaml_match = re.search(r'---\s+(.*?)\s+---', content, re.DOTALL)
-            if yaml_match:
-                try:
-                    yaml_text = yaml_match.group(1)
-                    yaml_data = yaml.safe_load(yaml_text)
-                    # Remove the YAML frontmatter for SQL parsing
-                    content = content.replace(yaml_match.group(0), '')
-                except Exception as e:
-                    logger.warning(f"Error parsing YAML frontmatter: {str(e)}")
-            
-            # Extract Jinja macros and references
-            jinja_refs = re.findall(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', content)
-            jinja_sources = re.findall(r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}', content)
-            jinja_macros = re.findall(r'{{\s*([a-zA-Z0-9_]+)\(', content)
-            
-            # Extract model name from file path or YAML
-            model_name = os.path.basename(file_path).split('.')[0]
-            if yaml_data and 'name' in yaml_data:
-                model_name = yaml_data['name']
-            
-            # Create a basic analysis result with the information we can reliably extract
-            dbt_analysis = {
-                "file_path": file_path,
-                "language": "dbt",
-                "model_name": model_name,
-                "yaml_config": yaml_data,
-                "jinja_references": jinja_refs,
-                "jinja_sources": jinja_sources,
-                "jinja_macros": jinja_macros,
-                "size": os.path.getsize(file_path)
-            }
-            
-            # Extract model type and materialization
-            if yaml_data:
-                if 'config' in yaml_data and 'materialized' in yaml_data['config']:
-                    dbt_analysis["materialization"] = yaml_data['config']['materialized']
-                
-                if 'description' in yaml_data:
-                    dbt_analysis["description"] = yaml_data['description']
-                    
-                # Extract column descriptions if available
-                if 'columns' in yaml_data:
-                    dbt_analysis["column_descriptions"] = yaml_data['columns']
-            
-            # Try to extract SQL by removing/simplifying Jinja
-            # Replace {{ ref('...') }} with table_name
-            simplified_sql = re.sub(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', r'\1', content)
-            # Replace {{ source('...', '...') }} with source_table_name
-            simplified_sql = re.sub(r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}', r'\2', simplified_sql)
-            # Remove Jinja control structures
-            simplified_sql = re.sub(r'{%.*?%}', '', simplified_sql)
-            # Replace other Jinja expressions with placeholders
-            simplified_sql = re.sub(r'{{.*?}}', 'placeholder', simplified_sql)
-            
-            # Extract tables using regex (more reliable for DBT files)
-            tables = self._extract_tables_basic(simplified_sql)
-            dbt_analysis["tables"] = tables
-            
-            # Extract relationships between tables based on refs and sources
-            relationships = []
-            
-            # Add relationships from ref() calls
-            for ref in jinja_refs:
-                relationships.append({
-                    "source_model": ref,
-                    "target_model": model_name,
-                    "type": "ref"
-                })
-            
-            # Add relationships from source() calls
-            for source in jinja_sources:
-                source_name, table_name = source
-                relationships.append({
-                    "source": source_name,
-                    "source_table": table_name,
-                    "target_model": model_name,
-                    "type": "source"
-                })
-            
-            dbt_analysis["relationships"] = relationships
-            
-            # Don't try to parse with SQLGlot for DBT files - it's too error-prone
-            # Instead, extract columns using regex
-            columns = self._extract_columns_from_sql(simplified_sql)
-            if columns:
-                dbt_analysis["columns"] = columns
-            
-            return dbt_analysis
-            
-        except Exception as e:
-            logger.error(f"Error analyzing DBT file: {str(e)}")
-            return {
-                "file_path": file_path,
-                "language": "dbt",
                 "error": str(e),
                 "size": os.path.getsize(file_path)
             }
@@ -865,84 +1057,3 @@ class CodeAnalyzer:
                 })
         
         return tables
-
-    def _extract_columns_from_sql(self, sql_content: str) -> List[Dict[str, str]]:
-        """
-        Extract column definitions from SQL using regex.
-        
-        Args:
-            sql_content: SQL content to analyze
-            
-        Returns:
-            List of column definitions
-        """
-        columns = []
-        
-        # Look for column definitions in CREATE TABLE statements
-        create_table_pattern = r'CREATE\s+TABLE.*?\((.*?)\)'
-        create_matches = re.search(create_table_pattern, sql_content, re.IGNORECASE | re.DOTALL)
-        
-        if create_matches:
-            column_text = create_matches.group(1)
-            # Split by commas, but not commas inside parentheses (for complex types)
-            column_defs = re.findall(r'([^,]+(?:\([^)]*\)[^,]*)?),?', column_text)
-            
-            for col_def in column_defs:
-                col_def = col_def.strip()
-                # Skip if this is a constraint definition
-                if col_def.upper().startswith(('PRIMARY KEY', 'FOREIGN KEY', 'CONSTRAINT', 'UNIQUE')):
-                    continue
-                    
-                # Extract column name and type
-                col_match = re.match(r'[\"`]?([a-zA-Z0-9_]+)[\"`]?\s+([a-zA-Z0-9_]+(?:\([^)]+\))?)', col_def)
-                if col_match:
-                    col_name = col_match.group(1)
-                    col_type = col_match.group(2)
-                    
-                    column = {
-                        "name": col_name,
-                        "type": col_type
-                    }
-                    
-                    # Check for NOT NULL
-                    if 'NOT NULL' in col_def.upper():
-                        column["nullable"] = False
-                    else:
-                        column["nullable"] = True
-                        
-                    columns.append(column)
-        
-        # If no columns found in CREATE TABLE, try to extract from SELECT statements
-        if not columns:
-            # Find columns in SELECT statements
-            select_columns = re.findall(r'SELECT\s+(.*?)\s+FROM', sql_content, re.IGNORECASE | re.DOTALL)
-            
-            if select_columns:
-                # Take the first SELECT statement
-                col_list = select_columns[0]
-                # Split by commas, but handle function calls and subqueries
-                col_items = []
-                
-                # Simple split for basic cases
-                col_items = [c.strip() for c in col_list.split(',')]
-                
-                for col_item in col_items:
-                    # Skip * selections
-                    if col_item == '*':
-                        continue
-                        
-                    # Check for aliased columns
-                    alias_match = re.search(r'(?:AS\s+|)[\"`]?([a-zA-Z0-9_]+)[\"`]?$', col_item, re.IGNORECASE)
-                    if alias_match:
-                        col_name = alias_match.group(1)
-                    else:
-                        # For non-aliased columns, use the expression or column name
-                        col_parts = col_item.split('.')
-                        col_name = col_parts[-1].strip('"`')
-                    
-                    columns.append({
-                        "name": col_name,
-                        "type": "unknown"  # Type information not available in SELECT
-                    })
-        
-        return columns
