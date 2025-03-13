@@ -70,10 +70,16 @@ import {
   IoCheckmark,
   IoClose,
   IoRefresh,
-  IoArrowForward
+  IoArrowForward,
+  IoCopy, 
+  IoCheckmarkDone,
+  IoDownload,
+  IoCode
 } from 'react-icons/io5'
 import { useParams, useNavigate } from 'react-router-dom'
 import { CodeDisplay } from '../components/CodeDisplay'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
 // Sample chat history data
 const chatHistory = [
@@ -586,6 +592,176 @@ const renderArchitectResponse = (architectResponse) => {
   );
 };
 
+// Add this function in your component to format code blocks
+const formatMessageContent = (content) => {
+  if (!content) return '';
+  
+  // Check if content contains code blocks with triple backticks
+  if (content.includes('```')) {
+    const parts = [];
+    let currentIndex = 0;
+    let codeBlockStart = content.indexOf('```', currentIndex);
+    
+    // Process each code block
+    while (codeBlockStart !== -1) {
+      // Add text before code block
+      if (codeBlockStart > currentIndex) {
+        parts.push({
+          type: 'text',
+          content: content.substring(currentIndex, codeBlockStart)
+        });
+      }
+      
+      // Find the end of the code block
+      const codeBlockEnd = content.indexOf('```', codeBlockStart + 3);
+      if (codeBlockEnd === -1) {
+        // No closing backticks, treat rest as text
+        parts.push({
+          type: 'text',
+          content: content.substring(codeBlockStart)
+        });
+        break;
+      }
+      
+      // Extract language and code
+      const codeWithLang = content.substring(codeBlockStart + 3, codeBlockEnd);
+      const firstLineBreak = codeWithLang.indexOf('\n');
+      const language = firstLineBreak > 0 ? codeWithLang.substring(0, firstLineBreak).trim() : '';
+      const code = firstLineBreak > 0 ? codeWithLang.substring(firstLineBreak + 1) : codeWithLang;
+      
+      parts.push({
+        type: 'code',
+        language: language || 'sql', // Default to SQL if no language specified
+        content: code
+      });
+      
+      currentIndex = codeBlockEnd + 3;
+      codeBlockStart = content.indexOf('```', currentIndex);
+    }
+    
+    // Add remaining text after last code block
+    if (currentIndex < content.length) {
+      parts.push({
+        type: 'text',
+        content: content.substring(currentIndex)
+      });
+    }
+    
+    return parts;
+  }
+  
+  // If no code blocks, return as single text part
+  return [{ type: 'text', content }];
+};
+
+// Add a CodeBlock component for better code display
+const CodeBlock = ({ code, language }) => {
+  const [copied, setCopied] = useState(false);
+  
+  const handleCopy = () => {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  
+  const handleDownload = () => {
+    const blob = new Blob([code], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `snippet.${language || 'txt'}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+  
+  return (
+    <Box
+      position="relative"
+      my={4}
+      borderRadius="md"
+      overflow="hidden"
+      fontSize="sm"
+    >
+      <HStack
+        bg="gray.700"
+        color="white"
+        p={2}
+        justify="space-between"
+        align="center"
+      >
+        <Badge colorScheme="blue" variant="solid">
+          {language || 'code'}
+        </Badge>
+        <HStack>
+          <IconButton
+            icon={copied ? <IoCheckmarkDone /> : <IoCopy />}
+            size="sm"
+            variant="ghost"
+            colorScheme={copied ? "green" : "gray"}
+            onClick={handleCopy}
+            aria-label="Copy code"
+            title="Copy to clipboard"
+          />
+          <IconButton
+            icon={<IoDownload />}
+            size="sm"
+            variant="ghost"
+            onClick={handleDownload}
+            aria-label="Download code"
+            title="Download code"
+          />
+        </HStack>
+      </HStack>
+      <SyntaxHighlighter
+        language={language || 'sql'}
+        style={atomDark}
+        customStyle={{
+          margin: 0,
+          padding: '16px',
+          maxHeight: '400px',
+          overflow: 'auto'
+        }}
+      >
+        {code}
+      </SyntaxHighlighter>
+    </Box>
+  );
+};
+
+// Add this function to render message content with proper formatting
+const renderMessageContent = (content) => {
+  const formattedContent = formatMessageContent(content);
+  
+  if (Array.isArray(formattedContent)) {
+    return (
+      <>
+        {formattedContent.map((part, index) => {
+          if (part.type === 'text') {
+            return (
+              <Text key={index} whiteSpace="pre-wrap">
+                {part.content}
+              </Text>
+            );
+          } else if (part.type === 'code') {
+            return (
+              <CodeBlock
+                key={index}
+                code={part.content}
+                language={part.language}
+              />
+            );
+          }
+          return null;
+        })}
+      </>
+    );
+  }
+  
+  return <Text whiteSpace="pre-wrap">{content}</Text>;
+};
+
 const ChatPage = () => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -1058,7 +1234,9 @@ const ChatPage = () => {
             )}
           </HStack>
           
-          <FormattedMessage content={message.content} />
+          <Box flex="1">
+            {renderMessageContent(message.content)}
+          </Box>
           
           {/* Show code results for architect responses */}
           {isArchitectResponse && message.details?.code_results && (
