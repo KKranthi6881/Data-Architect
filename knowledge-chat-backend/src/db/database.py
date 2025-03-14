@@ -25,10 +25,9 @@ class ChatDatabase:
                     id TEXT PRIMARY KEY,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     query TEXT,
-                    output TEXT,
+                    architect_response TEXT,
                     code_context TEXT,
                     technical_details TEXT,
-                    architect_response TEXT,  -- Add architect_response column
                     feedback_status TEXT,
                     feedback_comments TEXT,
                     thread_id TEXT,
@@ -91,11 +90,8 @@ class ChatDatabase:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Log the incoming data
-                self.logger.info(f"Saving conversation {conversation_id} with data: {json.dumps(data, indent=2)}")
-                
                 # Extract architect response if present
-                architect_response = data.get('architect_response')
+                architect_response = data.get('architect_response', data.get('output'))
                 if isinstance(architect_response, dict):
                     architect_response = json.dumps(architect_response)
                 
@@ -104,32 +100,29 @@ class ChatDatabase:
                 if isinstance(technical_details, dict):
                     technical_details = json.dumps(technical_details)
                 
-                # Create query with all fields
                 cursor.execute('''
                     INSERT OR REPLACE INTO conversations (
                         id,
                         created_at,
                         query,
-                        output,
+                        architect_response,
                         code_context,
                         technical_details,
-                        architect_response,
                         feedback_status,
                         feedback_comments,
                         thread_id,
                         cleared
-                    ) VALUES (?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     conversation_id,
                     data.get('created_at'),
                     data.get('query', ''),
-                    data.get('output', ''),
+                    architect_response,
                     data.get('code_context', '{}'),
                     technical_details,
-                    architect_response,
                     data.get('feedback_status'),
                     data.get('feedback_comments'),
-                    data.get('thread_id', conversation_id),  # Default to conversation_id if no thread_id
+                    data.get('thread_id', conversation_id),
                     data.get('cleared', 0)
                 ))
                 
@@ -146,32 +139,66 @@ class ChatDatabase:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
-                    SELECT id, created_at, query, output, code_context, 
-                           technical_details, architect_response, feedback_status, 
-                           feedback_comments, thread_id, cleared
-                    FROM conversations 
-                    WHERE id = ?
+                    SELECT 
+                        c.id,
+                        c.thread_id,
+                        c.query,
+                        c.architect_response,
+                        c.created_at,
+                        c.feedback_status,
+                        c.feedback_comments,
+                        c.technical_details
+                    FROM conversations c
+                    WHERE c.id = ?
                 ''', (conversation_id,))
                 
                 row = cursor.fetchone()
                 if row:
+                    # Process architect_response safely
+                    architect_response = row[3]
+                    processed_response = None
+                    if architect_response:
+                        try:
+                            if isinstance(architect_response, str):
+                                processed_response = json.loads(architect_response)
+                            else:
+                                processed_response = architect_response
+                        except json.JSONDecodeError:
+                            # If JSON parsing fails, store as raw text
+                            processed_response = {
+                                "response": architect_response,
+                                "type": "raw_text"
+                            }
+
+                    # Process technical_details safely
+                    technical_details = row[7]
+                    processed_details = None
+                    if technical_details:
+                        try:
+                            if isinstance(technical_details, str):
+                                processed_details = json.loads(technical_details)
+                            else:
+                                processed_details = technical_details
+                        except json.JSONDecodeError:
+                            processed_details = {
+                                "details": technical_details,
+                                "type": "raw_text"
+                            }
+
                     return {
                         'id': row[0],
-                        'created_at': row[1],
+                        'thread_id': row[1],
                         'query': row[2],
-                        'output': row[3],
-                        'code_context': row[4],
-                        'technical_details': row[5],
-                        'architect_response': row[6],
-                        'feedback_status': row[7],
-                        'feedback_comments': row[8],
-                        'thread_id': row[9],
-                        'cleared': row[10]
+                        'architect_response': processed_response,
+                        'created_at': row[4],
+                        'feedback_status': row[5],
+                        'feedback_comments': row[6],
+                        'technical_details': processed_details
                     }
                 return None
                 
         except Exception as e:
-            print(f"Error getting conversation: {e}")
+            self.logger.error(f"Error getting conversation: {e}", exc_info=True)
             raise
 
     def get_recent_conversations(self, limit=10):
@@ -180,13 +207,13 @@ class ChatDatabase:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Build simple query with essential columns
+                # Update query to use architect_response instead of output
                 query = """
                     SELECT 
                         id,
                         created_at,
                         query,
-                        output,
+                        architect_response,
                         feedback_status,
                         cleared
                     FROM conversations 
@@ -197,30 +224,27 @@ class ChatDatabase:
                 
                 cursor.execute(query, (limit,))
                 rows = cursor.fetchall()
-                print(f"Retrieved {len(rows)} rows from database")
                 
-                # Convert to list of dictionaries
                 conversations = []
                 for row in rows:
                     try:
-                        # Parse output if it exists
-                        output = row[3] if len(row) > 3 else None
-                        if isinstance(output, str):
+                        # Parse architect_response if it exists
+                        architect_response = row[3] if len(row) > 3 else None
+                        if isinstance(architect_response, str):
                             try:
-                                output = json.loads(output)
+                                architect_response = json.loads(architect_response)
                             except json.JSONDecodeError:
-                                output = output
+                                architect_response = architect_response
                         
                         conversation = {
                             "id": row[0],
                             "created_at": row[1],
                             "query": row[2],
-                            "output": output,
+                            "output": architect_response,  # Use architect_response as output
                             "feedback_status": row[4] if len(row) > 4 else "pending",
                             "cleared": bool(row[5]) if len(row) > 5 else False
                         }
                         conversations.append(conversation)
-                        print(f"Processed conversation: {conversation['id']}")
                         
                     except Exception as e:
                         print(f"Error processing conversation row: {e}")
@@ -237,7 +261,9 @@ class ChatDatabase:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id, created_at, query, output, code_context FROM conversations ORDER BY created_at DESC"
+                """SELECT id, created_at, query, architect_response, code_context 
+                   FROM conversations 
+                   ORDER BY created_at DESC"""
             )
             rows = cursor.fetchall()
             
@@ -245,8 +271,8 @@ class ChatDatabase:
                 'id': row[0],
                 'timestamp': row[1],
                 'query': row[2],
-                'output': json.loads(row[3]),
-                'code_context': json.loads(row[4])
+                'output': json.loads(row[3]) if row[3] else {},  # Load architect_response as output
+                'code_context': json.loads(row[4]) if row[4] else {}
             } for row in rows]
 
     def get_conversation_history_with_checkpoints(self):
@@ -259,7 +285,7 @@ class ChatDatabase:
                     id,
                     strftime('%Y-%m-%d %H:%M:%S', created_at) as created_at,
                     query,
-                    output,
+                    architect_response,
                     code_context,
                     technical_details
                 FROM conversations 
@@ -605,10 +631,9 @@ class ChatDatabase:
                         id TEXT PRIMARY KEY,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         query TEXT,
-                        output TEXT,
+                        architect_response TEXT,
                         code_context TEXT,
                         technical_details TEXT,
-                        architect_response TEXT,  -- Add this column
                         feedback_status TEXT,
                         feedback_comments TEXT,
                         thread_id TEXT,
@@ -633,38 +658,161 @@ class ChatDatabase:
             print(f"Error creating tables: {e}")
             raise
 
-    def save_conversation(self, conversation_id: str, data: Dict[str, Any]):
-        """Save or update a conversation"""
+    def ensure_architect_response_column(self):
+        """Ensure the architect_response column exists in the conversations table"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM pragma_table_info('conversations') 
+                    WHERE name='architect_response'
+                """)
+                if cursor.fetchone()[0] == 0:
+                    cursor.execute("""
+                        ALTER TABLE conversations 
+                        ADD COLUMN architect_response TEXT
+                    """)
+                    conn.commit()
+                    self.logger.info("Added architect_response column to conversations table")
+        except Exception as e:
+            self.logger.error(f"Error ensuring architect_response column: {e}") 
+
+    def get_all_conversations(self):
+        """Get all conversations with their complete data"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        id,
+                        created_at,
+                        query,
+                        technical_details,
+                        architect_response,
+                        code_context,
+                        feedback_status,
+                        thread_id,
+                        cleared
+                    FROM conversations 
+                    WHERE cleared = 0 OR cleared IS NULL
+                    ORDER BY created_at DESC
+                """)
                 
-                # Extract architect response if present
-                architect_response = data.get('architect_response')
-                if isinstance(architect_response, dict):
-                    architect_response = json.dumps(architect_response)
+                conversations = []
                 
-                cursor.execute('''
-                    INSERT OR REPLACE INTO conversations (
-                        id, query, output, code_context, technical_details, 
-                        architect_response, feedback_status, feedback_comments, 
-                        thread_id, cleared
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    conversation_id,
-                    data.get('query', ''),
-                    data.get('output', ''),
-                    data.get('code_context', '{}'),
-                    data.get('technical_details', '{}'),
-                    architect_response,
-                    data.get('feedback_status'),
-                    data.get('feedback_comments'),
-                    data.get('thread_id'),
-                    data.get('cleared', 0)
-                ))
-                
-                conn.commit()
+                for row in cursor.fetchall():
+                    try:
+                        # Parse JSON fields
+                        technical_details = json.loads(row[3]) if row[3] else {}
+                        architect_response = json.loads(row[4]) if row[4] else {}
+                        code_context = json.loads(row[5]) if row[5] else {}
+                        
+                        conversation = {
+                            "id": row[0],
+                            "created_at": row[1],
+                            "query": row[2],
+                            "technical_details": technical_details,
+                            "architect_response": architect_response,
+                            "code_context": code_context,
+                            "feedback_status": row[6],
+                            "thread_id": row[7] or row[0],  # Use id as thread_id if null
+                            "cleared": bool(row[8])
+                        }
+                        conversations.append(conversation)
+                    except Exception as e:
+                        self.logger.error(f"Error processing conversation row: {e}")
+                        continue
+                        
+                return conversations
                 
         except Exception as e:
-            print(f"Error saving conversation: {e}")
-            raise 
+            self.logger.error(f"Error getting all conversations: {e}")
+            return [] 
+
+    def get_thread_conversations(self):
+        """Get all conversations organized by threads"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        c.thread_id,
+                        c.id as conversation_id,
+                        c.created_at,
+                        c.query,
+                        c.architect_response,
+                        c.feedback_status,
+                        COUNT(*) OVER (PARTITION BY c.thread_id) as message_count,
+                        MIN(c.query) OVER (PARTITION BY c.thread_id) as initial_query,
+                        CASE WHEN c.architect_response IS NOT NULL THEN 1 ELSE 0 END as has_architect_response
+                    FROM conversations c
+                    WHERE c.cleared = 0 OR c.cleared IS NULL
+                    ORDER BY c.created_at DESC
+                """)
+                
+                rows = cursor.fetchall()
+                threads = {}
+                
+                for row in rows:
+                    try:
+                        thread_id = row[0] or row[1]  # Use conversation_id as thread_id if null
+                        
+                        # Process architect_response safely
+                        architect_response = row[4]
+                        processed_response = None
+                        
+                        if architect_response:
+                            if isinstance(architect_response, str):
+                                try:
+                                    # Try to parse JSON string
+                                    processed_response = json.loads(architect_response)
+                                except json.JSONDecodeError:
+                                    # If parsing fails, wrap the raw text
+                                    processed_response = {
+                                        "response": architect_response,
+                                        "type": "raw_text"
+                                    }
+                            else:
+                                processed_response = architect_response
+                        
+                        conversation = {
+                            "id": row[1],
+                            "created_at": row[2],
+                            "query": row[3],
+                            "architect_response": processed_response or {"response": "", "type": "empty"},
+                            "feedback_status": row[5]
+                        }
+                        
+                        if thread_id not in threads:
+                            threads[thread_id] = {
+                                "thread_id": thread_id,
+                                "created_at": row[2],
+                                "initial_query": row[7],
+                                "message_count": row[6],
+                                "has_architect_response": bool(row[8]),
+                                "conversations": []
+                            }
+                        
+                        threads[thread_id]["conversations"].append(conversation)
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error processing conversation row: {e}", exc_info=True)
+                        continue
+                
+                # Convert to list and sort by created_at
+                thread_list = list(threads.values())
+                thread_list.sort(key=lambda x: x["created_at"], reverse=True)
+                
+                return {
+                    "status": "success",
+                    "threads": thread_list
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Error getting thread conversations: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "message": str(e),
+                "threads": []
+            }

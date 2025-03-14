@@ -339,150 +339,89 @@ class GitHubCodeSearchAgent:
     def _enhance_search_results(self, search_results: List[Dict[str, Any]], parsed_question: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Enhance search results with LLM analysis"""
         try:
-            if not search_results:
-                return []
-            
-            # Create prompt for LLM with focus on dbt and Snowflake
-            prompt = f"""
-            # Senior Data Engineer Analysis: dbt and Snowflake
+            # Format results for LLM
+            results_text = "\n\n".join([
+                f"File: {r.get('file_path', '')}\n"
+                f"Code:\n{r.get('code_snippet', '')}"
+                for r in search_results
+            ])
 
-            You are a senior data engineer with expertise in dbt, Snowflake, and data modeling. Analyze the following code snippets to provide actionable implementation guidance.
+            # Create a more structured prompt
+            prompt = f"""Analyze these code search results for a dbt/Snowflake implementation question:
 
-            ## User Question
-            "{parsed_question.get('rephrased_question', '')}"
+Question: {parsed_question.get('original_question', '')}
 
-            ## Question Type
-            {parsed_question.get('question_type', 'unknown')}
+Code Results:
+{results_text}
 
-            ## Key Points from Question
-            {chr(10).join([f"- {point}" for point in parsed_question.get('key_points', [])])}
+Provide a JSON response with the following structure for each result:
+{{
+    "results": [
+        {{
+            "file_path": "path/to/file",
+            "file_type": "dbt_model|dbt_schema|snowflake_script",
+            "relevance_score": 0-10,
+            "code_purpose": "Brief description of what this code does",
+            "key_entities": ["entity1", "entity2"],
+            "primary_logic": "Main transformation or business logic",
+            "implementation_guidance": "How to adapt this for the current need",
+            "development_steps": [
+                "Step 1: ...",
+                "Step 2: ..."
+            ],
+            "dependencies": ["dep1", "dep2"],
+            "integration_considerations": "Integration notes",
+            "testing_strategy": "Recommended tests"
+        }}
+    ]
+}}
 
-            ## Business Context
-            ```json
-            {json.dumps(parsed_question.get('business_context', {}), indent=2)}
-            ```
+Focus on dbt and Snowflake best practices. Response must be valid JSON."""
 
-            ## Technical Context
-            ```json
-            {json.dumps(parsed_question.get('technical_context', {}), indent=2)}
-            ```
-
-            ## Available Code Snippets
-            """
-            
-            # Format code snippets for the prompt
-            for i, result in enumerate(search_results):
-                file_path = result.get("file_path", "unknown_file")
-                code_snippet = result.get("code_snippet", "")
-                repo_info = result.get("repo_info", {})
-                
-                # Truncate very long code snippets
-                if len(code_snippet) > 1500:
-                    code_snippet = code_snippet[:1500] + "\n// ... [truncated for brevity] ..."
-                
-                # Determine language for syntax highlighting
-                language = self._determine_file_language(file_path)
-                
-                prompt += f"""
-            ### Code Snippet {i+1}: {file_path}
-            - **Repository**: {repo_info.get('repo_name', 'unknown')}
-            - **Language**: {language}
-            
-            ```{language}
-            {code_snippet}
-            ```
-                """
-            
-            # Add the rest of the prompt with detailed instructions
-            prompt += """
-            ## Analysis Instructions
-            For each code snippet, provide a comprehensive analysis focused on dbt and Snowflake implementation:
-
-            1. **File Type Identification**:
-               - Identify if this is a dbt model, schema file, macro, or Snowflake script
-               - Determine its role in the overall data architecture (staging, intermediate, marts, etc.)
-
-            2. **Code Purpose Analysis**:
-               - What is the primary function of this code?
-               - What data transformations or business logic does it implement?
-               - What tables, columns, or metrics does it define or calculate?
-
-            3. **Implementation Guidance**:
-               - How can this code be adapted to address the user question?
-               - What specific modifications would be needed?
-               - What dependencies or prerequisite models are required?
-
-            4. **Development Steps**:
-               - Provide a step-by-step implementation plan
-               - Include specific code blocks that need to be modified
-               - Suggest new models, macros, or schema definitions if needed
-
-            5. **Integration Considerations**:
-               - How would this code integrate with the existing dbt project or Snowflake environment?
-               - What testing strategies should be implemented?
-               - Are there any performance optimizations to consider?
-
-            ## Response Format
-            For each code snippet, provide your analysis in the following JSON format:
-
-            ```json
-            [
-              {
-                "file_path": "models/staging/stg_customers.sql",
-                "file_type": "dbt_model|dbt_schema|dbt_macro|snowflake_script|other",
-                "data_layer": "staging|intermediate|marts|etc",
-                "relevance_score": 8.5,
-                "code_purpose": "This dbt model standardizes customer data from the raw source, cleaning up field names and applying initial transformations.",
-                "key_entities": ["customers", "transactions", "products"],
-                "primary_logic": "Joins customer data with transaction history and calculates customer lifetime value.",
-                "implementation_guidance": "This model can be adapted for the user question by adding the additional metrics for customer segmentation.",
-                "development_steps": [
-                  {
-                    "step": "Add new fields for customer segmentation",
-                    "code_block": "SELECT\\n    customer_id,\\n    name,\\n    email,\\n    CASE\\n        WHEN lifetime_value > 1000 THEN 'high_value'\\n        WHEN lifetime_value > 500 THEN 'medium_value'\\n        ELSE 'low_value'\\n    END AS customer_segment,\\n    -- Add other fields\\n    FROM {{ ref('stg_customers') }}",
-                    "explanation": "This adds customer segmentation logic based on lifetime value."
-                  }
-                ],
-                "dependencies": ["stg_customers", "stg_transactions", "stg_products"],
-                "integration_considerations": "This would need to be integrated into the existing marts layer, and added to the marts_customers.yml schema file for documentation.",
-                "testing_strategy": "Add schema tests for the new customer_segment field, ensuring values are always within expected categories."
-              }
-            ]
-            ```
-
-            IMPORTANT: 
-            - Your response must be valid JSON that can be parsed
-            - Score relevance from 0-10 based on how directly the code addresses the question
-            - Be specific about dbt and Snowflake patterns and best practices
-            - For schema files (YAML), explain what tables and columns are being defined
-            - For SQL files, explain the transformations and business logic
-            - Consider both technical implementation and business requirements
-            - Do not include any text outside the JSON block
-            """
-            
             # Get LLM response
             response = self.llm.invoke(prompt)
             response_text = response.content if hasattr(response, 'content') else str(response)
-            
-            # Extract JSON from response
-            json_text = self._extract_json(response_text)
-            
-            if not json_text:
-                self.logger.warning("Could not extract JSON from LLM response")
-                return self._format_raw_results(search_results)
-            
+
+            # Extract and validate JSON
             try:
-                enhanced_results = json.loads(json_text)
-                # Validate and fix the enhanced results
-                return self._validate_enhanced_results(enhanced_results, search_results)
-            except json.JSONDecodeError as e:
-                self.logger.error(f"Error enhancing code search results: {e}")
-                return self._format_raw_results(search_results)
-            
+                # First try to find JSON in code blocks
+                json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response_text)
+                if json_match:
+                    json_str = json_match.group(1)
+                else:
+                    # Try to extract anything that looks like a JSON array
+                    json_str = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', response_text).group(1)
+
+                enhanced_results = json.loads(json_str)
+
+                # Ensure we have a results array
+                if isinstance(enhanced_results, dict) and 'results' in enhanced_results:
+                    return enhanced_results['results']
+                elif isinstance(enhanced_results, list):
+                    return enhanced_results
+                else:
+                    raise ValueError("Invalid response structure")
+
+            except (json.JSONDecodeError, AttributeError, ValueError) as e:
+                self.logger.warning(f"Could not parse LLM response as JSON: {e}")
+                # Return a formatted version of the raw results
+                return [{
+                    "file_path": result.get('file_path', ''),
+                    "file_type": self._guess_file_type(result.get('file_path', '')),
+                    "relevance_score": 5,  # Default medium relevance
+                    "code_purpose": "Code found through search",
+                    "key_entities": [],
+                    "primary_logic": result.get('code_snippet', '')[:200] + "...",
+                    "implementation_guidance": "Review code for applicability",
+                    "development_steps": ["Review code", "Adapt as needed"],
+                    "dependencies": [],
+                    "integration_considerations": "Requires further analysis",
+                    "testing_strategy": "Add appropriate dbt tests"
+                } for result in search_results]
+
         except Exception as e:
-            self.logger.error(f"Error enhancing code search results: {e}", exc_info=True)
-            # Return basic results if enhancement fails
-            return self._format_raw_results(search_results)
+            self.logger.error(f"Error enhancing search results: {e}", exc_info=True)
+            return search_results
 
     def _determine_file_language(self, file_path: str) -> str:
         """Determine the language based on file extension"""
@@ -668,3 +607,101 @@ class GitHubCodeSearchAgent:
         except Exception as e:
             self.logger.error(f"Error saving search results: {e}", exc_info=True)
             return False
+
+    def enhance_code_search_results(self, conversation_id: str) -> None:
+        """Enhance code search results with additional context"""
+        try:
+            # Get conversation data
+            conversation = self.db.get_conversation(conversation_id)
+            if not conversation:
+                self.logger.error(f"Conversation {conversation_id} not found")
+                return
+
+            # Handle architect_response parsing
+            architect_response = conversation.get('architect_response', '')
+            
+            # Initialize default structure
+            processed_response = {
+                'response': '',
+                'sections': {},
+                'code_results': []
+            }
+
+            # Handle different types of architect_response
+            if isinstance(architect_response, dict):
+                processed_response.update(architect_response)
+            elif isinstance(architect_response, str):
+                try:
+                    # Try to parse if it's a JSON string
+                    json_data = json.loads(architect_response)
+                    if isinstance(json_data, dict):
+                        processed_response.update(json_data)
+                    else:
+                        processed_response['response'] = json_data
+                except json.JSONDecodeError:
+                    # If it's not valid JSON, use it as raw response
+                    processed_response['response'] = architect_response
+            
+            # Get code results
+            code_results = processed_response.get('code_results', [])
+            if not code_results:
+                self.logger.info("No code results to enhance")
+                return
+
+            # Process each code result
+            enhanced_results = []
+            for result in code_results:
+                try:
+                    # Enhance the result with additional context
+                    enhanced_result = self._enhance_single_result(result)
+                    enhanced_results.append(enhanced_result)
+                except Exception as e:
+                    self.logger.error(f"Error enhancing single result: {e}")
+                    enhanced_results.append(result)  # Keep original if enhancement fails
+
+            # Update the processed response with enhanced results
+            processed_response['code_results'] = enhanced_results
+
+            # Save back to database
+            self.db.save_conversation(conversation_id, {
+                'architect_response': processed_response
+            })
+
+            self.logger.info(f"Successfully enhanced code search results for conversation {conversation_id}")
+
+        except Exception as e:
+            self.logger.error(f"Error enhancing code search results: {e}", exc_info=True)
+            raise
+
+    def _enhance_single_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Enhance a single code search result with additional context"""
+        enhanced = result.copy()
+        
+        try:
+            # Add file type information
+            file_path = result.get('file_path', '')
+            enhanced['file_type'] = self._guess_file_type(file_path)
+            enhanced['language'] = self._determine_file_language(file_path)
+            
+            # Add data layer information if not present
+            if 'data_layer' not in enhanced:
+                enhanced['data_layer'] = self._determine_data_layer(file_path)
+            
+            # Add relevance score if not present
+            if 'relevance_score' not in enhanced:
+                enhanced['relevance_score'] = 0.5  # Default medium relevance
+            
+            # Add basic metadata if not present
+            if 'code_purpose' not in enhanced:
+                enhanced['code_purpose'] = f"This appears to be a {enhanced['file_type']} file that might be relevant."
+            
+            if 'key_entities' not in enhanced:
+                enhanced['key_entities'] = []
+            
+            if 'implementation_guidance' not in enhanced:
+                enhanced['implementation_guidance'] = "Review the code structure and adapt as needed."
+            
+        except Exception as e:
+            self.logger.error(f"Error in _enhance_single_result: {e}")
+        
+        return enhanced

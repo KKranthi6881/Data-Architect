@@ -52,6 +52,7 @@ class ParserState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], "Conversation messages"]
     doc_context: Annotated[Dict, "Documentation context"]
     sql_context: Annotated[Dict, "SQL schema context"]
+    github_context: Annotated[Dict, "Github context"]
     business_analysis: Annotated[Dict, "Business analysis results"]
     feedback_status: Annotated[str, "Current status"]
     confidence_score: Annotated[float, "Confidence in analysis"]
@@ -80,7 +81,7 @@ def create_parser_agent(tools: SearchTools):
     # Create parser
     output_parser = PydanticOutputParser(pydantic_object=BusinessAnalysis)
 
-    # Create prompt template
+    # Create prompt template with corrected JSON instructions
     template = """You are an expert data consultant helping users understand and solve both business and technical data questions.
 
 USER QUESTION:
@@ -91,6 +92,9 @@ BUSINESS DOCUMENTATION:
 
 SQL SCHEMA INFORMATION:
 {sql_context}
+
+GITHUB CODE REPOSITORY:
+{github_context}
 
 TASK:
 Analyze this question, determine if it's a business question, technical question, or hybrid, and provide a structured understanding with relevant information.
@@ -115,45 +119,47 @@ QUESTION TYPES TO IDENTIFY:
    - Architecture: Design patterns and structure
 3. HYBRID QUESTIONS: Combining business and technical aspects
 
-IMPORTANT: Your response must be a valid JSON object with the following structure (no markdown, no explanations, just the JSON):
-{
-    "rephrased_question": "Clear restatement of the question",
-    "question_type": "business|technical|hybrid",
-    "key_points": [
-        "Key point 1",
-        "Key point 2"
-    ],
-    "business_context": {
-        "domain": "Business domain area",
-        "primary_objective": "Main business goal",
-        "key_entities": ["Entity 1", "Entity 2"],
-        "business_impact": "How this affects business"
-    },
-    "technical_context": {
-        "data_stack": ["Snowflake", "dbt", "Other relevant technologies"],
-        "relevant_components": ["Tables", "Models", "Scripts"],
-        "dependencies": ["Related systems", "Prerequisites"],
-        "technical_considerations": ["Performance concerns", "Design patterns"]
-    },
-    "implementation_guidance": {
-        "approach": "High-level approach to solving",
-        "suggested_steps": ["Step 1", "Step 2"],
-        "code_references": ["Reference to relevant code patterns"]
-    },
-    "assumptions": [
-        "Assumption 1",
-        "Assumption 2"
-    ],
-    "clarifying_questions": [
-        "Question about requirement 1",
-        "Question about requirement 2"
-    ],
-    "confidence_score": 0.85
-}"""
+FORMATTING INSTRUCTIONS:
+Respond ONLY with a valid JSON object with no other text. Format your response exactly like this example:
+
+{{
+  "rephrased_question": "Clear restatement of the question",
+  "question_type": "business|technical|hybrid",
+  "key_points": [
+    "Key point 1",
+    "Key point 2"
+  ],
+  "business_context": {{
+    "domain": "Business domain area",
+    "primary_objective": "Main business goal",
+    "key_entities": ["Entity 1", "Entity 2"],
+    "business_impact": "How this affects business"
+  }},
+  "technical_context": {{
+    "data_stack": ["Snowflake", "dbt", "Other relevant technologies"],
+    "relevant_components": ["Tables", "Models", "Scripts"],
+    "dependencies": ["Related systems", "Prerequisites"],
+    "technical_considerations": ["Performance concerns", "Design patterns"]
+  }},
+  "implementation_guidance": {{
+    "approach": "High-level approach to solving",
+    "suggested_steps": ["Step 1", "Step 2"],
+    "code_references": ["Reference to relevant code patterns"]
+  }},
+  "assumptions": [
+    "Assumption 1",
+    "Assumption 2"
+  ],
+  "clarifying_questions": [
+    "Question about requirement 1",
+    "Question about requirement 2"
+  ],
+  "confidence_score": 0.85
+}}"""
 
     prompt = PromptTemplate(
         template=template,
-        input_variables=["question", "doc_context", "sql_context"]
+        input_variables=["question", "doc_context", "sql_context", "github_context"]
     )
 
     def process_question(state: ParserState) -> Dict:
@@ -163,10 +169,37 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
             question = messages[-1].content if messages else ""
             doc_context = state.get('doc_context', {})
             sql_context = state.get('sql_context', {})
+            github_context = state.get('github_context', {})  # Get GitHub context
             
-            # Check if we have any context documents or schemas
-            has_context = (len(doc_context.get('results', [])) > 0 or 
-                          len(sql_context.get('results', [])) > 0)
+            # Debug: print number of results in each context
+            doc_count = len(doc_context.get('results', []))
+            sql_count = len(sql_context.get('results', []))
+            github_count = len(github_context.get('results', []))
+            logger.info(f"Context counts - Doc: {doc_count}, SQL: {sql_count}, GitHub: {github_count}")
+            
+            # Debug github_context structure if it seems empty but shouldn't be
+            if not github_context:
+                logger.warning(f"GitHub context is empty: {github_context}")
+            elif 'results' not in github_context:
+                logger.warning(f"GitHub context missing 'results' key. Keys found: {list(github_context.keys())}")
+                # Try to fix it by finding any array in the context that might be the results
+                for key, value in github_context.items():
+                    if isinstance(value, list):
+                        logger.info(f"Found potential results array under key '{key}' with {len(value)} items")
+                        github_context['results'] = value
+                        break
+            elif not github_context.get('results'):
+                logger.warning(f"GitHub 'results' is empty or null: {github_context.get('results')}")
+            else:
+                logger.info(f"GitHub context has {len(github_context['results'])} results")
+            
+            # Check if we have any context documents or schemas or GitHub repos
+            has_context = (doc_count > 0 or sql_count > 0 or github_count > 0)
+            logger.info(f"Has context: {has_context}")
+            
+            # If github context exists but others don't, log a confirmation
+            if github_count > 0 and doc_count == 0 and sql_count == 0:
+                logger.info("Using only GitHub context for analysis")
             
             # Format documentation context
             formatted_doc_context = "\n".join([
@@ -180,9 +213,32 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
                 for sql in sql_context.get('results', [])
             ])
             
+            # Format GitHub context
+            formatted_github_context = ""
+            for github in github_context.get('results', []):
+                # Extract repo name from the repository object
+                repo_name = "Unknown Repo"
+                if isinstance(github.get('repository'), dict):
+                    repo_name = github.get('repository', {}).get('name', 'Unknown Repo')
+                
+                # Get the file path if available
+                file_path = "Unknown File"
+                if isinstance(github.get('file'), dict):
+                    file_path = github.get('file', {}).get('path', 'Unknown File')
+                
+                # Get the content
+                content = github.get('content', '')
+                
+                # Format the GitHub context entry
+                formatted_github_context += f"[GitHub: {repo_name} - {file_path}]\n{content}\n---\n"
+            
+            # Add a message if no GitHub context is available
+            if not formatted_github_context:
+                formatted_github_context = "No relevant GitHub repository code found."
+            
             # If no context is available, create a special response
             if not has_context:
-                logger.warning("No context documents or schemas available for question processing")
+                logger.warning("No context available (documents, schemas, or GitHub) for question processing")
                 no_context_analysis = DEFAULT_ANALYSIS.copy()
                 no_context_analysis.update({
                     "rephrased_question": question,
@@ -205,7 +261,8 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
                         "suggested_steps": [
                             "Upload dbt models and schema files to provide context",
                             "Upload SQL files if working directly with Snowflake",
-                            "Upload documentation files for business context"
+                            "Upload documentation files for business context",
+                            "Or connect GitHub repositories for code examples"
                         ],
                         "code_references": []
                     },
@@ -228,181 +285,132 @@ IMPORTANT: Your response must be a valid JSON object with the following structur
             formatted_prompt = prompt.format(
                 question=question,
                 doc_context=formatted_doc_context,
-                sql_context=formatted_sql_context
+                sql_context=formatted_sql_context,
+                github_context=formatted_github_context
             )
-            response = llm.invoke(formatted_prompt)
             
-            # Parse response with better error handling
+            # Log the first 500 characters of the prompt for debugging
+            logger.debug(f"Prompt first 500 chars: {formatted_prompt[:500]}...")
+            
+            # Call the LLM with error handling
             try:
-                response_text = response.content if isinstance(response, BaseMessage) else str(response)
+                response = llm.invoke(formatted_prompt)
+                response_text = response.content
                 
-                # Clean the response text
-                response_text = response_text.strip()
+                # Log the first 500 characters of the response for debugging
+                logger.debug(f"LLM response first 500 chars: {response_text[:500]}...")
                 
-                # Log the raw response for debugging
-                logger.debug(f"Raw LLM response: {response_text}")
+                # Pre-process response text to fix common JSON issues
+                response_text = preprocess_json_response(response_text)
                 
-                # Parse JSON
+                # Parse the preprocessed JSON
                 try:
-                    # First, try to extract a JSON block if the response contains markdown code blocks
-                    json_pattern = r"```(?:json)?\s*([\s\S]*?)\s*```"
-                    json_match = re.search(json_pattern, response_text)
+                    analysis = json.loads(response_text)
                     
-                    if json_match:
-                        # Found a JSON code block, use its content
-                        analysis = json.loads(json_match.group(1))
-                    else:
-                        # Check if the response starts with a JSON object
-                        response_text = response_text.strip()
-                        if response_text.startswith('{') and response_text.endswith('}'):
-                            analysis = json.loads(response_text)
-                        else:
-                            # Try to clean up the response and parse again
-                            cleaned_text = response_text
-                            # Replace single quotes with double quotes for JSON
-                            cleaned_text = re.sub(r"'([^']*)':", r'"\1":', cleaned_text)
-                            # Remove newlines and extra whitespace
-                            cleaned_text = re.sub(r'\s+', ' ', cleaned_text)
-                            # Try to extract anything that looks like JSON
-                            json_obj_match = re.search(r'({.*})', cleaned_text)
-                            if json_obj_match:
-                                analysis = json.loads(json_obj_match.group(1))
-                            else:
-                                raise ValueError("Could not find valid JSON in the response")
-                except json.JSONDecodeError as je:
-                    logger.error(f"JSON decode error: {je}\nAttempting to fix malformed JSON...")
-                    # Try to fix common JSON formatting issues
-                    response_text = response_text.replace("'", '"')  # Replace single quotes with double quotes
-                    response_text = re.sub(r'\n\s*', ' ', response_text)  # Remove newlines
-                    response_text = re.sub(r',\s*}', '}', response_text)  # Remove trailing commas
-                    response_text = re.sub(r',\s*]', ']', response_text)  # Remove trailing commas in arrays
+                    # Validate minimum structure requirements
+                    if not isinstance(analysis, dict):
+                        logger.warning(f"LLM returned non-dict object: {type(analysis)}")
+                        analysis = {"rephrased_question": question}
                     
-                    # Try one more time with the fixed JSON
-                    try:
-                        analysis = json.loads(response_text)
-                    except json.JSONDecodeError:
-                        # If all else fails, create a minimal valid response
-                        logger.error(f"Failed to parse JSON after fixing: {response_text[:100]}...")
-                        analysis = {
-                            "rephrased_question": question,
-                            "question_type": "unknown",
-                            "key_points": ["Error parsing response"],
-                            "business_context": {
-                                "domain": "Error recovery",
-                                "primary_objective": "Failed to parse model response",
-                                "key_entities": [],
-                                "business_impact": "Unknown"
-                            },
-                            "technical_context": {
-                                "data_stack": [],
-                                "relevant_components": [],
-                                "dependencies": [],
-                                "technical_considerations": ["Error occurred during analysis"]
-                            },
-                            "implementation_guidance": {
-                                "approach": "Please try again with a clearer question",
-                                "suggested_steps": [],
-                                "code_references": []
-                            },
-                            "assumptions": ["Processing error occurred"],
-                            "clarifying_questions": ["Could you rephrase your question?"],
-                            "confidence_score": 0.0
-                        }
+                    # Ensure the analysis has all required fields
+                    analysis = {**DEFAULT_ANALYSIS, **analysis}
+                    logger.info(f"Successfully parsed analysis with keys: {list(analysis.keys())}")
+                    
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"JSON parse error: {json_err} in text: {response_text[:200]}...")
+                    # Fall back to error handling
+                    raise ValueError(f"Failed to parse LLM response as JSON: {json_err}")
+                    
+            except Exception as llm_error:
+                logger.error(f"LLM error: {llm_error}")
+                raise ValueError(f"LLM processing error: {llm_error}")
                 
-                # Create a new analysis with defaults
-                validated_analysis = DEFAULT_ANALYSIS.copy()
-                validated_analysis["rephrased_question"] = question
-                
-                # Validate and ensure required fields
-                required_fields = {
-                    "rephrased_question": str,
-                    "question_type": str,
-                    "key_points": list,
-                    "business_context": dict,
-                    "technical_context": dict,
-                    "implementation_guidance": dict,
-                    "assumptions": list,
-                    "clarifying_questions": list,
-                    "confidence_score": (int, float)
-                }
-                
-                # Update with valid fields from the response
-                for field, expected_type in required_fields.items():
-                    if field in analysis and isinstance(analysis[field], expected_type):
-                        if field in ["business_context", "technical_context", "implementation_guidance"]:
-                            validated_analysis[field].update(analysis[field])
-                        else:
-                            validated_analysis[field] = analysis[field]
-                
-                return {
-                    **state,
-                    "business_analysis": validated_analysis,
-                    "feedback_status": "pending",
-                    "confidence_score": float(validated_analysis["confidence_score"])
-                }
-                
-            except Exception as json_error:
-                logger.error(f"Error parsing LLM response: {json_error}\nResponse text: {response_text}")
-                error_analysis = DEFAULT_ANALYSIS.copy()
-                error_analysis.update({
-                    "rephrased_question": question,
-                    "key_points": ["Error parsing analysis output"],
-                    "business_context": {
-                        "domain": "Data Analysis",
-                        "primary_objective": "Market Share Analysis",
-                        "key_entities": ["Nation", "Region", "Revenue"],
-                        "business_impact": f"Error: {str(json_error)}"
-                    }
-                })
-                return {
-                    **state,
-                    "business_analysis": error_analysis,
-                    "feedback_status": "error",
-                    "confidence_score": 0.0
-                }
-                
+            # Return the processed state
+            return {
+                **state,
+                "business_analysis": analysis,
+                "feedback_status": "pending",
+                "confidence_score": float(analysis["confidence_score"])
+            }
+            
         except Exception as e:
-            # Create a better error message for the user
-            logger.error(f"Error in question processing: {e}")
+            logger.error(f"Error in process_question: {e}", exc_info=True)
+            # Return an error analysis as the fallback
             error_analysis = DEFAULT_ANALYSIS.copy()
             error_analysis.update({
-                "rephrased_question": question,
+                "rephrased_question": question if 'question' in locals() else "Error processing question",
                 "question_type": "error",
-                "key_points": ["An error occurred processing your question"],
+                "key_points": ["Error in analysis process"],
                 "business_context": {
-                    "domain": "System Error",
-                    "primary_objective": "Please try again with a clearer or simpler question",
+                    "domain": "Error",
+                    "primary_objective": str(e),
                     "key_entities": [],
-                    "business_impact": "Unable to process request"
+                    "business_impact": "Analysis failed"
                 },
-                "technical_context": {
-                    "data_stack": [],
-                    "relevant_components": [],
-                    "dependencies": [],
-                    "technical_considerations": ["Internal processing error occurred"]
-                },
-                "implementation_guidance": {
-                    "approach": "Please try a different approach to your question",
-                    "suggested_steps": [
-                        "Simplify your question",
-                        "Break complex questions into smaller parts",
-                        "Check if you've uploaded relevant context documents"
-                    ],
-                    "code_references": []
-                },
-                "assumptions": [],
-                "clarifying_questions": [
-                    "Could you rephrase your question more simply?",
-                    "Are you looking for business or technical information?"
-                ],
+                "assumptions": ["Please try again"],
+                "clarifying_questions": ["Could you rephrase your question?"],
                 "confidence_score": 0.0
             })
+            
             return {
                 **state,
                 "business_analysis": error_analysis,
-                "feedback_status": "error",
+                "feedback_status": "pending",
                 "confidence_score": 0.0
             }
+
+    def preprocess_json_response(text: str) -> str:
+        """
+        Preprocess LLM response text to fix common JSON issues.
+        """
+        # Strip leading/trailing whitespace
+        text = text.strip()
+        
+        # Check if the text is wrapped in ```json ... ``` code blocks
+        json_pattern = r"```(?:json)?\s*([\s\S]*?)\s*```"
+        matches = re.findall(json_pattern, text)
+        if matches:
+            text = matches[0].strip()
+        
+        # Check if the text starts with a proper JSON object
+        if not text.startswith('{'):
+            # If it starts with "rephrased_question" or another key, wrap it in braces
+            if '"rephrased_question"' in text or "'rephrased_question'" in text:
+                logger.info("Adding missing opening brace to JSON response")
+                text = '{' + text
+        
+        # Check if the text ends with a proper JSON object closure
+        if not text.endswith('}'):
+            # Add closing brace if needed
+            if text.count('{') > text.count('}'):
+                logger.info("Adding missing closing brace to JSON response")
+                text = text + '}'
+        
+        # Balance braces if needed
+        open_braces = text.count('{')
+        close_braces = text.count('}')
+        
+        if open_braces > close_braces:
+            # Add missing closing braces
+            text = text + ('}' * (open_braces - close_braces))
+        elif close_braces > open_braces:
+            # Remove excess closing braces from the end
+            excess = close_braces - open_braces
+            if text.endswith('}' * excess):
+                text = text[:-excess]
+        
+        # Ensure proper quotes for all keys
+        # This is a simple fix for cases where keys are not properly quoted
+        key_fix_pattern = r'([{,]\s*)(\w+)(\s*:)'
+        text = re.sub(key_fix_pattern, r'\1"\2"\3', text)
+        
+        # Fix trailing commas before closing braces (which are invalid in JSON)
+        text = re.sub(r',\s*}', '}', text)
+        
+        # Log the preprocessed text for debugging (truncated)
+        logger.debug(f"Preprocessed JSON: {text[:200]}...")
+        
+        return text
 
     # Build the graph
     graph = StateGraph(ParserState)
@@ -462,28 +470,199 @@ class QuestionParserSystem:
                 # Create empty results if SQL search fails
                 sql_results = {"results": []}
             
-            with self._lock:
-                result = self.app.invoke(
-                    {
-                        "messages": [HumanMessage(content=question)],
-                        "doc_context": doc_results,
-                        "sql_context": sql_results,
-                        "business_analysis": {},
-                        "feedback_status": None,
+            # Log available collections
+            try:
+                collections = self.tools.db_manager.client.list_collections()
+                collection_names = [c.name for c in collections]
+                logger.info(f"Available collections: {collection_names}")
+            except Exception as e:
+                logger.warning(f"Error listing collections: {e}")
+                
+            # Get GitHub repository context
+            github_results = {}
+            try:
+                logger.info(f"Starting GitHub repository search for query: '{question}'")
+                github_results = self.tools.search_github_repos(question)
+                github_result_count = len(github_results.get('results', []))
+                logger.info(f"GitHub search returned {github_result_count} results")
+                
+                # Debug github_results structure
+                if 'results' not in github_results:
+                    logger.warning("GitHub search didn't return a 'results' key")
+                    github_results['results'] = []
+                elif not github_results['results']:
+                    logger.warning("GitHub search returned empty results array")
+                else:
+                    logger.info(f"GitHub search found {len(github_results['results'])} results")
+                    if github_results['results']:
+                        logger.debug(f"First GitHub result keys: {list(github_results['results'][0].keys())}")
+                
+                # Make sure we have the correct structure for github_results
+                if isinstance(github_results, dict) and 'status' in github_results and 'results' in github_results:
+                    # Extract just the results array
+                    github_results = {'results': github_results['results']}
+                elif isinstance(github_results, dict) and 'results' not in github_results:
+                    # Create a results array if missing
+                    github_results = {'results': list(github_results.values())[0] if github_results else []}
+                
+                # Add type field to each GitHub result for better identification
+                for result in github_results.get('results', []):
+                    if isinstance(result, dict) and 'type' not in result:
+                        result['type'] = 'GitHub'
+                
+                # Log the structure being passed to invoke
+                logger.info(f"GitHub context structure: {len(github_results.get('results', []))} results with keys: {list(github_results.keys())}")
+                
+            except Exception as github_error:
+                logger.warning(f"Error searching GitHub repositories: {github_error}. Continuing without GitHub context.")
+                # Create empty results if GitHub search fails
+                github_results = {"results": []}
+            
+            # Execute the query with better error handling
+            try:
+                with self._lock:
+                    result = self.app.invoke(
+                        {
+                            "messages": [HumanMessage(content=question)],
+                            "doc_context": doc_results,
+                            "sql_context": sql_results,
+                            "github_context": github_results,  # Add GitHub context
+                            "business_analysis": {},
+                            "feedback_status": None,
+                            "confidence_score": 0.0
+                        },
+                        {"configurable": {"thread_id": thread_id}}
+                    )
+                
+                # Save conversation to database
+                business_analysis = result.get("business_analysis", {})
+                
+                # Save conversation to database
+                github_result_count = len(github_results.get('results', []))
+                logger.info(f"Saving conversation with {github_result_count} GitHub results")
+
+                response_data = {
+                    "query": question,
+                    "output": business_analysis.get("rephrased_question", "No response available"),
+                    "technical_details": json.dumps(business_analysis),
+                    "code_context": json.dumps({
+                        "documentation": doc_results,
+                        "sql_schema": sql_results,
+                        "github_code": github_results  # Add GitHub context
+                    }),
+                    "thread_id": thread_id  # Store thread_id in the conversation data
+                }
+
+                # Verify code_context before saving
+                code_context_json = json.dumps({
+                    "documentation": doc_results,
+                    "sql_schema": sql_results,
+                    "github_code": github_results
+                })
+                logger.info(f"Code context JSON length: {len(code_context_json)}")
+                logger.info(f"GitHub results in code_context: {len(github_results.get('results', []))}")
+
+                # Save to database using the conversations table
+                with self._lock:
+                    self.db.save_conversation(conversation_id, response_data)
+                
+                # Add thread_id to the returned business analysis
+                business_analysis["thread_id"] = thread_id
+                business_analysis["conversation_id"] = conversation_id
+                
+                return business_analysis
+                
+            except Exception as e:
+                # Log more details about the error
+                logger.error(f"Error in question processing: {e}")
+                logger.error(f"Error type: {type(e).__name__}")
+                
+                # If we have GitHub results, create a GitHub-only analysis
+                if len(github_results.get('results', [])) > 0:
+                    logger.info(f"Creating fallback analysis with {len(github_results.get('results', []))} GitHub results")
+                    
+                    # Create fallback business analysis with GitHub info
+                    business_analysis = DEFAULT_ANALYSIS.copy()
+                    business_analysis.update({
+                        "rephrased_question": question,
+                        "question_type": "github_only",
+                        "key_points": ["Analysis based only on GitHub code examples"],
+                        "business_context": {
+                            "domain": "Code Analysis",
+                            "primary_objective": "Understand relevant code patterns",
+                            "key_entities": [],
+                            "business_impact": "Code implementation guidance"
+                        },
+                        "technical_context": {
+                            "data_stack": ["dbt", "Snowflake"],
+                            "relevant_components": [],
+                            "dependencies": [],
+                            "technical_considerations": ["Based on GitHub code examples"]
+                        },
+                        "implementation_guidance": {
+                            "approach": "Study similar implementations in the code examples",
+                            "suggested_steps": ["Review the GitHub code examples below"],
+                            "code_references": []
+                        },
+                        "assumptions": ["Processing based on GitHub code examples only"],
+                        "clarifying_questions": ["Could you provide more business context?"],
+                        "confidence_score": 0.4
+                    })
+                    
+                    # Add GitHub information to the analysis
+                    repo_names = []
+                    file_paths = []
+                    code_snippets = []
+                    
+                    for result in github_results.get('results', [])[:3]:  # Use top 3 results
+                        if isinstance(result.get('repository'), dict):
+                            repo_name = result.get('repository', {}).get('name', 'Unknown')
+                            repo_names.append(repo_name)
+                        
+                        if isinstance(result.get('file'), dict):
+                            file_path = result.get('file', {}).get('path', 'Unknown')
+                            file_paths.append(file_path)
+                        
+                        # Get a snippet of the content (first 200 chars)
+                        content = result.get('content', '')[:200]
+                        if content:
+                            code_snippets.append(f"From {repo_name}/{file_path}: {content}...")
+                    
+                    business_analysis['technical_context']['relevant_components'] = file_paths
+                    business_analysis['implementation_guidance']['code_references'] = [
+                        f"Example in {repo} repository" for repo in repo_names
+                    ]
+                    
+                    # Add snippets to the key points for more context
+                    if code_snippets:
+                        business_analysis['key_points'].extend([
+                            "Found relevant code examples that may help with your implementation"
+                        ])
+                else:
+                    # No GitHub results, return a generic error
+                    business_analysis = DEFAULT_ANALYSIS.copy()
+                    business_analysis.update({
+                        "rephrased_question": question,
+                        "question_type": "error",
+                        "key_points": ["Error analyzing the question"],
+                        "business_context": {
+                            "domain": "Error",
+                            "primary_objective": "Please try again or rephrase your question",
+                            "key_entities": [],
+                            "business_impact": "Unable to analyze"
+                        },
                         "confidence_score": 0.0
-                    },
-                    {"configurable": {"thread_id": thread_id}}
-                )
+                    })
             
             # Save conversation to database
-            business_analysis = result.get("business_analysis", {})
             response_data = {
                 "query": question,
                 "output": business_analysis.get("rephrased_question", "No response available"),
                 "technical_details": json.dumps(business_analysis),
                 "code_context": json.dumps({
                     "documentation": doc_results,
-                    "sql_schema": sql_results
+                    "sql_schema": sql_results,
+                    "github_code": github_results  # Add GitHub context
                 }),
                 "thread_id": thread_id  # Store thread_id in the conversation data
             }

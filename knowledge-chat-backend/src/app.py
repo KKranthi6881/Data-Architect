@@ -66,6 +66,7 @@ feedback_system = HumanFeedbackSystem()
 chat_db = ChatDatabase()
 chat_db.ensure_feedback_columns()
 chat_db.ensure_cleared_column()
+chat_db.ensure_architect_response_column()
 
 # Initialize tools and analysis system
 analysis_system = SimpleAnalysisSystem(code_search_tools)
@@ -1005,53 +1006,67 @@ async def conversation_history(request: Request):
         {"request": request}
     )
 
-@app.get("/api/thread/{thread_id}/conversations")
-async def get_thread_conversations(thread_id: str):
-    """Get all conversations associated with a thread ID"""
+@app.get("/api/thread-conversations")
+async def get_thread_conversations():
+    """Get all conversations grouped by thread"""
     try:
-        # Ensure thread_id column exists
-        chat_db.ensure_thread_id_column()
-        
-        # Get conversations by thread ID
-        conversations = chat_db.get_conversations_by_thread(thread_id)
+        # Get all conversations
+        conversations = chat_db.get_all_conversations()
         
         if not conversations:
             return JSONResponse(
                 content={
                     "status": "success",
-                    "conversations": [],
-                    "message": f"No conversations found for thread ID: {thread_id}"
+                    "threads": [],
+                    "message": "No conversations found"
                 }
             )
         
-        # Format conversations for response
-        formatted_conversations = []
+        # Group conversations by thread_id
+        thread_groups = {}
         for conv in conversations:
-            # Extract a preview of the conversation
-            query = conv.get("query", "")
-            query_preview = query[:100] + "..." if len(query) > 100 else query
+            thread_id = conv.get("thread_id") or conv.get("id")
+            if thread_id not in thread_groups:
+                thread_groups[thread_id] = []
+            thread_groups[thread_id].append(conv)
+        
+        # Format thread summaries
+        threads = []
+        for thread_id, convs in thread_groups.items():
+            # Sort conversations in thread by timestamp
+            sorted_convs = sorted(convs, key=lambda x: x.get("created_at", ""))
+            first_conv = sorted_convs[0]
+            last_conv = sorted_convs[-1]
             
-            # Format the conversation
-            formatted_conv = {
-                "id": conv.get("id", ""),
-                "timestamp": conv.get("created_at", ""),
-                "preview": query_preview,
-                "query": query,
-                "response": conv.get("output", ""),
-                "feedback_status": conv.get("feedback_status", "pending"),
-                "thread_id": thread_id
+            thread_summary = {
+                "thread_id": thread_id,
+                "created_at": first_conv.get("created_at"),
+                "initial_query": first_conv.get("query"),
+                "conversations": [{
+                    "id": conv.get("id"),
+                    "created_at": conv.get("created_at"),
+                    "query": conv.get("query"),
+                    "technical_details": conv.get("technical_details"),
+                    "architect_response": conv.get("architect_response"),
+                    "feedback_status": conv.get("feedback_status", "pending")
+                } for conv in sorted_convs],
+                "message_count": len(sorted_convs),
+                "feedback_status": last_conv.get("feedback_status", "pending"),
+                "has_architect_response": any(c.get("architect_response") for c in sorted_convs)
             }
-            
-            formatted_conversations.append(formatted_conv)
+            threads.append(thread_summary)
+        
+        # Sort threads by creation date (newest first)
+        threads.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         
         return JSONResponse(
             content={
                 "status": "success",
-                "thread_id": thread_id,
-                "conversations": formatted_conversations,
-                "total": len(formatted_conversations)
+                "threads": threads,
+                "total": len(threads)
             }
         )
+        
     except Exception as e:
         logger.error(f"Error getting thread conversations: {e}")
         return JSONResponse(
@@ -1211,7 +1226,28 @@ async def get_architect_response(conversation_id: str):
         
         if not architect_response:
             raise HTTPException(status_code=500, detail="Failed to generate architect response")
-        
+
+        # Save the architect response to the database
+        try:
+            # Convert the architect response to JSON string for storage
+            architect_response_json = json.dumps(architect_response)
+            
+            # Update the conversation with the architect response
+            with chat_db._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE conversations 
+                    SET architect_response = ?,
+                        feedback_status = 'completed'
+                    WHERE id = ?
+                """, (architect_response_json, conversation_id))
+                conn.commit()
+                
+            logger.info(f"Saved architect response for conversation {conversation_id}")
+        except Exception as e:
+            logger.error(f"Error saving architect response: {e}")
+            # Continue with the response even if save fails
+            
         return JSONResponse(content={
             "status": "success",
             "response": architect_response.get("response", ""),
