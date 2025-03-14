@@ -35,7 +35,9 @@ import {
   Card,
   CardBody,
   Alert,
-  AlertIcon
+  AlertIcon,
+  UnorderedList,
+  ListItem
 } from '@chakra-ui/react';
 import { 
   IoCalendar, 
@@ -50,6 +52,8 @@ import {
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 
 // Define API base URL directly in the component
 const API_BASE_URL = 'http://localhost:8000';
@@ -77,10 +81,13 @@ const ChatHistoryPage = () => {
   const messageBgUser = useColorModeValue('orange.50', 'orange.800');
   const messageBgAssistant = useColorModeValue('gray.50', 'gray.700');
 
+  // Add new state for threads
+  const [threads, setThreads] = useState([]);
+
   // Fetch conversations list
   useEffect(() => {
     console.log("ChatHistoryPage mounted, fetching conversations");
-    fetchConversations();
+    fetchThreads();
   }, []);
   
   // Handle conversation loading when conversationId is in URL
@@ -95,6 +102,55 @@ const ChatHistoryPage = () => {
       setDirectError(null);
     }
   }, [conversationId]);
+
+  // Update fetchThreads function
+  const fetchThreads = async () => {
+    try {
+      setIsLoading(true);
+      console.log("1. Starting to fetch threads...");
+      const response = await fetch(`${API_BASE_URL}/api/thread-conversations`);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch threads: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log("2. API Response:", data);
+      
+      if (data.status === 'success' && Array.isArray(data.threads)) {
+        console.log("3. Setting threads:", data.threads);
+        setThreads(data.threads);
+      } else {
+        console.warn("4. Unexpected response format:", data);
+        toast({
+          title: 'Warning',
+          description: 'Received unexpected data format from server',
+          status: 'warning',
+          duration: 5000,
+        });
+      }
+    } catch (error) {
+      console.error('5. Error fetching threads:', error);
+      toast({
+        title: 'Error',
+        description: error.message,
+        status: 'error',
+        duration: 5000,
+      });
+    } finally {
+      console.log("6. Setting isLoading to false");
+      setIsLoading(false);
+    }
+  };
+
+  // Add this useEffect to monitor state changes
+  useEffect(() => {
+    console.log("Current state:", {
+      isLoading,
+      threadsLength: threads?.length,
+      directConversation: !!directConversation
+    });
+  }, [isLoading, threads, directConversation]);
 
   // Main conversations list fetching
   const fetchConversations = async () => {
@@ -202,9 +258,8 @@ const ChatHistoryPage = () => {
       console.log("Conversation details response:", data);
       
       if (data.status === 'success' && data.conversation) {
-        // Create a messages array with properly formatted messages
-        const messages = [];
         const conversation = data.conversation;
+        const messages = [];
         
         // Add user query message
         if (conversation.query) {
@@ -216,24 +271,27 @@ const ChatHistoryPage = () => {
           });
         }
         
-        // Add assistant response message - handle architect_response specifically
+        // Add architect response message - use architect_response instead of output
         if (conversation.architect_response) {
-          // Parse the JSON string to get the actual response text
           try {
-            const architectResponseObj = JSON.parse(conversation.architect_response);
-            const responseText = architectResponseObj.response || "No response content";
-            
-            console.log("Extracted response text:", responseText.substring(0, 100) + "...");
-            
+            const architectResponse = typeof conversation.architect_response === 'string' 
+              ? JSON.parse(conversation.architect_response)
+              : conversation.architect_response;
+              
             messages.push({
               id: `${id}-assistant`,
               role: 'assistant',
-              content: responseText,  // Use the extracted text directly
-              timestamp: conversation.timestamp || conversation.created_at
+              type: 'architect',
+              content: architectResponse.response || architectResponse,
+              timestamp: conversation.timestamp || conversation.created_at,
+              details: {
+                sections: architectResponse.sections,
+                schema_results: architectResponse.schema_results,
+                code_results: architectResponse.code_results
+              }
             });
           } catch (e) {
             console.error("Error parsing architect_response:", e);
-            // Fall back to using the raw text
             messages.push({
               id: `${id}-assistant`,
               role: 'assistant',
@@ -241,16 +299,7 @@ const ChatHistoryPage = () => {
               timestamp: conversation.timestamp || conversation.created_at
             });
           }
-        } else if (conversation.response) {
-          messages.push({
-            id: `${id}-assistant`,
-            role: 'assistant',
-            content: conversation.response,
-            timestamp: conversation.timestamp || conversation.created_at
-          });
         }
-        
-        console.log("Processed messages:", messages);
         
         setConversationDetails({
           id: id,
@@ -259,7 +308,6 @@ const ChatHistoryPage = () => {
           metadata: conversation
         });
         
-        // Find and set the selected conversation
         const matchedConversation = conversations.find(c => c.id === id);
         if (matchedConversation) {
           setSelectedConversation(matchedConversation);
@@ -450,6 +498,26 @@ const ChatHistoryPage = () => {
     );
   };
 
+  // Format code block
+  const formatCodeBlock = (code, language = '') => {
+    return (
+      <Box borderRadius="md" overflow="hidden" my={2}>
+        <SyntaxHighlighter
+          language={language}
+          style={atomDark}
+          customStyle={{
+            margin: 0,
+            padding: '1rem',
+            borderRadius: '0.375rem',
+            fontSize: '0.9em',
+          }}
+        >
+          {code}
+        </SyntaxHighlighter>
+      </Box>
+    );
+  };
+
   // If we're viewing a specific conversation by direct URL access
   if (conversationId && !selectedConversation) {
     // Loading state
@@ -516,7 +584,76 @@ const ChatHistoryPage = () => {
                 <Box mb={4}>
                   <Heading size="sm" mb={2}>Response:</Heading>
                   <Box p={4} bg="gray.50" borderRadius="md">
-                    <ReactMarkdown>{directConversation.response}</ReactMarkdown>
+                    {directConversation.architect_response ? (
+                      <ReactMarkdown
+                        components={{
+                          code: ({node, inline, className, children, ...props}) => {
+                            const match = /language-(\w+)/.exec(className || '');
+                            return inline ? (
+                              <Code colorScheme="orange" px={2} py={0.5} {...props}>
+                                {children}
+                              </Code>
+                            ) : (
+                              <Box 
+                                bg="gray.800" 
+                                borderRadius="md" 
+                                p={4} 
+                                my={4}
+                                overflow="auto"
+                              >
+                                <SyntaxHighlighter
+                                  language={match ? match[1] : ''}
+                                  style={atomDark}
+                                  customStyle={{
+                                    margin: 0,
+                                    background: 'transparent',
+                                    fontSize: '0.9em',
+                                  }}
+                                >
+                                  {String(children).replace(/\n$/, '')}
+                                </SyntaxHighlighter>
+                              </Box>
+                            );
+                          },
+                          p: ({children}) => (
+                            <Text mb={4} lineHeight="tall">
+                              {children}
+                            </Text>
+                          ),
+                          ul: ({children}) => (
+                            <UnorderedList spacing={2} pl={4} mb={4}>
+                              {children}
+                            </UnorderedList>
+                          ),
+                          li: ({children}) => (
+                            <ListItem>
+                              {children}
+                            </ListItem>
+                          ),
+                          h1: ({children}) => (
+                            <Heading as="h1" size="lg" mt={6} mb={4}>
+                              {children}
+                            </Heading>
+                          ),
+                          h2: ({children}) => (
+                            <Heading as="h2" size="md" mt={5} mb={3}>
+                              {children}
+                            </Heading>
+                          ),
+                          h3: ({children}) => (
+                            <Heading as="h3" size="sm" mt={4} mb={2}>
+                              {children}
+                            </Heading>
+                          )
+                        }}
+                      >
+                        {typeof directConversation.architect_response === 'string' 
+                          ? directConversation.architect_response 
+                          : directConversation.architect_response.response || JSON.stringify(directConversation.architect_response, null, 2)}
+                      </ReactMarkdown>
+                    ) : (
+                      <Text color="gray.500">No response available</Text>
+                    )}
                   </Box>
                 </Box>
                 
@@ -578,6 +715,8 @@ const ChatHistoryPage = () => {
       )}
 
       <Container maxW="container.xl">
+        {console.log("Rendering with:", { isLoading, threads })}
+        
         {selectedConversation && conversationDetails ? (
           // Conversation detail view
           <Box>
@@ -722,7 +861,7 @@ const ChatHistoryPage = () => {
               <Flex justify="center" align="center" height="200px">
                 <Spinner size="xl" color="orange.500" thickness="4px" />
               </Flex>
-            ) : conversations.length === 0 ? (
+            ) : threads.length === 0 ? (
               <Box 
                 p={10} 
                 borderRadius="lg" 
@@ -744,151 +883,103 @@ const ChatHistoryPage = () => {
                 </Button>
               </Box>
             ) : (
-              <Accordion 
-                allowToggle 
-                defaultIndex={[]} 
-                width="100%"
-              >
-                {conversations.map((conversation) => (
+              <Accordion allowToggle width="100%">
+                {threads.map((thread) => (
                   <AccordionItem 
-                    key={conversation.id} 
+                    key={thread.thread_id} 
                     border="1px solid" 
                     borderColor={borderColor}
                     borderRadius="md"
                     mb={3}
-                    overflow="hidden"
                   >
-                    <AccordionButton 
-                      py={4} 
-                      px={5}
-                      _hover={{ bg: 'gray.50' }}
-                      _expanded={{ bg: 'gray.50', fontWeight: 'medium' }}
-                    >
+                    <AccordionButton py={4} px={5}>
                       <HStack flex="1" spacing={4} textAlign="left">
                         <Icon as={IoDocumentTextOutline} color="orange.500" boxSize={5} />
                         <Box>
                           <Text fontWeight="medium" fontSize="md">
-                            {getTopicPreview(conversation)}
+                            {thread.initial_query}
                           </Text>
                           <Text fontSize="xs" color={textSecondary} mt={1}>
                             <Icon as={IoCalendar} boxSize={3} mr={1} />
-                            {formatDate(conversation.timestamp || conversation.created_at)} 
-                            {conversation.messages && ` • ${conversation.messages.length} messages`}
+                            {formatDate(thread.created_at)} • {thread.message_count} messages
                           </Text>
                         </Box>
                       </HStack>
                       <HStack spacing={3}>
-                        <IconButton
-                          icon={<IoTrashOutline />}
-                          variant="ghost"
-                          colorScheme="red"
-                          size="sm"
-                          aria-label="Delete conversation"
-                          onClick={(e) => handleDeleteConversation(conversation.id, e)}
-                        />
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          colorScheme="orange"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleConversationSelect(conversation.id);
-                          }}
-                        >
-                          View
-                        </Button>
+                        <Badge colorScheme={
+                          thread.has_architect_response ? 'green' : 'orange'
+                        }>
+                          {thread.has_architect_response ? 'Completed' : 'In Progress'}
+                        </Badge>
                         <AccordionIcon />
                       </HStack>
                     </AccordionButton>
                     
-                    <AccordionPanel pb={4} bg="white">
+                    <AccordionPanel pb={4}>
                       <VStack align="stretch" spacing={4}>
-                        <Box>
-                          <Table variant="simple" size="sm">
-                            <Thead bg="gray.50">
-                              <Tr>
-                                <Th>Details</Th>
-                                <Th>Value</Th>
-                              </Tr>
-                            </Thead>
-                            <Tbody>
-                              <Tr>
-                                <Td fontWeight="medium">Created</Td>
-                                <Td>{formatDate(conversation.timestamp || conversation.created_at)}</Td>
-                              </Tr>
-                              {conversation.messages && (
-                                <Tr>
-                                  <Td fontWeight="medium">Messages</Td>
-                                  <Td>{conversation.messages.length}</Td>
-                                </Tr>
-                              )}
-                              <Tr>
-                                <Td fontWeight="medium">ID</Td>
-                                <Td>
-                                  <Code fontSize="xs">{conversation.id}</Code>
-                                </Td>
-                              </Tr>
-                            </Tbody>
-                          </Table>
-                        </Box>
-                        
-                        {conversation.messages && conversation.messages.length > 0 && (
-                          <Box>
-                            <Text fontWeight="medium" mb={2}>Messages Preview:</Text>
-                            <VStack align="stretch" spacing={2} maxH="200px" overflowY="auto" px={2}>
-                              {conversation.messages.slice(0, 3).map((message, idx) => (
-                                <HStack 
-                                  key={idx} 
-                                  bg={message.role === 'user' ? 'orange.50' : 'gray.50'} 
-                                  p={2} 
-                                  borderRadius="md"
-                                  borderLeftWidth="3px"
-                                  borderLeftColor={message.role === 'user' ? 'orange.400' : 'gray.400'}
-                                >
-                                  <Badge colorScheme={message.role === 'user' ? 'orange' : 'gray'}>
-                                    {message.role}
-                                  </Badge>
-                                  <Text fontSize="sm" noOfLines={2}>
-                                    {message.content}
-                                  </Text>
-                                </HStack>
-                              ))}
-                              {conversation.messages.length > 3 && (
-                                <Text fontSize="xs" color={textSecondary} textAlign="center">
-                                  + {conversation.messages.length - 3} more messages
-                                </Text>
-                              )}
-                            </VStack>
+                        {thread.conversations.map((conv, idx) => (
+                          <Box 
+                            key={conv.id}
+                            p={4}
+                            bg={idx % 2 === 0 ? 'gray.50' : 'white'}
+                            borderRadius="md"
+                          >
+                            <Text fontSize="sm" color="gray.500" mb={2}>
+                              {formatDate(conv.created_at)}
+                            </Text>
+                            
+                            {conv.query && (
+                              <Box mb={3}>
+                                <Text fontWeight="medium">Query:</Text>
+                                <Text>{conv.query}</Text>
+                              </Box>
+                            )}
+
+                            {conv.architect_response && (
+                              <Box>
+                                <Text fontWeight="medium">Architect Response:</Text>
+                                <Box p={2} bg="white" borderRadius="md">
+                                  <ReactMarkdown
+                                    components={{
+                                      code: ({node, inline, className, children, ...props}) => {
+                                        const match = /language-(\w+)/.exec(className || '');
+                                        return inline ? (
+                                          <Code colorScheme="orange" px={2} py={0.5} {...props}>
+                                            {children}
+                                          </Code>
+                                        ) : (
+                                          <Box 
+                                            bg="gray.800" 
+                                            borderRadius="md" 
+                                            p={4} 
+                                            my={4}
+                                            overflow="auto"
+                                          >
+                                            <SyntaxHighlighter
+                                              language={match ? match[1] : ''}
+                                              style={atomDark}
+                                              customStyle={{
+                                                margin: 0,
+                                                background: 'transparent',
+                                                fontSize: '0.9em',
+                                              }}
+                                            >
+                                              {String(children).replace(/\n$/, '')}
+                                            </SyntaxHighlighter>
+                                          </Box>
+                                        );
+                                      }
+                                    }}
+                                  >
+                                    {typeof conv.architect_response === 'string' 
+                                      ? conv.architect_response 
+                                      : conv.architect_response.response || JSON.stringify(conv.architect_response, null, 2)}
+                                  </ReactMarkdown>
+                                </Box>
+                              </Box>
+                            )}
                           </Box>
-                        )}
-                        
-                        <Divider />
-                        
-                        <HStack>
-                          <Button
-                            colorScheme="orange"
-                            size="md"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleConversationSelect(conversation.id);
-                            }}
-                            flex="1"
-                          >
-                            View Full Conversation
-                          </Button>
-                          <Button
-                            colorScheme="orange"
-                            size="md"
-                            variant="outline"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              goToChat(conversation.id);
-                            }}
-                            flex="1"
-                          >
-                            Continue Chat
-                          </Button>
-                        </HStack>
+                        ))}
                       </VStack>
                     </AccordionPanel>
                   </AccordionItem>

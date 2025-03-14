@@ -1281,14 +1281,14 @@ const ChatPage = () => {
                     comments: "User approved"
                   })}
                 >
-                  Yes, This Helps
+                  Looking Good, Approved
                 </Button>
                 <Button 
                   colorScheme="blue" 
                   size="sm"
                   onClick={() => setFeedbackMode(message.id)}
                 >
-                  Need More Details
+                  Need to Add Additional Content
                 </Button>
               </HStack>
             </Box>
