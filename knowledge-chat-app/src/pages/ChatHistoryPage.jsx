@@ -31,7 +31,11 @@ import {
   TabList,
   Tab,
   TabPanels,
-  TabPanel
+  TabPanel,
+  Card,
+  CardBody,
+  Alert,
+  AlertIcon
 } from '@chakra-ui/react';
 import { 
   IoCalendar, 
@@ -40,9 +44,15 @@ import {
   IoFilterOutline,
   IoDownloadOutline,
   IoDocumentTextOutline,
-  IoChevronBack
+  IoChevronBack,
+  IoArrowBack
 } from 'react-icons/io5';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import axios from 'axios';
+import ReactMarkdown from 'react-markdown';
+
+// Define API base URL directly in the component
+const API_BASE_URL = 'http://localhost:8000';
 
 const ChatHistoryPage = () => {
   const [conversations, setConversations] = useState([]);
@@ -53,6 +63,11 @@ const ChatHistoryPage = () => {
   const toast = useToast();
   const navigate = useNavigate();
   const { conversationId } = useParams();
+  
+  // For direct conversation fetching
+  const [directConversation, setDirectConversation] = useState(null);
+  const [directLoading, setDirectLoading] = useState(false);
+  const [directError, setDirectError] = useState(null);
 
   // Theme colors
   const bgColor = useColorModeValue('white', 'gray.900');
@@ -62,44 +77,30 @@ const ChatHistoryPage = () => {
   const messageBgUser = useColorModeValue('orange.50', 'orange.800');
   const messageBgAssistant = useColorModeValue('gray.50', 'gray.700');
 
+  // Fetch conversations list
   useEffect(() => {
     console.log("ChatHistoryPage mounted, fetching conversations");
     fetchConversations();
   }, []);
-
+  
+  // Handle conversation loading when conversationId is in URL
   useEffect(() => {
     if (conversationId) {
-      console.log("URL has conversation ID:", conversationId);
-      
-      // Always fetch the details when conversationId changes
-      fetchConversationDetails(conversationId);
-      
-      // Select the conversation if we have it in our list
-      const conversation = conversations.find(c => c.id === conversationId);
-      if (conversation) {
-        console.log("Found conversation in list, selecting:", conversation.id);
-        setSelectedConversation(conversation);
-      } else {
-        console.log("Conversation not in list yet, creating placeholder");
-        // Create a temporary placeholder
-        setSelectedConversation({
-          id: conversationId,
-          timestamp: new Date().toISOString(),
-          preview: "Loading conversation...",
-          feedback_status: "pending"
-        });
-      }
+      console.log(`Direct URL access to conversation: ${conversationId}`);
+      loadDirectConversation(conversationId);
     } else {
-      // Clear selection if no conversationId in URL
-      setSelectedConversation(null);
-      setConversationDetails(null);
+      // Reset direct conversation view when no ID in URL
+      setDirectConversation(null);
+      setDirectLoading(false);
+      setDirectError(null);
     }
-  }, [conversationId, conversations]);
+  }, [conversationId]);
 
+  // Main conversations list fetching
   const fetchConversations = async () => {
     try {
       setIsLoading(true);
-      const response = await fetch('http://localhost:8000/api/conversations');
+      const response = await fetch(`${API_BASE_URL}/api/conversations`);
       
       if (!response.ok) {
         throw new Error(`Failed to fetch conversations: ${response.status} ${response.statusText}`);
@@ -158,13 +159,40 @@ const ChatHistoryPage = () => {
     }
   };
 
-  // Fetch conversation details with thread messages
+  // Function to fetch a specific conversation directly
+  const loadDirectConversation = async (id) => {
+    try {
+      setDirectLoading(true);
+      setDirectError(null);
+      
+      console.log(`Fetching direct conversation: ${id}`);
+      const response = await axios.get(`${API_BASE_URL}/api/conversation/${id}`);
+      
+      console.log('Direct conversation data:', response.data);
+      setDirectConversation(response.data);
+    } catch (error) {
+      console.error('Error fetching direct conversation:', error);
+      setDirectError(`Failed to load conversation: ${error.message}`);
+      
+      toast({
+        title: 'Error',
+        description: 'Unable to load the requested conversation',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    } finally {
+      setDirectLoading(false);
+    }
+  };
+  
+  // Other existing functions from your component
   const fetchConversationDetails = async (id) => {
     try {
       setIsLoadingDetail(true);
       console.log(`Fetching details for conversation: ${id}`);
       
-      const response = await fetch(`http://localhost:8000/api/conversation/${id}`);
+      const response = await fetch(`${API_BASE_URL}/api/conversation/${id}`);
       
       if (!response.ok) {
         throw new Error(`Failed to fetch conversation details: ${response.status} ${response.statusText}`);
@@ -294,7 +322,7 @@ const ChatHistoryPage = () => {
     event.stopPropagation();
     
     try {
-      const response = await fetch(`http://localhost:8000/api/conversations/${conversationId}`, {
+      const response = await fetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
         method: 'DELETE',
       });
       
@@ -324,15 +352,14 @@ const ChatHistoryPage = () => {
 
   const formatDate = (dateStr) => {
     if (!dateStr) return 'Unknown date';
-    const date = new Date(dateStr);
-    return date.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
-    });
+    
+    try {
+      const date = new Date(dateStr);
+      return date.toLocaleString();
+    } catch (e) {
+      console.error('Error formatting date:', e);
+      return dateStr;
+    }
   };
 
   const getTopicPreview = (conversation) => {
@@ -367,80 +394,170 @@ const ChatHistoryPage = () => {
     navigate(`/chat/${conversationId}`);
   };
 
-  // Renders a single message in the detail view
-  const renderMessage = (message) => {
-    console.log("Rendering message:", message);
+  // Format technical details for display
+  const renderTechnicalDetails = (details) => {
+    if (!details) return null;
     
-    // Extract content based on message structure
-    let content = '';
-    let role = '';
-    
-    if (message.role === 'user') {
-      role = 'user';
-      content = message.content || '';
-    } else if (message.role === 'assistant') {
-      role = 'assistant';
-      content = message.content || '';
-    } else {
-      // If role is not explicitly defined, infer from content
-      if (message.query) {
-        role = 'user';
-        content = message.query;
-      } else if (message.response) {
-        role = 'assistant';
-        content = message.response;
-      } else if (message.content) {
-        // Default to user if unknown
-        role = message.content.includes('?') ? 'user' : 'assistant';
-        content = message.content;
+    let parsedDetails = details;
+    if (typeof details === 'string') {
+      try {
+        parsedDetails = JSON.parse(details);
+      } catch (e) {
+        console.error('Error parsing technical details:', e);
+        return <Text color="red.500">Error parsing technical details</Text>;
       }
     }
     
-    console.log(`Rendering message: role=${role}, content=${content.substring(0, 50)}...`);
+    const parsedQuestion = parsedDetails.parsed_question || {};
     
     return (
-      <Box 
-        p={4} 
-        mb={4} 
-        borderRadius="md"
-        bg={role === 'user' ? messageBgUser : messageBgAssistant}
-        borderWidth="1px"
-        borderColor={borderColor}
-      >
-        <HStack mb={2} justify="space-between">
-          <Badge colorScheme={role === 'user' ? 'orange' : 'blue'}>
-            {role === 'user' ? 'You' : 'Assistant'}
-          </Badge>
-          <Text fontSize="xs" color={textSecondary}>
-            {formatDate(message.timestamp || message.created_at)}
-          </Text>
-        </HStack>
+      <Box mt={4}>
+        <Heading size="md" mb={3}>Technical Details</Heading>
         
-        <Text whiteSpace="pre-wrap">
-          {content}
-        </Text>
+        {parsedQuestion.rephrased_question && (
+          <Box mb={2}>
+            <Text fontWeight="bold">Rephrased Question:</Text>
+            <Text>{parsedQuestion.rephrased_question}</Text>
+          </Box>
+        )}
+        
+        {parsedQuestion.question_type && (
+          <Box mb={2}>
+            <Text fontWeight="bold">Question Type:</Text>
+            <Badge 
+              colorScheme={
+                parsedQuestion.question_type === 'business' ? 'blue' : 
+                parsedQuestion.question_type === 'technical' ? 'purple' : 
+                'orange'
+              }
+            >
+              {parsedQuestion.question_type.toUpperCase()}
+            </Badge>
+          </Box>
+        )}
+        
+        {parsedQuestion.key_points && parsedQuestion.key_points.length > 0 && (
+          <Box mb={2}>
+            <Text fontWeight="bold">Key Points:</Text>
+            <VStack align="start" pl={4}>
+              {parsedQuestion.key_points.map((point, idx) => (
+                <Text key={idx}>• {point}</Text>
+              ))}
+            </VStack>
+          </Box>
+        )}
       </Box>
     );
   };
 
-  // Debug function to help diagnose the issue
-  const debugConversationDetails = () => {
-    if (conversationDetails && conversationDetails.messages) {
-      console.log("Messages to render:", conversationDetails.messages);
-      
-      // Check if messages have content
-      conversationDetails.messages.forEach((msg, i) => {
-        console.log(`Message ${i}:`, {
-          role: msg.role,
-          contentLength: msg.content ? msg.content.length : 0,
-          content: msg.content ? msg.content.substring(0, 50) + '...' : 'MISSING',
-        });
-      });
-    } else {
-      console.log("No conversation details or messages available");
+  // If we're viewing a specific conversation by direct URL access
+  if (conversationId && !selectedConversation) {
+    // Loading state
+    if (directLoading) {
+      return (
+        <Flex justify="center" align="center" minHeight="80vh">
+          <Spinner size="xl" color="orange.500" />
+        </Flex>
+      );
     }
-  };
+    
+    // Error state
+    if (directError) {
+      return (
+        <Box p={8}>
+          <Button leftIcon={<IoArrowBack />} onClick={() => navigate('/history')} mb={4}>
+            Back to Conversations
+          </Button>
+          <Alert status="error" borderRadius="md">
+            <AlertIcon />
+            {directError}
+          </Alert>
+        </Box>
+      );
+    }
+    
+    // Display direct conversation view
+    if (directConversation) {
+      return (
+        <Box bg={bgColor} minH="calc(100vh - 64px)" py={8}>
+          <Container maxW="container.xl">
+            <HStack mb={6} spacing={4}>
+              <Button 
+                leftIcon={<IoArrowBack />} 
+                onClick={() => navigate('/history')}
+                variant="outline"
+              >
+                Back to Conversations
+              </Button>
+              <Heading size="lg" flex="1">Conversation Details</Heading>
+              <Button 
+                colorScheme="orange" 
+                onClick={() => goToChat(directConversation.id)}
+              >
+                Continue in Chat
+              </Button>
+            </HStack>
+            
+            <Card borderWidth="1px" borderColor={borderColor} borderRadius="lg" mb={6}>
+              <CardBody p={6}>
+                <Text fontSize="sm" color="gray.500" mb={2}>
+                  ID: {directConversation.id} • {formatDate(directConversation.timestamp)}
+                </Text>
+                
+                <Divider my={4} />
+                
+                <Box mb={4}>
+                  <Heading size="sm" mb={2}>Query:</Heading>
+                  <Text p={3} bg="gray.50" borderRadius="md">
+                    {directConversation.query}
+                  </Text>
+                </Box>
+                
+                <Box mb={4}>
+                  <Heading size="sm" mb={2}>Response:</Heading>
+                  <Box p={4} bg="gray.50" borderRadius="md">
+                    <ReactMarkdown>{directConversation.response}</ReactMarkdown>
+                  </Box>
+                </Box>
+                
+                {directConversation.technical_details && 
+                  renderTechnicalDetails(directConversation.technical_details)
+                }
+                
+                {directConversation.feedback && (
+                  <Box mt={4}>
+                    <Heading size="sm" mb={2}>Feedback</Heading>
+                    <Badge 
+                      colorScheme={
+                        directConversation.feedback.status === 'approved' ? 'green' : 
+                        directConversation.feedback.status === 'rejected' ? 'red' : 
+                        'yellow'
+                      }
+                    >
+                      {directConversation.feedback.status}
+                    </Badge>
+                    {directConversation.feedback.comments && (
+                      <Text mt={1}>Comments: {directConversation.feedback.comments}</Text>
+                    )}
+                  </Box>
+                )}
+              </CardBody>
+            </Card>
+            
+            {/* Debug section (hidden by default) */}
+            <Box display="none">
+              <Heading size="sm" mb={2}>Debug: Raw Data</Heading>
+              <Code p={4} fontSize="xs" overflowX="auto" maxHeight="200px">
+                {JSON.stringify(directConversation, null, 2)}
+              </Code>
+            </Box>
+          </Container>
+        </Box>
+      );
+    }
+  }
 
+  // Keep your existing render for when viewing the list or a selected conversation
   return (
     <Box bg={bgColor} minH="calc(100vh - 64px)" py={8}>
       {/* Debug element - remove this after fixing */}
@@ -450,8 +567,12 @@ const ChatHistoryPage = () => {
           <Text>Selected: {selectedConversation?.id}</Text>
           <Text>Details: {conversationDetails ? 'Yes' : 'No'}</Text>
           <Text>Messages: {conversationDetails?.messages?.length || 0}</Text>
-          <Button size="xs" onClick={debugConversationDetails} mt={2}>
-            Log Messages
+          <Button size="xs" onClick={() => {
+            console.log("Debugging conversation details...");
+            console.log("Conversation Details:", conversationDetails);
+            console.log("Selected Conversation:", selectedConversation);
+          }} mt={2}>
+            Log Details
           </Button>
         </Box>
       )}
