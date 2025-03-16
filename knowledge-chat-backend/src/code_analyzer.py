@@ -10,6 +10,8 @@ from collections import defaultdict
 import os
 import yaml
 import json
+import subprocess
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,31 @@ class TableMetadata:
     data_owners: List[str]
     sample_size: Optional[int]
 
+@dataclass
+class DbtLineage:
+    """Class to represent DBT model lineage"""
+    model_name: str
+    upstream_models: List[str]  # Models this model depends on
+    downstream_models: List[str]  # Models that depend on this model
+    sources: List[Dict[str, str]]  # Source tables used
+    intermediate_models: List[str]  # Intermediate transformations
+    target_tables: List[str]  # Final output tables
+    materialization: str  # How the model is materialized
+    freshness: Optional[Dict[str, Any]]  # Data freshness rules
+    tags: List[str]  # Model tags
+
+@dataclass
+class GitMetadata:
+    """Class to represent Git metadata for a file"""
+    last_modified: datetime
+    last_author: str
+    commit_hash: str
+    commit_message: str
+    file_history: List[Dict[str, Any]]
+    branch_name: str
+    total_commits: int
+    contributors: List[str]
+
 class CodeAnalyzer:
     def __init__(self):
         """Initialize the code analyzer."""
@@ -46,6 +73,16 @@ class CodeAnalyzer:
         self.business_glossary = self._initialize_business_glossary()
         self.table_aliases = {}  # Track table aliases
         self.column_references = defaultdict(set)  # Track column references
+        self.dbt_lineage_cache = {}  # Cache for DBT lineage information
+        self.git_metadata_cache = {}  # Cache for Git metadata
+        self.dbt_model_types = {
+            'models': 'model',
+            'seeds': 'seed',
+            'snapshots': 'snapshot',
+            'analyses': 'analysis',
+            'macros': 'macro',
+            'tests': 'test'
+        }
         
     def _initialize_business_glossary(self) -> Dict[str, str]:
         """Initialize business term mappings."""
@@ -141,7 +178,7 @@ class CodeAnalyzer:
                     "size": os.path.getsize(file_path)
                 }
             
-            # Initialize schema analysis
+            # Initialize schema analysis with safe defaults
             schema_analysis = {
                 "file_path": file_path,
                 "file_type": "dbt_schema",
@@ -149,78 +186,143 @@ class CodeAnalyzer:
                 "sources": [],
                 "size": os.path.getsize(file_path)
             }
-            
-            # Extract models
-            if yaml_data and 'models' in yaml_data:
-                for model in yaml_data['models']:
-                    model_info = {
-                        "name": model.get('name', ''),
-                        "description": model.get('description', ''),
-                        "columns": [],
-                        "tests": model.get('tests', []),
-                        "config": model.get('config', {})
+
+            def safe_get(obj: Any, key: str, default: Any = None) -> Any:
+                """Safely get a value from a dict or return default"""
+                if isinstance(obj, dict):
+                    return obj.get(key, default)
+                return default
+
+            def process_column_data(col_data: Any, col_name: Optional[str] = None) -> Dict[str, Any]:
+                """Process column data into a standardized format"""
+                if isinstance(col_data, dict):
+                    return {
+                        "name": col_name or col_data.get('name', ''),
+                        "description": col_data.get('description', ''),
+                        "tests": col_data.get('tests', []) if isinstance(col_data.get('tests'), list) else [],
+                        "meta": col_data.get('meta', {}) if isinstance(col_data.get('meta'), dict) else {}
                     }
-                    
-                    # Extract columns
-                    if 'columns' in model:
-                        for col_name, col_data in model['columns'].items():
-                            column_info = {
-                                "name": col_name,
-                                "description": col_data.get('description', ''),
-                                "tests": col_data.get('tests', []),
-                                "meta": col_data.get('meta', {})
-                            }
-                            model_info["columns"].append(column_info)
-                    
-                    schema_analysis["models"].append(model_info)
-            
-            # Extract sources
-            if yaml_data and 'sources' in yaml_data:
-                for source in yaml_data['sources']:
-                    source_info = {
-                        "name": source.get('name', ''),
-                        "description": source.get('description', ''),
-                        "database": source.get('database', ''),
-                        "schema": source.get('schema', ''),
-                        "tables": []
+                elif isinstance(col_data, str):
+                    return {
+                        "name": col_name or col_data,
+                        "description": "",
+                        "tests": [],
+                        "meta": {}
                     }
-                    
-                    # Extract tables
-                    if 'tables' in source:
-                        for table in source['tables']:
-                            table_info = {
-                                "name": table.get('name', ''),
-                                "description": table.get('description', ''),
-                                "columns": [],
-                                "tests": table.get('tests', []),
-                                "meta": table.get('meta', {})
-                            }
+                else:
+                    return {
+                        "name": col_name or str(col_data) if col_data is not None else '',
+                        "description": "",
+                        "tests": [],
+                        "meta": {}
+                    }
+
+            def process_columns(columns: Any) -> List[Dict[str, Any]]:
+                """Process columns into a standardized format"""
+                processed_columns = []
+                
+                if isinstance(columns, dict):
+                    for col_name, col_data in columns.items():
+                        processed_columns.append(process_column_data(col_data, col_name))
+                elif isinstance(columns, list):
+                    for col_item in columns:
+                        processed_columns.append(process_column_data(col_item))
+                elif columns is not None:
+                    # Handle case where columns is a single value
+                    processed_columns.append(process_column_data(columns))
+                
+                return processed_columns
+
+            # Process models
+            if isinstance(yaml_data, dict) and 'models' in yaml_data:
+                models_data = yaml_data['models']
+                if isinstance(models_data, list):
+                    for model in models_data:
+                        if not isinstance(model, dict):
+                            continue
                             
-                            # Extract columns
-                            if 'columns' in table:
-                                for col_name, col_data in table['columns'].items():
-                                    column_info = {
-                                        "name": col_name,
-                                        "description": col_data.get('description', ''),
-                                        "tests": col_data.get('tests', []),
-                                        "meta": col_data.get('meta', {})
-                                    }
-                                    table_info["columns"].append(column_info)
+                        model_info = {
+                            "name": safe_get(model, 'name', ''),
+                            "description": safe_get(model, 'description', ''),
+                            "columns": [],
+                            "tests": safe_get(model, 'tests', []) if isinstance(safe_get(model, 'tests'), list) else [],
+                            "config": safe_get(model, 'config', {}) if isinstance(safe_get(model, 'config'), dict) else {}
+                        }
+                        
+                        # Process columns
+                        if 'columns' in model:
+                            model_info["columns"] = process_columns(model['columns'])
+                        
+                        schema_analysis["models"].append(model_info)
+
+            # Process sources
+            if isinstance(yaml_data, dict) and 'sources' in yaml_data:
+                sources_data = yaml_data['sources']
+                if isinstance(sources_data, list):
+                    for source in sources_data:
+                        if not isinstance(source, dict):
+                            continue
                             
-                            source_info["tables"].append(table_info)
-                    
-                    schema_analysis["sources"].append(source_info)
-            
-            # Extract exposures if present
-            if yaml_data and 'exposures' in yaml_data:
-                schema_analysis["exposures"] = yaml_data['exposures']
-            
-            # Extract metrics if present
-            if yaml_data and 'metrics' in yaml_data:
-                schema_analysis["metrics"] = yaml_data['metrics']
-            
+                        source_info = {
+                            "name": safe_get(source, 'name', ''),
+                            "description": safe_get(source, 'description', ''),
+                            "database": safe_get(source, 'database', ''),
+                            "schema": safe_get(source, 'schema', ''),
+                            "tables": []
+                        }
+                        
+                        # Process tables
+                        tables = safe_get(source, 'tables', [])
+                        if isinstance(tables, list):
+                            for table in tables:
+                                if not isinstance(table, dict):
+                                    continue
+                                    
+                                table_info = {
+                                    "name": safe_get(table, 'name', ''),
+                                    "description": safe_get(table, 'description', ''),
+                                    "columns": [],
+                                    "tests": safe_get(table, 'tests', []) if isinstance(safe_get(table, 'tests'), list) else [],
+                                    "meta": safe_get(table, 'meta', {}) if isinstance(safe_get(table, 'meta'), dict) else {}
+                                }
+                                
+                                # Process columns
+                                if 'columns' in table:
+                                    table_info["columns"] = process_columns(table['columns'])
+                                
+                                source_info["tables"].append(table_info)
+                        elif isinstance(tables, dict):
+                            for table_name, table in tables.items():
+                                table_info = {
+                                    "name": table_name,
+                                    "description": safe_get(table, 'description', '') if isinstance(table, dict) else str(table),
+                                    "columns": [],
+                                    "tests": safe_get(table, 'tests', []) if isinstance(table, dict) and isinstance(safe_get(table, 'tests'), list) else [],
+                                    "meta": safe_get(table, 'meta', {}) if isinstance(table, dict) and isinstance(safe_get(table, 'meta'), dict) else {}
+                                }
+                                
+                                # Process columns if table is a dict
+                                if isinstance(table, dict) and 'columns' in table:
+                                    table_info["columns"] = process_columns(table['columns'])
+                                
+                                source_info["tables"].append(table_info)
+                        
+                        schema_analysis["sources"].append(source_info)
+
+            # Process exposures if present
+            if isinstance(yaml_data, dict) and 'exposures' in yaml_data:
+                exposures_data = yaml_data['exposures']
+                if isinstance(exposures_data, (list, dict)):
+                    schema_analysis["exposures"] = exposures_data
+
+            # Process metrics if present
+            if isinstance(yaml_data, dict) and 'metrics' in yaml_data:
+                metrics_data = yaml_data['metrics']
+                if isinstance(metrics_data, (list, dict)):
+                    schema_analysis["metrics"] = metrics_data
+
             return schema_analysis
-            
+
         except Exception as e:
             logger.error(f"Error analyzing dbt schema file: {str(e)}")
             return {
@@ -230,21 +332,142 @@ class CodeAnalyzer:
                 "size": os.path.getsize(file_path)
             }
 
-    def analyze_dbt(self, file_path: str) -> Dict[str, Any]:
+    def _determine_dbt_model_type(self, file_path: str) -> str:
         """
-        Analyze a DBT SQL file to extract metadata, handling Jinja templates.
+        Determine the DBT model type based on file path and content.
         
         Args:
             file_path: Path to the DBT file
             
         Returns:
-            Dictionary with analysis results
+            Model type (model, seed, snapshot, etc.)
         """
         try:
+            # First check path-based type
+            path_parts = Path(file_path).parts
+            for dir_name, model_type in self.dbt_model_types.items():
+                if dir_name in path_parts:
+                    return model_type
+
+            # If not found in path, check file content
+            if file_path.endswith('.sql'):
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read(1000)  # Read first 1000 chars
+                        
+                        # Check for snapshot indicators
+                        if '{% snapshot' in content:
+                            return 'snapshot'
+                        
+                        # Check for test indicators
+                        if content.strip().startswith('test ') or '{% test' in content:
+                            return 'test'
+                        
+                        # Check for analysis indicators
+                        if '/analyses/' in file_path or '/analysis/' in file_path:
+                            return 'analysis'
+                        
+                        # Check for macro indicators
+                        if '{% macro' in content:
+                            return 'macro'
+                        
+                        # Default to model if it has typical model patterns
+                        if '{{ ref(' in content or '{{ source(' in content:
+                            return 'model'
+                except Exception as e:
+                    logger.warning(f"Error reading file content for type determination: {str(e)}")
+
+            # Check file extension for seeds
+            if file_path.endswith('.csv'):
+                return 'seed'
+
+            return 'unknown'
+            
+        except Exception as e:
+            logger.warning(f"Error determining DBT model type: {str(e)}")
+            return 'unknown'
+
+    def _determine_language(self, file_path: str, extension: str) -> str:
+        """
+        Determine the programming language of a file.
+        
+        Args:
+            file_path: Path to the file
+            extension: File extension
+            
+        Returns:
+            Language identifier
+        """
+        try:
+            # Map extensions to languages
+            extension_map = {
+                'py': 'python',
+                'sql': 'sql',
+                'yml': 'yaml',
+                'yaml': 'yaml',
+                'json': 'json',
+                'md': 'markdown',
+                'ipynb': 'jupyter'
+            }
+            
+            # First check extension
+            if extension in extension_map:
+                return extension_map[extension]
+            
+            # For files without extension or ambiguous ones, check content
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read(1000)  # Read first 1000 chars
+                    
+                    # Check for Python indicators
+                    if content.startswith('#!/usr/bin/env python') or \
+                       'import ' in content or \
+                       'from ' in content and ' import ' in content:
+                        return 'python'
+                    
+                    # Check for SQL indicators
+                    if content.strip().upper().startswith(('SELECT ', 'CREATE ', 'INSERT ', 'UPDATE ', 'DELETE ')):
+                        return 'sql'
+                    
+                    # Check for YAML indicators
+                    if content.startswith('---') or \
+                       ': ' in content and '\n- ' in content:
+                        return 'yaml'
+                    
+            except Exception as e:
+                logger.warning(f"Error reading file content for language determination: {str(e)}")
+            
+            return 'unknown'
+            
+        except Exception as e:
+            logger.warning(f"Error determining language: {str(e)}")
+            return 'unknown'
+
+    def analyze_dbt(self, file_path: str) -> Dict[str, Any]:
+        """
+        Enhanced analysis of a DBT SQL file to extract metadata, lineage, and git information.
+        
+        Args:
+            file_path: Path to the DBT file
+            
+        Returns:
+            Dictionary with enhanced analysis results
+        """
+        try:
+            # Initialize basic analysis
+            model_type = self._determine_dbt_model_type(file_path)
+            basic_analysis = {
+                "file_path": file_path,
+                "file_type": f"dbt_{model_type}",
+                "model_name": os.path.basename(file_path).split('.')[0],
+                "model_type": model_type,
+                "size": os.path.getsize(file_path)
+            }
+
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            
-            # Extract YAML frontmatter if present (between --- markers)
+
+            # Extract YAML frontmatter if present
             yaml_data = {}
             yaml_match = re.search(r'---\s+(.*?)\s+---', content, re.DOTALL)
             if yaml_match:
@@ -255,103 +478,98 @@ class CodeAnalyzer:
                     content = content.replace(yaml_match.group(0), '')
                 except Exception as e:
                     logger.warning(f"Error parsing YAML frontmatter: {str(e)}")
-            
-            # Extract Jinja macros and references
-            jinja_refs = re.findall(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', content)
-            jinja_sources = re.findall(r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}', content)
-            jinja_macros = re.findall(r'{{\s*([a-zA-Z0-9_]+)\(', content)
-            
-            # Extract tests
-            jinja_tests = []
-            for line in content.split('\n'):
-                if '{{' in line and 'test' in line.lower():
-                    jinja_tests.append(line.strip())
-            
-            # Extract model name from file path or YAML
-            model_name = os.path.basename(file_path).split('.')[0]
-            if yaml_data and 'name' in yaml_data:
-                model_name = yaml_data['name']
-            
-            # Determine model type from path
-            model_type = self._determine_dbt_model_type(file_path)
-            
-            # Create an enhanced analysis result
-            dbt_analysis = {
-                "file_path": file_path,
-                "file_type": f"dbt_{model_type}",
-                "model_name": model_name,
-                "model_type": model_type,
-                "yaml_config": yaml_data,
-                "jinja_references": jinja_refs,
-                "jinja_sources": jinja_sources,
-                "jinja_macros": jinja_macros,
-                "jinja_tests": jinja_tests,
-                "size": os.path.getsize(file_path),
-                "documentation": yaml_data.get('description', '')
-            }
-            
-            # Extract model type and materialization
+
+            # Add YAML config to analysis
             if yaml_data:
-                if 'config' in yaml_data and 'materialized' in yaml_data['config']:
-                    dbt_analysis["materialization"] = yaml_data['config']['materialized']
+                basic_analysis.update({
+                    "yaml_config": yaml_data,
+                    "description": yaml_data.get('description', ''),
+                    "config": yaml_data.get('config', {}),
+                    "columns": yaml_data.get('columns', {})
+                })
+            
+            # Add lineage information
+            lineage = self._build_dbt_lineage(file_path)
+            if lineage:
+                basic_analysis['lineage'] = {
+                    'upstream_models': lineage.upstream_models,
+                    'downstream_models': lineage.downstream_models,
+                    'sources': lineage.sources,
+                    'intermediate_models': lineage.intermediate_models,
+                    'target_tables': lineage.target_tables,
+                    'materialization': lineage.materialization,
+                    'freshness': lineage.freshness,
+                    'tags': lineage.tags
+                }
+            
+            # Add git metadata
+            git_info = self._get_git_metadata(file_path)
+            if git_info:
+                basic_analysis['git_metadata'] = {
+                    'last_modified': git_info.last_modified.isoformat(),
+                    'last_author': git_info.last_author,
+                    'commit_hash': git_info.commit_hash,
+                    'commit_message': git_info.commit_message,
+                    'branch_name': git_info.branch_name,
+                    'total_commits': git_info.total_commits,
+                    'contributors': git_info.contributors,
+                    'file_history': [
+                        {
+                            'commit_hash': h['commit_hash'],
+                            'author': h['author'],
+                            'timestamp': h['timestamp'].isoformat(),
+                            'message': h['message']
+                        }
+                        for h in git_info.file_history
+                    ]
+                }
+            
+            # Add documentation context
+            docs_path = os.path.join(os.path.dirname(file_path), 'docs.md')
+            if os.path.exists(docs_path):
+                try:
+                    with open(docs_path, 'r', encoding='utf-8') as f:
+                        basic_analysis['documentation'] = f.read()
+                except Exception as e:
+                    logger.warning(f"Error reading docs.md: {str(e)}")
+
+            # Extract SQL-specific information
+            try:
+                # Extract Jinja macros and references
+                jinja_refs = re.findall(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', content)
+                jinja_sources = re.findall(r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}', content)
+                jinja_macros = re.findall(r'{{\s*([a-zA-Z0-9_]+)\(', content)
+
+                basic_analysis.update({
+                    "jinja_references": list(set(jinja_refs)),
+                    "jinja_sources": [{"source": s[0], "table": s[1]} for s in jinja_sources],
+                    "jinja_macros": list(set(jinja_macros))
+                })
+
+                # Extract SQL comments for additional documentation
+                sql_comments = re.findall(r'--\s*(.*?)(?:\n|$)', content)
+                if sql_comments:
+                    basic_analysis["sql_comments"] = sql_comments
+
+                # Extract doc blocks (multiline comments)
+                doc_blocks = re.findall(r'/\*\*(.*?)\*/', content, re.DOTALL)
+                if doc_blocks:
+                    basic_analysis["doc_blocks"] = [block.strip() for block in doc_blocks]
+
+                # Try to extract SQL by removing/simplifying Jinja
+                simplified_sql = self._preprocess_jinja_sql(content)
                 
-                if 'description' in yaml_data:
-                    dbt_analysis["description"] = yaml_data['description']
-                    
-                # Extract column descriptions if available
-                if 'columns' in yaml_data:
-                    dbt_analysis["column_descriptions"] = yaml_data['columns']
+                # Extract tables and relationships
+                tables, relationships = self._extract_sql_metadata(simplified_sql)
+                if tables:
+                    basic_analysis["tables"] = tables
+                if relationships:
+                    basic_analysis["relationships"] = relationships
+
+            except Exception as e:
+                logger.warning(f"Error extracting SQL information: {str(e)}")
             
-            # Extract materialization from SQL config if present
-            materialization_match = re.search(r'{{\s*config\s*\(\s*materialized\s*=\s*[\'"]([^\'"]+)[\'"]', content)
-            if materialization_match:
-                dbt_analysis["materialization"] = materialization_match.group(1)
-            
-            # Extract schema from SQL config if present
-            schema_match = re.search(r'{{\s*config\s*\(\s*schema\s*=\s*[\'"]([^\'"]+)[\'"]', content)
-            if schema_match:
-                dbt_analysis["schema"] = schema_match.group(1)
-            
-            # Try to extract SQL by removing/simplifying Jinja
-            # Replace {{ ref('...') }} with table_name
-            simplified_sql = re.sub(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', r'\1', content)
-            # Replace {{ source('...', '...') }} with source_table_name
-            simplified_sql = re.sub(r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}', r'\2', simplified_sql)
-            # Remove Jinja control structures
-            simplified_sql = re.sub(r'{%.*?%}', '', simplified_sql)
-            # Replace other Jinja expressions with placeholders
-            simplified_sql = re.sub(r'{{.*?}}', 'placeholder', simplified_sql)
-            
-            # Extract tables using regex (more reliable for DBT files)
-            tables = self._extract_tables_basic(simplified_sql)
-            dbt_analysis["tables"] = tables
-            
-            # Extract dependencies between models
-            dependencies = {
-                "depends_on": {
-                    "models": jinja_refs,
-                    "sources": [f"{source[0]}.{source[1]}" for source in jinja_sources]
-                },
-                "supports": []  # Models that depend on this model (populated later)
-            }
-            dbt_analysis["dependencies"] = dependencies
-            
-            # Extract columns using regex from the simplified SQL
-            columns = self._extract_columns_from_sql(simplified_sql)
-            if columns:
-                dbt_analysis["columns"] = columns
-            
-            # Extract SQL comments for additional documentation
-            sql_comments = re.findall(r'--\s*(.*?)(?:\n|$)', content)
-            if sql_comments:
-                dbt_analysis["sql_comments"] = sql_comments
-            
-            # Extract doc blocks (multiline comments)
-            doc_blocks = re.findall(r'/\*\*(.*?)\*/', content, re.DOTALL)
-            if doc_blocks:
-                dbt_analysis["doc_blocks"] = [block.strip() for block in doc_blocks]
-            
-            return dbt_analysis
+            return basic_analysis
             
         except Exception as e:
             logger.error(f"Error analyzing DBT file: {str(e)}")
@@ -361,54 +579,227 @@ class CodeAnalyzer:
                 "error": str(e),
                 "size": os.path.getsize(file_path)
             }
-    
-    def _extract_columns_from_sql(self, sql_content: str) -> List[str]:
-        """Extract column names from SQL content using regex"""
+
+    def _get_git_metadata(self, file_path: str) -> Optional[GitMetadata]:
+        """Get Git metadata for a file"""
         try:
-            # Look for column definitions in SELECT statements
-            selects = re.findall(r'select\s+(.*?)(?:from|where|group by|having|order by|limit|$)', 
-                               sql_content.lower(), re.DOTALL)
+            # Get the repository root directory
+            repo_root = None
+            try:
+                repo_root = subprocess.check_output(
+                    ['git', 'rev-parse', '--show-toplevel'],
+                    text=True,
+                    cwd=os.path.dirname(file_path)
+                ).strip()
+            except subprocess.CalledProcessError:
+                # If we can't get the repo root, this might be a temp cloned repo
+                # Try to initialize it as a new repo
+                try:
+                    temp_dir = os.path.dirname(file_path)
+                    subprocess.run(['git', 'init'], cwd=temp_dir, check=True, capture_output=True)
+                    subprocess.run(['git', 'add', '.'], cwd=temp_dir, check=True, capture_output=True)
+                    subprocess.run(
+                        ['git', 'commit', '-m', 'Initial commit'],
+                        cwd=temp_dir,
+                        check=True,
+                        capture_output=True,
+                        env={'GIT_AUTHOR_NAME': 'Analyzer', 'GIT_AUTHOR_EMAIL': 'analyzer@example.com',
+                             'GIT_COMMITTER_NAME': 'Analyzer', 'GIT_COMMITTER_EMAIL': 'analyzer@example.com'}
+                    )
+                    repo_root = temp_dir
+                except Exception as e:
+                    logger.warning(f"Could not initialize temporary git repo: {str(e)}")
+                    return None
+
+            if not repo_root:
+                return None
+
+            # Get relative path from repo root
+            rel_path = os.path.relpath(file_path, repo_root)
+
+            # Get last commit info
+            git_log = subprocess.check_output(
+                ['git', 'log', '-1', '--format=%H|%an|%at|%s', '--', rel_path],
+                text=True,
+                cwd=repo_root
+            ).strip().split('|')
             
-            columns = []
-            if selects:
-                for select_clause in selects:
-                    # Split the select clause by commas, handling subqueries and functions
-                    select_parts = []
-                    bracket_level = 0
-                    current_part = ""
-                    
-                    for char in select_clause:
-                        if char == ',' and bracket_level == 0:
-                            select_parts.append(current_part.strip())
-                            current_part = ""
-                        else:
-                            current_part += char
-                            if char == '(':
-                                bracket_level += 1
-                            elif char == ')':
-                                bracket_level -= 1
-                    
-                    if current_part.strip():
-                        select_parts.append(current_part.strip())
-                    
-                    # Extract column names from each part
-                    for part in select_parts:
-                        # Handle aliased columns (using AS keyword)
-                        as_match = re.search(r'(?:as\s+)?([a-zA-Z0-9_]+)$', part.strip(), re.IGNORECASE)
-                        if as_match:
-                            columns.append(as_match.group(1))
-                        else:
-                            # If no AS, use the last part of the expression
-                            col_parts = part.split('.')
-                            if col_parts and col_parts[-1].strip() != '*':
-                                columns.append(col_parts[-1].strip())
+            if not git_log or len(git_log) != 4:
+                return None
+                
+            commit_hash, author, timestamp, message = git_log
             
-            # Remove duplicates and return
-            return list(set(columns))
+            # Get file history
+            history = subprocess.check_output(
+                ['git', 'log', '--format=%H|%an|%at|%s', '--', rel_path],
+                text=True,
+                cwd=repo_root
+            ).strip().split('\n')
+            
+            file_history = []
+            for entry in history:
+                if entry:
+                    h, a, t, m = entry.split('|')
+                    file_history.append({
+                        'commit_hash': h,
+                        'author': a,
+                        'timestamp': datetime.fromtimestamp(int(t)),
+                        'message': m
+                    })
+            
+            # Get current branch
+            branch = subprocess.check_output(
+                ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                text=True,
+                cwd=repo_root
+            ).strip()
+            
+            # Get unique contributors
+            contributors = subprocess.check_output(
+                ['git', 'log', '--format=%an', '--', rel_path],
+                text=True,
+                cwd=repo_root
+            ).strip().split('\n')
+            
+            return GitMetadata(
+                last_modified=datetime.fromtimestamp(int(timestamp)),
+                last_author=author,
+                commit_hash=commit_hash,
+                commit_message=message,
+                file_history=file_history,
+                branch_name=branch,
+                total_commits=len(file_history),
+                contributors=list(set(contributors))
+            )
             
         except Exception as e:
-            logger.warning(f"Error extracting columns: {str(e)}")
-            return []
+            logger.warning(f"Error getting git metadata for {file_path}: {str(e)}")
+            return None
+
+    def _build_dbt_lineage(self, model_path: str) -> Optional[DbtLineage]:
+        """Build comprehensive DBT lineage for a model"""
+        try:
+            # Check cache first
+            if model_path in self.dbt_lineage_cache:
+                return self.dbt_lineage_cache[model_path]
+            
+            with open(model_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Extract model name from path
+            model_name = os.path.basename(model_path).split('.')[0]
+            
+            # Find all refs (upstream models)
+            upstream_models = list(set(
+                re.findall(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', content)
+            ))
+            
+            # Find all sources
+            sources = []
+            source_matches = re.findall(
+                r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}',
+                content
+            )
+            for source, table in source_matches:
+                sources.append({
+                    'source_name': source,
+                    'table_name': table
+                })
+            
+            # Extract materialization
+            materialization = 'view'  # default
+            materialization_match = re.search(
+                r'{{\s*config\s*\(\s*materialized\s*=\s*[\'"]([^\'"]+)[\'"]',
+                content
+            )
+            if materialization_match:
+                materialization = materialization_match.group(1)
+            
+            # Extract tags from config
+            tags = []
+            tags_match = re.search(
+                r'{{\s*config\s*\(\s*tags\s*=\s*\[([^\]]+)\]',
+                content
+            )
+            if tags_match:
+                tags = [t.strip(' \'"') for t in tags_match.group(1).split(',')]
+            
+            # Extract freshness rules from schema.yml
+            freshness = None
+            schema_path = os.path.join(os.path.dirname(model_path), 'schema.yml')
+            if os.path.exists(schema_path):
+                try:
+                    with open(schema_path, 'r', encoding='utf-8') as f:
+                        schema_data = yaml.safe_load(f)
+                        if schema_data and 'models' in schema_data:
+                            for model in schema_data['models']:
+                                if model.get('name') == model_name:
+                                    freshness = model.get('freshness')
+                                    break
+                except Exception as e:
+                    logger.warning(f"Error reading schema.yml for {model_path}: {str(e)}")
+            
+            # Find downstream models (models that reference this one)
+            downstream_models = []
+            models_dir = self._find_dbt_models_dir(model_path)
+            if models_dir:
+                for root, _, files in os.walk(models_dir):
+                    for file in files:
+                        if file.endswith('.sql'):
+                            file_path = os.path.join(root, file)
+                            try:
+                                with open(file_path, 'r', encoding='utf-8') as f:
+                                    file_content = f.read()
+                                    if f'ref(\'{model_name}\')' in file_content or f'ref("{model_name}")' in file_content:
+                                        downstream_models.append(os.path.basename(file_path).split('.')[0])
+                            except Exception as e:
+                                logger.warning(f"Error reading {file_path}: {str(e)}")
+            
+            # Identify intermediate and target tables
+            intermediate_models = []
+            target_tables = []
+            
+            for downstream in downstream_models:
+                downstream_path = os.path.join(models_dir, f"{downstream}.sql")
+                if os.path.exists(downstream_path):
+                    with open(downstream_path, 'r', encoding='utf-8') as f:
+                        downstream_content = f.read()
+                        # If this downstream model is referenced by others, it's intermediate
+                        if re.search(r'{{\s*ref\([\'"]' + downstream + r'[\'"]\)\s*}}', downstream_content):
+                            intermediate_models.append(downstream)
+                        else:
+                            target_tables.append(downstream)
+            
+            lineage = DbtLineage(
+                model_name=model_name,
+                upstream_models=upstream_models,
+                downstream_models=downstream_models,
+                sources=sources,
+                intermediate_models=intermediate_models,
+                target_tables=target_tables,
+                materialization=materialization,
+                freshness=freshness,
+                tags=tags
+            )
+            
+            # Cache the result
+            self.dbt_lineage_cache[model_path] = lineage
+            return lineage
+            
+        except Exception as e:
+            logger.error(f"Error building DBT lineage for {model_path}: {str(e)}")
+            return None
+
+    def _find_dbt_models_dir(self, file_path: str) -> Optional[str]:
+        """Find the DBT models directory from a file path"""
+        current_dir = os.path.dirname(file_path)
+        while current_dir and current_dir != os.path.dirname(current_dir):
+            if os.path.exists(os.path.join(current_dir, 'dbt_project.yml')):
+                models_dir = os.path.join(current_dir, 'models')
+                if os.path.exists(models_dir):
+                    return models_dir
+            current_dir = os.path.dirname(current_dir)
+        return None
 
     def analyze_python(self, file_path: str) -> Dict[str, Any]:
         """
@@ -533,92 +924,74 @@ class CodeAnalyzer:
         Returns:
             Preprocessed SQL content
         """
-        # Replace Jinja control structures with empty strings
-        content = re.sub(r'{%.*?%}', ' ', content, flags=re.DOTALL)
-        
-        # Replace Jinja expressions with placeholder values
-        content = re.sub(r'{{.*?}}', 'NULL', content, flags=re.DOTALL)
-        
-        # Replace Jinja comments with SQL comments
-        content = re.sub(r'{#.*?#}', '/* Jinja comment */', content, flags=re.DOTALL)
-        
-        return content
+        try:
+            # First, handle DBT-specific macros
+            content = self._handle_dbt_macros(content)
+            
+            # Replace Jinja control structures with empty strings
+            content = re.sub(r'{%.*?%}', ' ', content, flags=re.DOTALL)
+            
+            # Replace Jinja expressions with placeholder values
+            content = re.sub(r'{{.*?}}', 'NULL', content, flags=re.DOTALL)
+            
+            # Replace Jinja comments with SQL comments
+            content = re.sub(r'{#.*?#}', '/* Jinja comment */', content, flags=re.DOTALL)
+            
+            # Clean up any remaining Jinja artifacts
+            content = re.sub(r'\{\{|\}\}|\{%|%\}|\{#|#\}', ' ', content)
+            
+            # Remove multiple spaces
+            content = re.sub(r'\s+', ' ', content)
+            
+            return content
+            
+        except Exception as e:
+            logger.warning(f"Error preprocessing Jinja SQL: {str(e)}")
+            return content
 
-    def _extract_dbt_metadata(self, yaml_data: Dict[str, Any], file_path: str) -> Dict[str, Any]:
-        """
-        Extract DBT-specific metadata from YAML frontmatter and file path.
-        
-        Args:
-            yaml_data: Parsed YAML frontmatter
-            file_path: Path to the DBT file
+    def _handle_dbt_macros(self, content: str) -> str:
+        """Handle DBT-specific macros and convert them to valid SQL"""
+        try:
+            # Handle ref() macro
+            content = re.sub(
+                r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}',
+                r'\1',  # Replace with table name
+                content
+            )
             
-        Returns:
-            Dictionary with DBT metadata
-        """
-        dbt_metadata = {
-            "model_name": os.path.basename(file_path).split('.')[0],
-            "model_type": self._determine_dbt_model_type(file_path),
-            "config": yaml_data.get('config', {}),
-            "description": yaml_data.get('description', ''),
-            "columns": [],
-            "tests": [],
-            "sources": [],
-            "refs": []
-        }
-        
-        # Extract column definitions
-        if 'columns' in yaml_data:
-            for col_name, col_data in yaml_data['columns'].items():
-                dbt_metadata['columns'].append({
-                    "name": col_name,
-                    "description": col_data.get('description', ''),
-                    "tests": col_data.get('tests', [])
-                })
-        
-        # Extract tests
-        if 'tests' in yaml_data:
-            dbt_metadata['tests'] = yaml_data['tests']
-        
-        # Extract refs and sources from the SQL content
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+            # Handle source() macro
+            content = re.sub(
+                r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}',
+                r'\1_\2',  # Replace with source_table
+                content
+            )
             
-            # Find all ref() calls
-            ref_matches = re.findall(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', content)
-            dbt_metadata['refs'] = list(set(ref_matches))
+            # Handle config() macro
+            content = re.sub(
+                r'{{\s*config\([^\)]+\)\s*}}',
+                '',  # Remove config blocks
+                content
+            )
             
-            # Find all source() calls
-            source_matches = re.findall(r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}', content)
-            dbt_metadata['sources'] = [{"source": s[0], "table": s[1]} for s in source_matches]
-        
-        return dbt_metadata
-
-    def _determine_dbt_model_type(self, file_path: str) -> str:
-        """
-        Determine the DBT model type based on file path.
-        
-        Args:
-            file_path: Path to the DBT file
+            # Handle var() macro
+            content = re.sub(
+                r'{{\s*var\([\'"]([^\'"]+)[\'"]\)\s*}}',
+                'NULL',  # Replace with NULL
+                content
+            )
             
-        Returns:
-            Model type (model, seed, snapshot, etc.)
-        """
-        path_parts = file_path.split(os.sep)
-        
-        if 'models' in path_parts:
-            return 'model'
-        elif 'seeds' in path_parts:
-            return 'seed'
-        elif 'snapshots' in path_parts:
-            return 'snapshot'
-        elif 'analyses' in path_parts:
-            return 'analysis'
-        elif 'macros' in path_parts:
-            return 'macro'
-        elif 'tests' in path_parts:
-            return 'test'
-        else:
-            return 'unknown'
+            # Handle macro calls
+            content = re.sub(
+                r'{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\([^\)]*\)\s*}}',
+                'NULL',  # Replace with NULL
+                content
+            )
+            
+            return content
+            
+        except Exception as e:
+            logger.warning(f"Error handling DBT macros: {str(e)}")
+            return content
 
     def _extract_sql_metadata(self, sql_content: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
@@ -633,362 +1006,80 @@ class CodeAnalyzer:
         tables = []
         relationships = []
         
-        # Try parsing with different dialects
-        parsed = False
-        for dialect in self.supported_dialects:
-            try:
-                # Split into statements
-                statements = sqlglot.parse(sql_content, dialect=dialect)
-                parsed = True
-                
-                # Process each statement
-                for statement in statements:
-                    self._process_sql_statement(statement, tables, relationships)
-                
-                break  # Stop if parsing succeeds
-            except Exception as e:
-                continue
-        
-        if not parsed:
-            logger.error("Failed to parse SQL with any dialect")
-            # Try a more basic approach to extract table names
-            tables = self._extract_tables_basic(sql_content)
-        
-        return tables, relationships
-
-    def _process_sql_statement(self, statement, tables, relationships):
-        """Process a SQL statement to extract metadata."""
         try:
-            # Handle CREATE TABLE statements
-            if isinstance(statement, exp.Create) and isinstance(statement.this, exp.Table):
-                table_name = statement.this.name
-                schema_name = statement.this.db or ''
-                
-                columns = []
-                primary_keys = []
-                foreign_keys = []
-                
-                # Extract columns
-                if hasattr(statement, 'expressions') and statement.expressions:
-                    for expr in statement.expressions:
-                        if isinstance(expr, exp.ColumnDef):
-                            column_name = expr.this.name
-                            data_type = str(expr.kind) if expr.kind else 'UNKNOWN'
-                            
-                            # Check for constraints
-                            constraints = []
-                            for constraint in expr.args.get('constraints', []):
-                                if isinstance(constraint, exp.PrimaryKey):
-                                    primary_keys.append(column_name)
-                                    constraints.append('PRIMARY KEY')
-                                elif isinstance(constraint, exp.NotNull):
-                                    constraints.append('NOT NULL')
-                                elif isinstance(constraint, exp.Unique):
-                                    constraints.append('UNIQUE')
-                            
-                            columns.append({
-                                "name": column_name,
-                                "data_type": data_type,
-                                "constraints": constraints
-                            })
-                        
-                        # Extract table-level constraints
-                        elif isinstance(expr, exp.PrimaryKey):
-                            for col in expr.expressions:
-                                if hasattr(col, 'this') and hasattr(col.this, 'name'):
-                                    primary_keys.append(col.this.name)
-                        
-                        elif isinstance(expr, exp.ForeignKey):
-                            if hasattr(expr, 'columns') and hasattr(expr, 'reference'):
-                                fk_columns = [col.name for col in expr.columns]
-                                ref_table = expr.reference.name
-                                ref_schema = expr.reference.db or schema_name
-                                ref_columns = [col.name for col in expr.reference_columns]
-                                
-                                foreign_keys.append({
-                                    "columns": fk_columns,
-                                    "ref_table": ref_table,
-                                    "ref_schema": ref_schema,
-                                    "ref_columns": ref_columns
-                                })
-                                
-                                # Add relationship
-                                relationships.append({
-                                    "source_table": table_name,
-                                    "source_schema": schema_name,
-                                    "source_columns": fk_columns,
-                                    "target_table": ref_table,
-                                    "target_schema": ref_schema,
-                                    "target_columns": ref_columns,
-                                    "relationship_type": "FOREIGN KEY"
-                                })
-                
-                # Add table
-                tables.append({
-                    "name": table_name,
-                    "schema": schema_name,
-                    "columns": columns,
-                    "primary_keys": primary_keys,
-                    "foreign_keys": foreign_keys
-                })
+            # First try parsing with sqlglot
+            parsed = False
+            for dialect in self.supported_dialects:
+                try:
+                    statements = sqlglot.parse(sql_content, dialect=dialect)
+                    parsed = True
+                    
+                    # Process each statement
+                    for statement in statements:
+                        self._process_sql_statement(statement, tables, relationships)
+                    
+                    break  # Stop if parsing succeeds
+                except Exception as e:
+                    continue
             
-            # Handle SELECT statements
-            elif isinstance(statement, exp.Select):
-                self._analyze_select(statement, relationships)
-        
+            if not parsed:
+                # Fall back to regex-based parsing
+                logger.info("Falling back to regex-based SQL parsing")
+                tables = self._extract_tables_basic(sql_content)
+                
+                # Try to extract relationships from JOIN conditions
+                join_relationships = self._extract_joins_basic(sql_content)
+                relationships.extend(join_relationships)
+            
+            return tables, relationships
+            
         except Exception as e:
-            logger.warning(f"Error processing SQL statement: {str(e)}")
+            logger.warning(f"Error extracting SQL metadata: {str(e)}")
+            return [], []
 
-    def _analyze_select(self, select_stmt, relationships):
-        """Analyze a SELECT statement to extract relationships."""
+    def _extract_joins_basic(self, sql_content: str) -> List[Dict[str, Any]]:
+        """Extract join relationships using regex"""
+        relationships = []
+        
         try:
-            # Extract source tables
-            source_tables = self._extract_source_tables(select_stmt)
+            # Find JOIN clauses
+            join_pattern = re.compile(
+                r'(\w+\s+)?JOIN\s+(?:([^\s.]+)\.)?([^\s]+)\s+(?:AS\s+)?(\w+)?\s+ON\s+(.+?)(?=(?:\s+(?:LEFT|RIGHT|INNER|OUTER|CROSS|FULL)\s+JOIN|\s+WHERE|\s+GROUP|\s+ORDER|\s+LIMIT|$))',
+                re.IGNORECASE | re.DOTALL
+            )
             
-            # Extract target table (for CREATE TABLE AS or INSERT INTO)
-            target_table = None
-            if hasattr(select_stmt, 'parent') and select_stmt.parent:
-                parent = select_stmt.parent
-                if isinstance(parent, exp.Create) and isinstance(parent.this, exp.Table):
-                    target_table = {
-                        "name": parent.this.name,
-                        "schema": parent.this.db or ''
-                    }
-                elif isinstance(parent, exp.Insert) and isinstance(parent.this, exp.Table):
-                    target_table = {
-                        "name": parent.this.name,
-                        "schema": parent.this.db or ''
-                    }
+            matches = join_pattern.finditer(sql_content)
             
-            # Extract join conditions
-            joins = []
-            if hasattr(select_stmt, 'joins') and select_stmt.joins:
-                for join in select_stmt.joins:
-                    if hasattr(join, 'on') and join.on:
-                        joins.append(self._extract_join_condition(join))
-            
-            # Extract where conditions
-            filters = []
-            if hasattr(select_stmt, 'where') and select_stmt.where:
-                filters = self._extract_filters(select_stmt.where)
-            
-            # Add relationships based on joins
-            for join in joins:
-                if join and 'left_table' in join and 'right_table' in join:
+            for match in matches:
+                join_type = (match.group(1) or 'INNER').strip().upper()
+                schema = match.group(2)
+                table = match.group(3)
+                alias = match.group(4)
+                condition = match.group(5)
+                
+                # Extract tables and columns from the join condition
+                condition_pattern = re.compile(r'([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)\s*=\s*([a-zA-Z0-9_]+)\.([a-zA-Z0-9_]+)')
+                condition_matches = condition_pattern.finditer(condition)
+                
+                for cond_match in condition_matches:
+                    left_table, left_col, right_table, right_col = cond_match.groups()
+                    
                     relationships.append({
-                        "source_table": join['left_table'],
-                        "source_schema": join.get('left_schema', ''),
-                        "source_columns": join.get('left_columns', []),
-                        "target_table": join['right_table'],
-                        "target_schema": join.get('right_schema', ''),
-                        "target_columns": join.get('right_columns', []),
+                        "source_table": left_table,
+                        "source_schema": schema if left_table == table else None,
+                        "source_columns": [left_col],
+                        "target_table": right_table,
+                        "target_schema": schema if right_table == table else None,
+                        "target_columns": [right_col],
                         "relationship_type": "JOIN",
-                        "join_type": join.get('join_type', 'INNER')
+                        "join_type": join_type
                     })
             
-            # Add lineage relationship if target table exists
-            if target_table and source_tables:
-                for source in source_tables:
-                    relationships.append({
-                        "source_table": source['name'],
-                        "source_schema": source.get('schema', ''),
-                        "target_table": target_table['name'],
-                        "target_schema": target_table.get('schema', ''),
-                        "relationship_type": "LINEAGE"
-                    })
-        
+            return relationships
+            
         except Exception as e:
-            logger.error(f"Error analyzing filters: {str(e)}")
-
-    def _extract_source_tables(self, select_stmt):
-        """Extract source tables from a SELECT statement."""
-        source_tables = []
-        
-        try:
-            # Extract from clause tables
-            if hasattr(select_stmt, 'from') and select_stmt.from_:
-                for from_item in select_stmt.from_:
-                    if isinstance(from_item, exp.Table):
-                        source_tables.append({
-                            "name": from_item.name,
-                            "schema": from_item.db or ''
-                        })
-                    elif isinstance(from_item, exp.Subquery):
-                        # Recursively process subqueries
-                        if hasattr(from_item, 'this') and isinstance(from_item.this, exp.Select):
-                            sub_sources = self._extract_source_tables(from_item.this)
-                            source_tables.extend(sub_sources)
-            
-            # Extract join tables
-            if hasattr(select_stmt, 'joins') and select_stmt.joins:
-                for join in select_stmt.joins:
-                    if hasattr(join, 'this') and isinstance(join.this, exp.Table):
-                        source_tables.append({
-                            "name": join.this.name,
-                            "schema": join.this.db or ''
-                        })
-                    elif hasattr(join, 'this') and isinstance(join.this, exp.Subquery):
-                        # Recursively process subqueries
-                        if hasattr(join.this, 'this') and isinstance(join.this.this, exp.Select):
-                            sub_sources = self._extract_source_tables(join.this.this)
-                            source_tables.extend(sub_sources)
-        
-        except Exception as e:
-            logger.warning(f"Error extracting source tables: {str(e)}")
-        
-        return source_tables
-
-    def _extract_join_condition(self, join):
-        """Extract join condition details."""
-        try:
-            if not hasattr(join, 'on') or not join.on:
-                return None
-            
-            join_type = join.kind.upper() if hasattr(join, 'kind') else 'INNER'
-            
-            # Extract tables and columns from the join condition
-            left_table = None
-            left_schema = None
-            left_column = None
-            right_table = None
-            right_schema = None
-            right_column = None
-            
-            # Handle basic equality join conditions
-            if isinstance(join.on, exp.EQ):
-                # Left side
-                if isinstance(join.on.this, exp.Column):
-                    left_column = join.on.this.name
-                    if hasattr(join.on.this, 'table'):
-                        left_table = join.on.this.table
-                    if hasattr(join.on.this, 'db'):
-                        left_schema = join.on.this.db
-                
-                # Right side
-                if isinstance(join.on.expression, exp.Column):
-                    right_column = join.on.expression.name
-                    if hasattr(join.on.expression, 'table'):
-                        right_table = join.on.expression.table
-                    if hasattr(join.on.expression, 'db'):
-                        right_schema = join.on.expression.db
-            
-            # If table names weren't in the join condition, try to get them from the join clause
-            if not left_table and hasattr(join, 'this') and isinstance(join.this, exp.Table):
-                left_table = join.this.name
-                left_schema = join.this.db
-            
-            if not right_table and hasattr(join, 'from') and isinstance(join.from_, exp.Table):
-                right_table = join.from_.name
-                right_schema = join.from_.db
-            
-            return {
-                "join_type": join_type,
-                "left_table": left_table,
-                "left_schema": left_schema,
-                "left_columns": [left_column] if left_column else [],
-                "right_table": right_table,
-                "right_schema": right_schema,
-                "right_columns": [right_column] if right_column else []
-            }
-        
-        except Exception as e:
-            logger.warning(f"Error extracting join condition: {str(e)}")
-            return None
-
-    def _extract_filters(self, where_clause):
-        """Extract filter conditions from a WHERE clause."""
-        filters = []
-        
-        try:
-            if isinstance(where_clause, exp.And):
-                # Recursively process AND conditions
-                left_filters = self._extract_filters(where_clause.this)
-                right_filters = self._extract_filters(where_clause.expression)
-                filters.extend(left_filters)
-                filters.extend(right_filters)
-            
-            elif isinstance(where_clause, exp.Or):
-                # Recursively process OR conditions
-                left_filters = self._extract_filters(where_clause.this)
-                right_filters = self._extract_filters(where_clause.expression)
-                filters.extend(left_filters)
-                filters.extend(right_filters)
-            
-            elif isinstance(where_clause, (exp.EQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.NEQ)):
-                # Extract basic comparison
-                filter_type = where_clause.__class__.__name__
-                
-                column = None
-                if isinstance(where_clause.this, exp.Column):
-                    column = {
-                        "name": where_clause.this.name,
-                        "table": where_clause.this.table if hasattr(where_clause.this, 'table') else None,
-                        "schema": where_clause.this.db if hasattr(where_clause.this, 'db') else None
-                    }
-                
-                value = None
-                if hasattr(where_clause, 'expression'):
-                    if isinstance(where_clause.expression, exp.Literal):
-                        value = where_clause.expression.this
-                    elif isinstance(where_clause.expression, exp.Column):
-                        value = {
-                            "name": where_clause.expression.name,
-                            "table": where_clause.expression.table if hasattr(where_clause.expression, 'table') else None,
-                            "schema": where_clause.expression.db if hasattr(where_clause.expression, 'db') else None
-                        }
-                
-                filters.append({
-                    "type": filter_type,
-                    "column": column,
-                    "value": value
-                })
-            
-            elif isinstance(where_clause, exp.In):
-                # Extract IN condition
-                column = None
-                if isinstance(where_clause.this, exp.Column):
-                    column = {
-                        "name": where_clause.this.name,
-                        "table": where_clause.this.table if hasattr(where_clause.this, 'table') else None,
-                        "schema": where_clause.this.db if hasattr(where_clause.this, 'db') else None
-                    }
-                
-                values = []
-                if hasattr(where_clause, 'expressions'):
-                    for expr in where_clause.expressions:
-                        if isinstance(expr, exp.Literal):
-                            values.append(expr.this)
-                
-                filters.append({
-                    "type": "IN",
-                    "column": column,
-                    "values": values
-                })
-            
-            elif isinstance(where_clause, exp.Like):
-                # Extract LIKE condition
-                column = None
-                if isinstance(where_clause.this, exp.Column):
-                    column = {
-                        "name": where_clause.this.name,
-                        "table": where_clause.this.table if hasattr(where_clause.this, 'table') else None,
-                        "schema": where_clause.this.db if hasattr(where_clause.this, 'db') else None
-                    }
-                
-                pattern = None
-                if hasattr(where_clause, 'expression') and isinstance(where_clause.expression, exp.Literal):
-                    pattern = where_clause.expression.this
-                
-                filters.append({
-                    "type": "LIKE",
-                    "column": column,
-                    "pattern": pattern
-                })
-        
-        except Exception as e:
-            logger.error(f"Error analyzing filters: {str(e)}")
-        
-        return filters
+            logger.warning(f"Error extracting joins: {str(e)}")
+            return []
 
     def _extract_tables_basic(self, sql_content: str) -> List[Dict[str, Any]]:
         """
