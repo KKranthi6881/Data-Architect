@@ -26,7 +26,7 @@ class DataArchitectAgent:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.llm = ChatOllama(
-            model="llama3.2:latest",
+            model="deepseek-r1:8b",
             temperature=0.1,  # Lower temperature for more focused responses
             base_url="http://localhost:11434",
             timeout=180,

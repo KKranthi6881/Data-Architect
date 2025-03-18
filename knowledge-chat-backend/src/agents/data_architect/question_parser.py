@@ -72,7 +72,7 @@ class BusinessAnalysis(BaseModel):
 def create_parser_agent(tools: SearchTools):
     # Initialize model
     llm = ChatOllama(
-        model="llama3.2:latest",  # Changed to llama2
+        model="deepseek-r1:8b",  
         temperature=0.1,
         base_url="http://localhost:11434",
         timeout=120,

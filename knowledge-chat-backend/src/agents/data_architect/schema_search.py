@@ -32,7 +32,7 @@ class SchemaSearchAgent:
         
         # Initialize LLM
         self.llm = ChatOllama(
-            model="llama3.2:latest",
+            model="deepseek-r1:8b",
             temperature=0.1,
             base_url="http://localhost:11434",
             timeout=120,

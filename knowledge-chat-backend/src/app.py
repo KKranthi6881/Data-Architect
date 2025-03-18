@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Request, HTTPException, Form, Depends
+from fastapi import FastAPI, UploadFile, File, Request, HTTPException, Form, Depends, Query, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -9,15 +9,16 @@ from pathlib import Path
 from .utils import ChromaDBManager
 from .tools import SearchTools
 from .agents.code_research import SimpleAnalysisSystem
+from .agents.data_architect_agent import DataArchitectSystem
 from .agents.data_architect.question_parser import QuestionParserSystem
 import logging
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from .db.database import ChatDatabase
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timezone
 from langchain_community.utilities import SQLDatabase
 from src.tools import SearchTools
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Callable
 from src.agents.data_architect.human_feedback import HumanFeedbackSystem
 from src.api.feedback_routes import router as feedback_router
 import re
@@ -67,6 +68,8 @@ chat_db = ChatDatabase()
 chat_db.ensure_feedback_columns()
 chat_db.ensure_cleared_column()
 chat_db.ensure_architect_response_column()
+chat_db.ensure_parent_checkpoint_column()
+chat_db.ensure_conversation_id_column()
 
 # Initialize tools and analysis system
 analysis_system = SimpleAnalysisSystem(code_search_tools)
@@ -74,13 +77,18 @@ analysis_system = SimpleAnalysisSystem(code_search_tools)
 # Initialize the Data Architect Agent
 data_architect_agent = DataArchitectAgent()
 
+# Initialize the DataArchitectSystem
+data_architect_system = DataArchitectSystem(code_search_tools)
+
 # Add new model for code analysis requests
 class CodeAnalysisRequest(BaseModel):
     query: str
 
 # Add new model for analysis requests
 class AnalysisRequest(BaseModel):
-    query: str
+    query: str = Field(..., description="The query to analyze")
+    conversation_id: Optional[str] = Field(None, description="Optional conversation ID")
+    thread_id: Optional[str] = Field(None, description="Optional thread ID")
 
 # Add new model for GitHub repository
 class GitHubRepoRequest(BaseModel):
@@ -1292,6 +1300,55 @@ async def upload_git_zip(file: UploadFile = File(...)):
             "status": "error",
             "message": f"Error processing Git ZIP file: {str(e)}"
         }
+
+@app.post("/architect/analyze/")
+async def analyze_with_data_architect(request: Request):
+    """Analyze data architecture query with the Data Architect agent."""
+    try:
+        request_data = await request.json()
+        query = request_data.get('query', '')
+        
+        # Get or generate conversation ID and thread ID
+        conversation_id = request_data.get('conversation_id', str(uuid.uuid4()))
+        thread_id = request_data.get('thread_id', conversation_id)
+        
+        # Prepare config with IDs
+        config = {
+            'conversation_id': conversation_id,
+            'thread_id': thread_id,
+            'source': request_data.get('source', 'web'),
+            'metadata': request_data.get('metadata', {})
+        }
+        
+        # Log the analysis request
+        logger.info(f"Data Architect analysis started: {query[:100]}... [conv_id: {conversation_id}]")
+        
+        # Call the analyze method with the new signature
+        result = data_architect_system.analyze(question=query, config=config)
+        
+        # Save to database
+        chat_db.save_conversation(result)
+        
+        # Return success response
+        return JSONResponse({
+            'success': True,
+            'conversation_id': result.get('conversation_id'),
+            'thread_id': result.get('thread_id'),
+            'output': result.get('architect_response'),
+            'technical_details': result.get('technical_details', {}),
+            'code_context': result.get('code_context', {})
+        })
+    
+    except Exception as e:
+        # Log error details
+        logger.error(f"Error in data architect analysis: {str(e)}", exc_info=True)
+        
+        # Return error response
+        return JSONResponse({
+            'success': False,
+            'error': str(e),
+            'output': "I encountered an error while analyzing your question. Please try rephrasing or providing more details."
+        })
 
 if __name__ == "__main__":
     main() 

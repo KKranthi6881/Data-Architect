@@ -35,15 +35,17 @@ class ChatDatabase:
                 )
             ''')
             
-            # Create checkpoints table
+            # Create checkpoints table with langgraph compatible schema
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS checkpoints (
-                    thread_id TEXT,
                     checkpoint_id TEXT PRIMARY KEY,
+                    thread_id TEXT,
                     type TEXT,
                     checkpoint TEXT,
-                    metadata TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    parent_checkpoint_id TEXT,
+                    checkpoint_ns TEXT,
+                    metadata TEXT
                 )
             ''')
             
@@ -84,54 +86,100 @@ class ChatDatabase:
             """)
             conn.commit()
 
-    def save_conversation(self, conversation_id: str, data: Dict[str, Any]):
-        """Save or update a conversation with proper logging"""
+    def save_conversation(self, data):
+        """Save a conversation to the database."""
         try:
+            # Extract conversation_id and content from data
+            conversation_id = data.get('conversation_id')
+            thread_id = data.get('thread_id', conversation_id)  # Default to conversation_id if thread_id is not provided
+            question = data.get('question', '')
+            
+            # Handle architect_response - ensure it's a JSON string
+            architect_response = data.get('architect_response', {})
+            if isinstance(architect_response, dict):
+                try:
+                    architect_response = json.dumps(architect_response)
+                except Exception as e:
+                    self.logger.warning(f"Failed to convert architect_response to JSON: {e}")
+                    architect_response = str(architect_response)
+            
+            # Handle technical_details - ensure it's a JSON string
+            technical_details = data.get('technical_details', {})
+            if isinstance(technical_details, dict) or isinstance(technical_details, list):
+                try:
+                    technical_details = json.dumps(technical_details)
+                except Exception as e:
+                    self.logger.warning(f"Failed to convert technical_details to JSON: {e}")
+                    technical_details = str(technical_details)
+            
+            # Handle code_context - ensure it's a JSON string
+            code_context = data.get('code_context', {})
+            if isinstance(code_context, dict) or isinstance(code_context, list):
+                try:
+                    code_context = json.dumps(code_context)
+                except Exception as e:
+                    self.logger.warning(f"Failed to convert code_context to JSON: {e}")
+                    code_context = str(code_context)
+            
+            # Get metadata as JSON string
+            metadata = data.get('metadata', {})
+            if isinstance(metadata, dict) or isinstance(metadata, list):
+                try:
+                    metadata = json.dumps(metadata)
+                except Exception as e:
+                    self.logger.warning(f"Failed to convert metadata to JSON: {e}")
+                    metadata = str(metadata)
+            
+            # Check if we should use the old schema or new schema
             with self._get_connection() as conn:
                 cursor = conn.cursor()
+                cursor.execute("PRAGMA table_info(conversations)")
+                columns = [column[1] for column in cursor.fetchall()]
                 
-                # Extract architect response if present
-                architect_response = data.get('architect_response', data.get('output'))
-                if isinstance(architect_response, dict):
-                    architect_response = json.dumps(architect_response)
-                
-                # Ensure technical_details is JSON string
-                technical_details = data.get('technical_details')
-                if isinstance(technical_details, dict):
-                    technical_details = json.dumps(technical_details)
-                
-                cursor.execute('''
-                    INSERT OR REPLACE INTO conversations (
-                        id,
-                        created_at,
-                        query,
-                        architect_response,
-                        code_context,
-                        technical_details,
-                        feedback_status,
-                        feedback_comments,
-                        thread_id,
-                        cleared
-                    ) VALUES (?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    conversation_id,
-                    data.get('created_at'),
-                    data.get('query', ''),
-                    architect_response,
-                    data.get('code_context', '{}'),
-                    technical_details,
-                    data.get('feedback_status'),
-                    data.get('feedback_comments'),
-                    data.get('thread_id', conversation_id),
-                    data.get('cleared', 0)
-                ))
+                if "user_question" in columns:
+                    # New schema
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO conversations
+                        (conversation_id, thread_id, user_question, architect_response, technical_details, code_context, metadata, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            conversation_id,
+                            thread_id,
+                            question,
+                            architect_response,
+                            technical_details,
+                            code_context,
+                            metadata,
+                            datetime.now().isoformat()
+                        )
+                    )
+                else:
+                    # Old schema
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO conversations
+                        (id, thread_id, query, architect_response, technical_details, code_context, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            conversation_id,
+                            thread_id,
+                            question,
+                            architect_response,
+                            technical_details,
+                            code_context,
+                            datetime.now().isoformat()
+                        )
+                    )
                 
                 conn.commit()
-                self.logger.info(f"Successfully saved conversation {conversation_id}")
-                
+                self.logger.info(f"Saved conversation {conversation_id} with thread {thread_id}")
+                return True
         except Exception as e:
-            self.logger.error(f"Error saving conversation {conversation_id}: {e}", exc_info=True)
-            raise
+            self.logger.error(f"Error saving conversation: {str(e)}", exc_info=True)
+            return False
 
     def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         """Get a conversation by ID"""
@@ -336,7 +384,7 @@ class ChatDatabase:
                                 'parent_id': cp[1],
                                 'type': cp[2],
                                 'checkpoint': self._safe_load_binary(cp[3]),
-                                'metadata': self._safe_load_binary(cp[4])
+                                'metadata': self._safe_load_binary(cp[4]) if len(cp) > 4 else {}
                             }
                             processed_checkpoints.append(checkpoint_data)
                         except Exception as e:
@@ -396,19 +444,20 @@ class ChatDatabase:
             )
             conn.commit()
 
-    def create_checkpoint(self, thread_id: str, checkpoint_id: str, checkpoint_type: str, checkpoint_data: str):
+    def create_checkpoint(self, thread_id: str, checkpoint_id: str, checkpoint_type: str, checkpoint_data: str, metadata: str = None):
         """Create a new checkpoint"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
                 INSERT INTO checkpoints (
-                    thread_id, checkpoint_id, type, checkpoint
-                ) VALUES (?, ?, ?, ?)
+                    thread_id, checkpoint_id, type, checkpoint, metadata
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (thread_id, checkpoint_id, checkpoint_type, checkpoint_data)
+                (thread_id, checkpoint_id, checkpoint_type, checkpoint_data, metadata)
             )
             conn.commit()
+            self.logger.info(f"Created checkpoint {checkpoint_id} for thread {thread_id}")
 
     def update_conversation_response(self, conversation_id: str, updated_response: str):
         """Update a conversation's response"""
@@ -620,63 +669,98 @@ class ChatDatabase:
             print(f"Error ensuring thread_id column: {e}") 
 
     def create_tables(self):
-        """Create necessary tables if they don't exist"""
+        """Create necessary tables if they don't exist."""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # Create conversations table with architect_response column
+                # Create conversations table
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS conversations (
-                        id TEXT PRIMARY KEY,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        query TEXT,
-                        architect_response TEXT,
-                        code_context TEXT,
-                        technical_details TEXT,
-                        feedback_status TEXT,
-                        feedback_comments TEXT,
+                        conversation_id TEXT PRIMARY KEY,
                         thread_id TEXT,
-                        cleared INTEGER DEFAULT 0
+                        user_question TEXT,
+                        architect_response TEXT,
+                        technical_details TEXT,
+                        code_context TEXT,
+                        metadata TEXT,
+                        timestamp TEXT
                     )
                 ''')
                 
-                # Add architect_response column if it doesn't exist
+                # Create checkpoints table
                 cursor.execute('''
-                    SELECT COUNT(*) FROM pragma_table_info('conversations') 
-                    WHERE name='architect_response'
+                    CREATE TABLE IF NOT EXISTS checkpoints (
+                        id TEXT PRIMARY KEY,
+                        content TEXT,
+                        type TEXT,
+                        created_at TEXT,
+                        conversation_id TEXT,
+                        metadata TEXT
+                    )
                 ''')
-                if cursor.fetchone()[0] == 0:
-                    cursor.execute('''
-                        ALTER TABLE conversations 
-                        ADD COLUMN architect_response TEXT
-                    ''')
+                
+                # Create feedback table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS feedback (
+                        id TEXT PRIMARY KEY,
+                        conversation_id TEXT,
+                        rating INTEGER,
+                        comments TEXT,
+                        created_at TEXT
+                    )
+                ''')
                 
                 conn.commit()
-                
+                self.logger.info("Database tables created or verified.")
         except Exception as e:
-            print(f"Error creating tables: {e}")
-            raise
+            self.logger.error(f"Error creating tables: {str(e)}", exc_info=True)
 
     def ensure_architect_response_column(self):
         """Ensure the architect_response column exists in the conversations table"""
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT COUNT(*) 
-                    FROM pragma_table_info('conversations') 
-                    WHERE name='architect_response'
-                """)
-                if cursor.fetchone()[0] == 0:
-                    cursor.execute("""
-                        ALTER TABLE conversations 
-                        ADD COLUMN architect_response TEXT
-                    """)
+                # Check if the column exists
+                cursor.execute("PRAGMA table_info(conversations)")
+                columns = [column[1] for column in cursor.fetchall()]
+                
+                if "architect_response" not in columns:
+                    # Add the column
+                    cursor.execute("ALTER TABLE conversations ADD COLUMN architect_response TEXT")
                     conn.commit()
-                    self.logger.info("Added architect_response column to conversations table")
+                    logging.info("Added architect_response column to conversations table")
+                
         except Exception as e:
-            self.logger.error(f"Error ensuring architect_response column: {e}") 
+            logging.error(f"Error ensuring architect_response column: {e}")
+
+    def ensure_parent_checkpoint_column(self):
+        """Ensure the parent_checkpoint_id column exists in the checkpoints table"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                # First, drop the existing checkpoints table to recreate it with correct schema
+                cursor.execute("DROP TABLE IF EXISTS checkpoints")
+                conn.commit()
+                
+                # Create the checkpoints table with langgraph-compatible column names
+                cursor.execute("""
+                    CREATE TABLE checkpoints (
+                        checkpoint_id TEXT PRIMARY KEY,
+                        thread_id TEXT,
+                        type TEXT,
+                        checkpoint TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        parent_checkpoint_id TEXT,
+                        checkpoint_ns TEXT,
+                        metadata TEXT
+                    )
+                """)
+                conn.commit()
+                logging.info("Created checkpoints table with langgraph-compatible schema")
+                
+        except Exception as e:
+            logging.error(f"Error ensuring checkpoint columns: {e}")
 
     def get_all_conversations(self):
         """Get all conversations with their complete data"""
@@ -816,3 +900,56 @@ class ChatDatabase:
                 "message": str(e),
                 "threads": []
             }
+
+    def ensure_conversation_id_column(self):
+        """Ensure conversation_id column exists in the conversations table"""
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Check if conversation_id column exists
+                cursor.execute('''
+                    SELECT COUNT(*) FROM pragma_table_info('conversations') 
+                    WHERE name='conversation_id'
+                ''')
+                if cursor.fetchone()[0] == 0:
+                    # If id column exists, add conversation_id and copy values
+                    cursor.execute('''
+                        SELECT COUNT(*) FROM pragma_table_info('conversations') 
+                        WHERE name='id'
+                    ''')
+                    if cursor.fetchone()[0] > 0:
+                        # Add conversation_id column
+                        cursor.execute('''
+                            ALTER TABLE conversations 
+                            ADD COLUMN conversation_id TEXT
+                        ''')
+                        # Copy values from id to conversation_id
+                        cursor.execute('''
+                            UPDATE conversations 
+                            SET conversation_id = id
+                            WHERE conversation_id IS NULL
+                        ''')
+                    else:
+                        # No id column, rename the table and create a new one
+                        cursor.execute('''
+                            ALTER TABLE conversations 
+                            RENAME TO conversations_old
+                        ''')
+                        self.create_tables()
+                        cursor.execute('''
+                            INSERT INTO conversations (
+                                conversation_id, thread_id, user_question, 
+                                architect_response, technical_details, code_context, 
+                                metadata, timestamp
+                            )
+                            SELECT id, thread_id, query, 
+                                   architect_response, technical_details, code_context,
+                                   '', created_at
+                            FROM conversations_old
+                        ''')
+                
+                conn.commit()
+                self.logger.info("Ensured conversation_id column exists")
+        except Exception as e:
+            self.logger.error(f"Error ensuring conversation_id column: {str(e)}", exc_info=True)
