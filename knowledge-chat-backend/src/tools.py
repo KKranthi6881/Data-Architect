@@ -14,7 +14,7 @@ class SearchTools:
         """Initialize search tools with a database manager."""
         self.db_manager = db_manager
 
-    def search_code(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search_code(self, query: str, limit: int = 3) -> Dict[str, Any]:
         """
         Search for code snippets based on a query.
         
@@ -47,7 +47,7 @@ class SearchTools:
                 "error": str(e)
             }
     
-    def search_github_repos(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search_github_repos(self, query: str, limit: int = 3) -> Dict[str, Any]:
         """
         Search for GitHub repository content based on a query.
         
@@ -62,51 +62,37 @@ class SearchTools:
             # Get the GitHub documents collection
             collection = self.db_manager.get_or_create_collection("github_documents")
             
-            # Search for documents
-            results = collection.query(
-                query_texts=[query],
+            # Use hybrid search for better results with code repositories
+            results = self.db_manager.hybrid_search(
+                collection_name="github_documents",
+                query=query,
                 n_results=limit
             )
             
-            if not results or not results['documents'] or len(results['documents'][0]) == 0:
+            if not results or not results.get('results', []):
+                # Fallback to regular search if hybrid search returns no results
+                results = collection.query(
+                    query_texts=[query],
+                    n_results=limit
+                )
+                
+                if not results or not results['documents'] or len(results['documents'][0]) == 0:
+                    return {
+                        "status": "success",
+                        "results": [],
+                        "message": "No GitHub repository content found matching your query."
+                    }
+                
+                # Format regular search results
                 return {
                     "status": "success",
-                    "results": [],
-                    "message": "No GitHub repository content found matching your query."
+                    "results": self._format_github_results(results)
                 }
             
-            # Format the results
-            formatted_results = []
-            
-            for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
-                # Extract metadata
-                repo_url = metadata.get('repo_url', 'Unknown repository')
-                repo_owner = metadata.get('repo_owner', 'Unknown owner')
-                repo_name = metadata.get('repo_name', 'Unknown repository')
-                file_path = metadata.get('file_path', 'Unknown file')
-                language = metadata.get('language', 'Unknown language')
-                
-                # Format the result
-                formatted_result = {
-                    "id": i + 1,
-                    "repository": {
-                        "url": repo_url,
-                        "owner": repo_owner,
-                        "name": repo_name
-                    },
-                    "file": {
-                        "path": file_path,
-                        "language": language
-                    },
-                    "content": doc,
-                    "score": results['distances'][0][i] if 'distances' in results else None
-                }
-                
-                formatted_results.append(formatted_result)
-            
+            # Return hybrid search results
             return {
                 "status": "success",
-                "results": formatted_results
+                "results": results.get('results', [])
             }
             
         except Exception as e:
@@ -116,7 +102,67 @@ class SearchTools:
                 "error": str(e)
             }
     
-    def search_sql_schema(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def _format_github_results(self, results) -> List[Dict[str, Any]]:
+        """Format GitHub search results with enhanced metadata."""
+        if not results or not results['documents'] or len(results['documents'][0]) == 0:
+            return []
+        
+        formatted_results = []
+        
+        for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
+            # Extract repository information
+            repo_url = metadata.get('repo_url', 'Unknown repository')
+            repo_owner = metadata.get('repo_owner', 'Unknown owner')
+            repo_name = metadata.get('repo_name', 'Unknown repository')
+            file_path = metadata.get('file_path', 'Unknown file')
+            language = metadata.get('language', 'Unknown language')
+            
+            # Extract dbt-specific information if available
+            dbt_info = {}
+            if language == 'dbt' or metadata.get('is_dbt', False):
+                dbt_info = {
+                    'model_name': metadata.get('model_name', ''),
+                    'materialization': metadata.get('materialization', ''),
+                    'description': metadata.get('description', ''),
+                    'references': metadata.get('references', '').split(',') if metadata.get('references', '') else [],
+                    'sources': metadata.get('sources', '').split(',') if metadata.get('sources', '') else [],
+                    'columns': metadata.get('columns', '').split(',') if metadata.get('columns', '') else [],
+                    'schema_models': metadata.get('schema_models', '').split(',') if metadata.get('schema_models', '') else []
+                }
+            
+            # Extract lineage information if available
+            lineage_info = {}
+            if 'relationships' in metadata:
+                lineage_info['relationships'] = metadata.get('relationships', '')
+            
+            if 'analysis_summary' in metadata and isinstance(metadata['analysis_summary'], dict):
+                for key, value in metadata['analysis_summary'].items():
+                    if 'lineage' in key.lower() or 'depend' in key.lower():
+                        lineage_info[key] = value
+            
+            # Format the result
+            formatted_result = {
+                "id": i + 1,
+                "repository": {
+                    "url": repo_url,
+                    "owner": repo_owner,
+                    "name": repo_name
+                },
+                "file": {
+                    "path": file_path,
+                    "language": language
+                },
+                "content": doc,
+                "score": results['distances'][0][i] if 'distances' in results else None,
+                "dbt_info": dbt_info if dbt_info else None,
+                "lineage": lineage_info if lineage_info else None
+            }
+            
+            formatted_results.append(formatted_result)
+        
+        return formatted_results
+    
+    def search_sql_schema(self, query: str, limit: int = 3) -> Dict[str, Any]:
         """
         Search for SQL schema information based on a query.
         
@@ -155,7 +201,7 @@ class SearchTools:
                 # Format regular search results
                 return {
                     "status": "success",
-                    "results": self._format_results(results)
+                    "results": self._format_sql_results(results)
                 }
             
             # Return hybrid search results
@@ -170,6 +216,45 @@ class SearchTools:
                 "status": "error",
                 "error": str(e)
             }
+    
+    def _format_sql_results(self, results) -> List[Dict[str, Any]]:
+        """Format SQL search results with enhanced metadata."""
+        if not results or not results['documents'] or len(results['documents'][0]) == 0:
+            return []
+        
+        formatted_results = []
+        
+        for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
+            # Extract table information
+            tables = metadata.get('tables', '').split(',') if metadata.get('tables', '') else []
+            
+            # Extract relationship information
+            relationships = []
+            if 'relationships' in metadata:
+                rel_str = metadata.get('relationships', '')
+                if rel_str:
+                    # Parse relationship string format: "table1.col1 -> table2.col2|..."
+                    for rel in rel_str.split('|'):
+                        if '->' in rel:
+                            relationships.append(rel.strip())
+            
+            # Format the result
+            formatted_result = {
+                "id": i + 1,
+                "content": doc,
+                "metadata": {
+                    "source": metadata.get('source', 'Unknown source'),
+                    "language": metadata.get('language', 'sql'),
+                    "tables": tables,
+                    "relationships": relationships,
+                    "analysis_summary": metadata.get('analysis_summary', '')
+                },
+                "score": results['distances'][0][i] if 'distances' in results else None
+            }
+            
+            formatted_results.append(formatted_result)
+        
+        return formatted_results
     
     def _format_results(self, results) -> List[Dict[str, Any]]:
         """Format search results into a standardized structure."""
@@ -209,11 +294,136 @@ class SearchTools:
             )
             
             return {
+                "status": "success",
                 "results": doc_results.get("results", [])
             }
         except Exception as e:
             logger.error(f"Error in documentation search: {str(e)}")
-            return {"error": str(e), "results": []}
+            return {
+                "status": "error", 
+                "error": str(e), 
+                "results": []
+            }
+
+    def search_dbt_models(self, query: str, limit: int = 3) -> Dict[str, Any]:
+        """
+        Search specifically for dbt models and their lineage
+        
+        Args:
+            query: The search query
+            limit: Maximum number of results to return
+            
+        Returns:
+            Dictionary with dbt model search results
+        """
+        try:
+            # Get the GitHub documents collection
+            collection = self.db_manager.get_or_create_collection("github_documents")
+            
+            # Create a more specific query for dbt models
+            dbt_query = f"dbt model {query}"
+            
+            # Search for documents
+            results = self.db_manager.hybrid_search(
+                collection_name="github_documents",
+                query=dbt_query,
+                n_results=limit
+            )
+            
+            if not results or not results.get('results', []):
+                return {
+                    "status": "success",
+                    "results": [],
+                    "message": "No dbt models found matching your query."
+                }
+            
+            # Filter results to only include dbt models
+            dbt_results = []
+            for result in results.get('results', []):
+                metadata = result.get('metadata', {})
+                if metadata.get('language') == 'dbt' or metadata.get('is_dbt', False):
+                    dbt_results.append(result)
+            
+            # If we filtered out all results, try a more general search
+            if not dbt_results:
+                return {
+                    "status": "success",
+                    "results": [],
+                    "message": "No dbt models found matching your query."
+                }
+            
+            # Enhance results with lineage information
+            enhanced_results = self._enhance_dbt_results_with_lineage(dbt_results)
+            
+            return {
+                "status": "success",
+                "results": enhanced_results
+            }
+            
+        except Exception as e:
+            logger.error(f"Error searching dbt models: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e)
+            }
+    
+    def _enhance_dbt_results_with_lineage(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Enhance dbt results with lineage information by finding related models.
+        
+        Args:
+            results: List of dbt model search results
+            
+        Returns:
+            Enhanced results with lineage information
+        """
+        enhanced_results = []
+        
+        # Extract model names from results
+        model_names = set()
+        for result in results:
+            metadata = result.get('metadata', {})
+            model_name = metadata.get('model_name', '')
+            if model_name:
+                model_names.add(model_name)
+            
+            # Also add referenced models
+            references = metadata.get('references', '').split(',') if metadata.get('references', '') else []
+            for ref in references:
+                if ref.strip():
+                    model_names.add(ref.strip())
+        
+        # For each result, find its upstream and downstream dependencies
+        for result in results:
+            metadata = result.get('metadata', {})
+            model_name = metadata.get('model_name', '')
+            
+            if not model_name:
+                enhanced_results.append(result)
+                continue
+            
+            # Find upstream models (models this model depends on)
+            upstream_models = metadata.get('references', '').split(',') if metadata.get('references', '') else []
+            upstream_models = [m.strip() for m in upstream_models if m.strip()]
+            
+            # Find downstream models (models that depend on this model)
+            downstream_models = []
+            
+            # Create enhanced result
+            enhanced_result = result.copy()
+            
+            # Add lineage information
+            if 'dbt_info' not in enhanced_result:
+                enhanced_result['dbt_info'] = {}
+            
+            enhanced_result['dbt_info']['lineage'] = {
+                'upstream': upstream_models,
+                'downstream': downstream_models
+            }
+            
+            enhanced_results.append(enhanced_result)
+        
+        return enhanced_results
 
     def search_relationships(self, query: str) -> Dict[str, Any]:
         """
@@ -233,18 +443,41 @@ class SearchTools:
                 n_results=2
             )
             
+            # Also search for dbt models to get lineage information
+            dbt_results = self.search_dbt_models(query, limit=2)
+            
             relationships = []
+            
+            # Extract relationships from SQL results
             if sql_results and 'results' in sql_results:
                 for result in sql_results['results']:
                     if 'file_info' in result and 'relationships' in result['file_info']:
-                        relationships.append(result['file_info']['relationships'])
+                        relationships.append({
+                            'source': 'sql',
+                            'relationships': result['file_info']['relationships']
+                        })
+            
+            # Extract relationships from dbt results
+            if dbt_results and 'results' in dbt_results:
+                for result in dbt_results['results']:
+                    if 'dbt_info' in result and result['dbt_info'] and 'lineage' in result['dbt_info']:
+                        relationships.append({
+                            'source': 'dbt',
+                            'model': result.get('dbt_info', {}).get('model_name', 'Unknown model'),
+                            'lineage': result['dbt_info']['lineage']
+                        })
             
             return {
+                "status": "success",
                 "results": relationships
             }
         except Exception as e:
             logger.error(f"Error in relationship search: {str(e)}")
-            return {"error": str(e), "results": {}}
+            return {
+                "status": "error", 
+                "error": str(e), 
+                "results": []
+            }
 
     # Create Tool objects for the agent
     @property
@@ -256,9 +489,24 @@ class SearchTools:
                 description="Search through code files (SQL and Python)"
             ),
             Tool(
+                name="search_github_repos",
+                func=self.search_github_repos,
+                description="Search through GitHub repositories, especially dbt code"
+            ),
+            Tool(
+                name="search_sql_schema",
+                func=self.search_sql_schema,
+                description="Search for SQL schema information and table relationships"
+            ),
+            Tool(
                 name="search_documentation",
                 func=self.search_documentation,
                 description="Search through documentation files"
+            ),
+            Tool(
+                name="search_dbt_models",
+                func=self.search_dbt_models,
+                description="Search specifically for dbt models and their lineage"
             ),
             Tool(
                 name="search_relationships",
@@ -267,6 +515,7 @@ class SearchTools:
             )
         ]
 
+    # Legacy tools kept for backward compatibility
     @tool("code_search")
     def search_code_old(self, query: str) -> Dict[str, Any]:
         """

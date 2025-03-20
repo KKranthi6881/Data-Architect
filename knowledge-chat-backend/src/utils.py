@@ -29,6 +29,7 @@ import shutil
 import json
 import hashlib
 from datetime import datetime
+import subprocess
 
 
 
@@ -568,299 +569,149 @@ class ChromaDBManager:
         Returns:
             Dictionary with repository metadata and processed files
         """
-        logger.info(f"Processing GitHub repository: {repo_url}")
-        
-        # Parse the repository URL
-        parsed_url = urlparse(repo_url)
-        path_parts = parsed_url.path.strip('/').split('/')
-        
-        if len(path_parts) < 2:
-            raise ValueError(f"Invalid GitHub URL format: {repo_url}. URL should contain owner and repository name.")
-        
-        # Get owner and repo name from the path
-        owner = path_parts[0]
-        repo_name = path_parts[1]
-        
-        # Remove .git suffix if present
-        if repo_name.endswith('.git'):
-            repo_name = repo_name[:-4]
-        
-        # Extract the hostname for enterprise GitHub support
-        hostname = parsed_url.netloc
-        
-        # Create a temporary directory for the repository
-        temp_dir = tempfile.mkdtemp(prefix="github_repo_")
-        
-        # Add a class variable to track current file path
-        self.current_file_path = ""
-        
         try:
-            # Construct the clone URL with authentication if provided
-            base_clone_url = f"https://{hostname}/{owner}/{repo_name}.git"
+            logger.info(f"Processing GitHub repository: {repo_url}")
             
-            if username and token:
-                clone_url = f"https://{username}:{token}@{hostname}/{owner}/{repo_name}.git"
-            elif token:
-                clone_url = f"https://{token}@{hostname}/{owner}/{repo_name}.git"
-            else:
-                clone_url = base_clone_url
+            # Create a temporary directory with a shorter path
+            temp_dir = tempfile.mkdtemp(prefix="github_repo_", dir="/tmp")
             
             # Clone the repository
             logger.info(f"Cloning repository to {temp_dir}")
-            repo = git.Repo.clone_from(clone_url, temp_dir)
             
-            # Get repository metadata
-            repo_metadata = {
-                "url": repo_url,
-                "hostname": hostname,
-                "owner": owner,
-                "name": repo_name,
-                "last_commit": str(repo.head.commit.hexsha),
-                "last_commit_date": str(repo.head.commit.committed_datetime),
-                "description": repo.description if hasattr(repo, 'description') else "",
-                "file_count": 0,
-                "languages": {}
-            }
+            # Use subprocess with cwd parameter to avoid path issues
+            if username and token:
+                auth_url = f"https://{username}:{token}@github.com/{repo_url.split('github.com/')[1]}"
+                subprocess.run(["git", "clone", auth_url, temp_dir], check=True)
+            else:
+                subprocess.run(["git", "clone", repo_url, temp_dir], check=True)
             
-            # Process each file in the repository
-            processed_files = []
-            language_counts = {}
+            # Initialize code analyzer
+            code_analyzer = CodeAnalyzer()
             
-            # Walk through the repository directory
-            for root, dirs, files in os.walk(temp_dir):
-                # Skip .git directory
-                if '.git' in dirs:
-                    dirs.remove('.git')
-                
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    rel_path = os.path.relpath(file_path, temp_dir)
-                    
-                    # Set current file path for context in language detection
-                    self.current_file_path = rel_path
-                    
-                    # Skip binary files
-                    if self._is_binary_file(file_path):
-                        continue
-                    
-                    # Read file content
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    
-                    # Store content for language detection
-                    self.current_file_content = content
-                    
-                    # Skip empty files
-                    if not content.strip():
-                        continue
-                    
-                    # Get file extension
-                    _, ext = os.path.splitext(file)
-                    ext = ext.lstrip('.').lower()
-                    
-                    # Check for dbt files first
-                    is_dbt_file = self.code_analyzer._is_dbt_file(file_path)
-                    
-                    # Determine language
-                    language = self._get_language_from_extension(ext)
-                    
-                    # Skip files with unknown language
-                    if not language:
-                        continue
-                    
-                    # Update language counts
-                    language_counts[language] = language_counts.get(language, 0) + 1
-                    
-                    try:
-                        # Analyze file with CodeAnalyzer based on language
-                        analysis = None
-                        try:
-                            if is_dbt_file:
-                                if ext in ['yml', 'yaml']:
-                                    analysis = self.code_analyzer.analyze_dbt_schema(file_path)
-                                else:
-                                    analysis = self.code_analyzer.analyze_dbt(file_path)
-                            elif language == 'python':
-                                analysis = self.code_analyzer.analyze_python(file_path)
-                            elif language == 'sql':
-                                analysis = self.code_analyzer.analyze_sql(file_path)
-                            elif language in ['javascript', 'typescript']:
-                                # Use a generic analysis for JS/TS if specific methods aren't available
-                                analysis = {"file_type": language, "path": rel_path}
-                            else:
-                                # Basic analysis for other file types
-                                analysis = {"file_type": language, "path": rel_path}
-                        except Exception as analysis_error:
-                            logger.warning(f"Error analyzing file {rel_path}: {str(analysis_error)}")
-                            # Continue with basic analysis rather than failing
-                            analysis = {"error": str(analysis_error), "file_type": language, "path": rel_path}
-                        
-                        # Store processed file information
-                        processed_files.append({
-                            "path": rel_path,
-                            "language": language,
-                            "is_dbt": is_dbt_file,
-                            "content": content,
-                            "analysis": analysis,
-                            "size": os.path.getsize(file_path)
-                        })
-                        
-                    except Exception as e:
-                        logger.warning(f"Error processing file {rel_path}: {str(e)}")
-            
-            # Post-processing for dbt project to link models and dependencies
-            self._link_dbt_dependencies(processed_files)
-            
-            # Update repository metadata
-            repo_metadata["file_count"] = len(processed_files)
-            repo_metadata["languages"] = language_counts
-            
-            # Create documents for vector storage
+            # Process the repository files
+            file_count = 0
             documents = []
             
-            # Process each file into chunks
-            for file in processed_files:
-                # Generate a unique ID for the document
-                doc_id = base64.b64encode(f"{repo_url}:{file['path']}".encode()).decode()
-                
-                # Create chunks from the file content
-                if file['language'] in ['python', 'javascript', 'typescript', 'java']:
-                    # Use code-specific splitter for programming languages
-                    chunks = self.code_splitter.split_text(file['content'])
-                else:
-                    # Use regular document splitter for other files
-                    chunks = self.doc_splitter.split_text(file['content'])
-                
-                # Create a document for each chunk
-                for i, chunk in enumerate(chunks):
-                    chunk_id = f"{doc_id}_chunk_{i}"
-                    
-                    # Create metadata with only primitive types
-                    metadata = {
-                        "repo_url": repo_url,
-                        "hostname": hostname,
-                        "file_path": file['path'],
-                        "language": file['language'],
-                        "chunk_index": i,
-                        "total_chunks": len(chunks),
-                        "repo_owner": owner,
-                        "repo_name": repo_name,
-                        "upload_time": datetime.now().isoformat()
-                    }
-                    
-                    # Add simplified analysis data if available
-                    if file['analysis']:
-                        # Convert complex analysis objects to simple strings
-                        simple_analysis = {}
-                        for key, value in file['analysis'].items():
-                            if isinstance(value, (str, int, float, bool)):
-                                simple_analysis[key] = value
-                            elif isinstance(value, (list, dict)):
-                                # Convert to string representation
-                                simple_analysis[key] = str(value)
+            for root, _, files in os.walk(temp_dir):
+                for file in files:
+                    if file.endswith(('.sql', '.py', '.md', '.yml', '.yaml')):
+                        file_path = os.path.join(root, file)
+                        rel_path = os.path.relpath(file_path, temp_dir)
                         
-                        metadata["analysis_summary"] = simple_analysis
-                    
-                    documents.append({
-                        "id": chunk_id,
-                        "text": chunk,
-                        "metadata": metadata
-                    })
+                        try:
+                            # Use git command with proper working directory and relative path
+                            git_info = subprocess.check_output(
+                                ["git", "log", "-1", "--format=%H|%an|%at|%s", "--", rel_path],
+                                cwd=temp_dir,
+                                text=True
+                            ).strip()
+                            
+                            # Process the file with git metadata
+                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                content = f.read()
+                            
+                            # Analyze the file based on its type
+                            file_analysis = {}
+                            if file.endswith('.sql'):
+                                if 'models' in rel_path and rel_path.count('/') >= 2:
+                                    # This is likely a DBT model
+                                    file_analysis = code_analyzer.analyze_dbt(file_path)
+                                else:
+                                    # Regular SQL file
+                                    file_analysis = code_analyzer.analyze_sql(file_path)
+                            elif file.endswith(('.yml', '.yaml')):
+                                # Check if it's a DBT schema file
+                                if 'models' in rel_path or 'sources' in rel_path:
+                                    file_analysis = code_analyzer.analyze_dbt_schema(file_path)
+                                else:
+                                    file_analysis = code_analyzer.analyze_yaml(file_path)
+                            elif file.endswith('.py'):
+                                file_analysis = code_analyzer.analyze_python(file_path)
+                            elif file.endswith('.md'):
+                                file_analysis = code_analyzer.analyze_markdown(file_path)
+                            
+                            # Create document ID
+                            doc_id = hashlib.md5(f"{repo_url}:{rel_path}".encode()).hexdigest()
+                            
+                            # Create document with metadata
+                            document = {
+                                "id": doc_id,
+                                "text": content,
+                                "metadata": {
+                                    "source": "github",
+                                    "repo_url": repo_url,
+                                    "file_path": rel_path,
+                                    "git_info": git_info,
+                                    "file_type": file_path.split('.')[-1],
+                                    "analysis": file_analysis
+                                }
+                            }
+                            
+                            # Add to documents list
+                            documents.append(document)
+                            
+                            # Add to vector store
+                            self.add_document(
+                                collection_name="github_documents",
+                                document_id=doc_id,
+                                text=content,
+                                metadata={
+                                    "source": "github",
+                                    "repo_url": repo_url,
+                                    "file_path": rel_path,
+                                    "git_info": git_info,
+                                    "file_type": file_path.split('.')[-1]
+                                }
+                            )
+                            
+                            file_count += 1
+                            
+                        except Exception as e:
+                            logger.warning(f"Error processing file {rel_path}: {str(e)}")
+                            # Continue with next file
+            
+            # Clean up
+            shutil.rmtree(temp_dir)
             
             return {
-                "metadata": repo_metadata,
+                "status": "success",
+                "files_processed": file_count,
+                "repo_url": repo_url,
                 "documents": documents
             }
             
         except Exception as e:
-            logger.error(f"Error processing GitHub repository: {str(e)}")
-            raise
-        
-        finally:
-            # Clean up the temporary directory
-            try:
-                shutil.rmtree(temp_dir)
-            except Exception as e:
-                logger.warning(f"Error cleaning up temporary directory: {str(e)}")
+            logger.error(f"Error processing GitHub repository: {str(e)}", exc_info=True)
+            return {
+                "status": "error",
+                "error": str(e),
+                "repo_url": repo_url,
+                "documents": []
+            }
 
-    def add_github_repo(self, repo_url: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    def add_document(self, collection_name: str, document_id: str, text: str, metadata: Dict[str, Any]) -> None:
         """
-        Add a processed GitHub repository to the vector store.
+        Add a document to a ChromaDB collection.
+        
+        Args:
+            collection_name: Name of the collection
+            document_id: Unique ID for the document
+            text: Document text content
+            metadata: Document metadata
         """
         try:
-            # Parse the repo URL to extract hostname for fallback
-            parsed_url = urlparse(repo_url)
+            # Get or create the collection
+            collection = self.get_or_create_collection(collection_name)
             
-            # Process the repository
-            repo_data = self.process_github(repo_url, 
-                                           username=metadata.get("username", ""), 
-                                           token=metadata.get("token", ""))
-            
-            # Get the collection
-            collection = self.get_or_create_collection("github_documents")
-            
-            # Add documents to the collection
-            documents = repo_data["documents"]
-            
-            if not documents:
-                return {
-                    "status": "warning",
-                    "message": "No documents were extracted from the repository",
-                    "repo_url": repo_url
-                }
-            
-            # Add documents in batches to avoid overwhelming the database
-            batch_size = 100
-            for i in range(0, len(documents), batch_size):
-                batch = documents[i:i+batch_size]
-                
-                # Extract data for ChromaDB
-                ids = [doc["id"] for doc in batch]
-                texts = [doc["text"] for doc in batch]
-                
-                # Clean metadata to ensure all values are valid types
-                cleaned_metadatas = []
-                for doc in batch:
-                    # Create a simplified metadata dict with only primitive types
-                    cleaned_metadata = {
-                        "repo_url": repo_url,
-                        "hostname": doc["metadata"].get("hostname", parsed_url.netloc),  # Now parsed_url is defined
-                        "file_path": doc["metadata"].get("file_path", ""),
-                        "language": doc["metadata"].get("language", ""),
-                        "chunk_index": doc["metadata"].get("chunk_index", 0),
-                        "total_chunks": doc["metadata"].get("total_chunks", 1),
-                        "repo_owner": doc["metadata"].get("repo_owner", ""),
-                        "repo_name": doc["metadata"].get("repo_name", ""),
-                        "upload_time": metadata.get("upload_time", "")
-                    }
-                    
-                    # Add any other primitive metadata that might be useful
-                    if "size" in doc["metadata"]:
-                        cleaned_metadata["size"] = doc["metadata"]["size"]
-                    
-                    cleaned_metadatas.append(cleaned_metadata)
-                
-                # Add to collection
-                collection.add(
-                    ids=ids,
-                    documents=texts,
-                    metadatas=cleaned_metadatas
-                )
-            
-            return {
-                "status": "success",
-                "message": f"Added {len(documents)} documents from GitHub repository",
-                "repo_url": repo_url,
-                "repo_metadata": {
-                    "url": repo_url,
-                    "owner": repo_data["metadata"].get("owner", ""),
-                    "name": repo_data["metadata"].get("name", ""),
-                    "file_count": repo_data["metadata"].get("file_count", 0)
-                }
-            }
+            # Add the document
+            collection.add(
+                ids=[document_id],
+                documents=[text],
+                metadatas=[metadata]
+            )
             
         except Exception as e:
-            logger.error(f"Error adding GitHub repository: {str(e)}")
+            logger.error(f"Error adding document to collection {collection_name}: {str(e)}")
             raise
 
     def _clean_for_json(self, obj):

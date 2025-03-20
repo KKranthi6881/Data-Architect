@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Request, HTTPException, Form, Depends, Query, Response
+from fastapi import FastAPI, UploadFile, File, Request, HTTPException, Form, Depends, Query, Response, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -9,7 +9,7 @@ from pathlib import Path
 from .utils import ChromaDBManager
 from .tools import SearchTools
 from .agents.code_research import SimpleAnalysisSystem
-from .agents.data_architect_agent import DataArchitectSystem
+from .agents.data_architect_agent import create_data_architect_agent
 from .agents.data_architect.question_parser import QuestionParserSystem
 import logging
 from pydantic import BaseModel, Field
@@ -25,8 +25,8 @@ import re
 import uuid
 import json
 from src.agents.data_architect.schema_search import SchemaSearchAgent
-from src.agents.data_architect.data_architect import DataArchitectAgent
-from src.agents.data_architect.github_search import GitHubCodeSearchAgent
+import time
+
 app = FastAPI(title="Knowledge Chat API")
 
 # Add CORS middleware
@@ -75,10 +75,10 @@ chat_db.ensure_conversation_id_column()
 analysis_system = SimpleAnalysisSystem(code_search_tools)
 
 # Initialize the Data Architect Agent
-data_architect_agent = DataArchitectAgent()
+data_architect_agent = create_data_architect_agent(code_search_tools)
 
-# Initialize the DataArchitectSystem
-data_architect_system = DataArchitectSystem(code_search_tools)
+# Comment out or remove this line if DataArchitectSystem is no longer needed
+# data_architect_system = DataArchitectSystem(code_search_tools)
 
 # Add new model for code analysis requests
 class CodeAnalysisRequest(BaseModel):
@@ -125,8 +125,27 @@ class ChatResponse(BaseModel):
     feedback_required: bool = False
     feedback_status: Optional[str] = None
 
+# Add this with your other model definitions
+class ArchitectRequest(BaseModel):
+    query: str = Field(..., description="The question to analyze")
+    conversation_id: Optional[str] = Field(None, description="Optional conversation ID")
+    thread_id: Optional[str] = Field(None, description="Optional thread ID")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata")
+
+# Add this model definition
+class ArchitectResponse(BaseModel):
+    response: str
+    conversation_id: str
+    processing_time: float
+    question_type: str
+    github_results: Optional[Dict[str, Any]] = None
+    sql_results: Optional[Dict[str, Any]] = None
+    doc_results: Optional[Dict[str, Any]] = None
+    dbt_results: Optional[Dict[str, Any]] = None
+    relationship_results: Optional[Dict[str, Any]] = None
+
 # Include feedback routes
-app.include_router(feedback_router, prefix="/feedback-status", tags=["feedback"])
+app.include_router(feedback_router, prefix="/feedback", tags=["feedback"])
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
@@ -196,31 +215,41 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/github/")
-async def add_github_repo(repo_request: GitHubRepoRequest):
-    """Add a GitHub repository to the knowledge base"""
+async def add_github_repo(request: GitHubRepoRequest):
+    """Add a GitHub repository to the vector store."""
     try:
-        logger.info(f"Processing GitHub repository: {repo_request.repo_url}")
+        logger.info(f"Processing GitHub repository: {request.repo_url}")
         
-        # Process the GitHub repository
-        result = db_manager.add_github_repo(
-            repo_request.repo_url,
-            {
-                "username": repo_request.username,
-                "token": repo_request.token,
-                "upload_time": datetime.now().isoformat()
-            }
+        # Process the repository directly
+        result = db_manager.process_github(
+            repo_url=request.repo_url,
+            username=request.username,
+            token=request.token
         )
         
-        return JSONResponse({
+        if result.get("status") == "error":
+            logger.error(f"Error processing GitHub repository: {result.get('error')}")
+            return {
+                "status": "error",
+                "message": f"Error processing GitHub repository: {result.get('error')}",
+                "repo_url": request.repo_url
+            }
+        
+        # Return success response
+        return {
             "status": "success",
-            "repo_url": repo_request.repo_url,
-            "message": "GitHub repository processed and added to knowledge base",
-            "repo_info": result.get("repo_metadata", {})
-        })
+            "message": f"Successfully processed GitHub repository: {request.repo_url}",
+            "files_processed": result.get("files_processed", 0),
+            "repo_url": request.repo_url
+        }
         
     except Exception as e:
-        logger.error(f"Error processing GitHub repository: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error processing GitHub repository: {str(e)}")
+        return {
+            "status": "error",
+            "message": f"Error processing GitHub repository: {str(e)}",
+            "repo_url": request.repo_url
+        }
 
 @app.get("/collections/")
 async def get_collections():
@@ -605,14 +634,35 @@ async def get_pending_feedback():
             }
         )
 
-@app.get("/conversations/{conversation_id}")
+@app.get("/api/conversation/{conversation_id}")
 async def get_conversation(conversation_id: str):
-    """Get conversation history."""
+    """Get a specific conversation by ID"""
     try:
-        history = chat_db.get_conversation(conversation_id)
-        return {"history": history}
+        logger.info(f"Fetching conversation with ID: {conversation_id}")
+        conversation = chat_db.get_conversation(conversation_id)
+        
+        if not conversation:
+            logger.error(f"Conversation not found: {conversation_id}")
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        logger.info(f"Raw conversation data: {conversation}")
+        
+        # Format the response properly
+        formatted_conversation = {
+            "id": conversation.get("conversation_id"),
+            "timestamp": conversation.get("timestamp", ""),
+            "query": conversation.get("question", ""),
+            "response": conversation.get("answer", ""),
+            "technical_details": conversation.get("metadata", {}),
+            "context": {},
+            "feedback": {"status": "pending", "comments": ""}
+        }
+        
+        logger.info(f"Returning formatted conversation: {formatted_conversation}")
+        return JSONResponse(content=formatted_conversation)
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Conversation not found: {str(e)}")
+        logger.error(f"Error retrieving conversation: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 def render_history_sidebar():
     """Render the conversation history in the sidebar"""
@@ -846,105 +896,12 @@ async def get_chat_session(session_id: str):
         logger.error(f"Error fetching chat session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/conversation/{conversation_id}")
-async def get_conversation_details(conversation_id: str):
-    """Get detailed information about a specific conversation"""
-    try:
-        # Get the conversation from the database
-        logger.info(f"Fetching conversation with ID: {conversation_id}")
-        conversation = chat_db.get_conversation(conversation_id)
-        
-        if not conversation:
-            logger.warning(f"Conversation not found: {conversation_id}")
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        
-        logger.info(f"Raw conversation data: {conversation}")
-        
-        # Format the response with safe access to fields
-        formatted_conversation = {
-            "id": conversation.get("id", conversation_id),
-            "timestamp": conversation.get("created_at", ""),
-            "query": conversation.get("query", ""),
-            "response": "",  # Initialize with empty string
-            "technical_details": {},
-            "context": {},
-            "feedback": {
-                "status": conversation.get("feedback_status", "pending"),
-                "comments": conversation.get("feedback_comments", "")
-            }
-        }
-        
-        # Handle output field - ensure it's a string
-        try:
-            output = conversation.get("output", "")
-            logger.info(f"Output type: {type(output)}, value: {output}")
-            
-            if isinstance(output, dict):
-                formatted_conversation["response"] = output.get("output", "")
-            elif isinstance(output, str):
-                # Try to parse as JSON first
-                try:
-                    output_json = json.loads(output)
-                    if isinstance(output_json, dict):
-                        formatted_conversation["response"] = output_json.get("output", output)
-                    else:
-                        formatted_conversation["response"] = output
-                except json.JSONDecodeError:
-                    # Not JSON, use as is
-                    formatted_conversation["response"] = output
-            else:
-                formatted_conversation["response"] = str(output)
-        except Exception as e:
-            logger.error(f"Error processing output: {e}")
-            formatted_conversation["response"] = "Error processing response"
-        
-        # Parse technical details if available
-        try:
-            if conversation.get("technical_details"):
-                if isinstance(conversation["technical_details"], str):
-                    formatted_conversation["technical_details"] = json.loads(conversation["technical_details"])
-                else:
-                    formatted_conversation["technical_details"] = conversation["technical_details"]
-        except json.JSONDecodeError:
-            formatted_conversation["technical_details"] = {"raw": conversation.get("technical_details", "")}
-        
-        # Parse context if available
-        try:
-            if conversation.get("code_context"):
-                if isinstance(conversation["code_context"], str):
-                    formatted_conversation["context"] = json.loads(conversation["code_context"])
-                else:
-                    formatted_conversation["context"] = conversation["code_context"]
-        except json.JSONDecodeError:
-            formatted_conversation["context"] = {"raw": conversation.get("code_context", "")}
-        
-        logger.info(f"Returning formatted conversation: {formatted_conversation}")
-        
-        return JSONResponse(
-            content={
-                "status": "success",
-                "conversation": formatted_conversation
-            }
-        )
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        logger.error(f"Error getting conversation details: {e}", exc_info=True)
-        return JSONResponse(
-            content={
-                "status": "error",
-                "message": str(e)
-            },
-            status_code=500
-        )
-
 @app.get("/api/conversations")
 async def get_conversations(limit: int = 10, offset: int = 0):
     """Get a list of recent conversations"""
     try:
         logger.info("Fetching conversations from database...")
-        db = ChatDatabase()
-        conversations = db.get_recent_conversations(limit=limit)
+        conversations = chat_db.get_recent_conversations(limit, offset)
         logger.info(f"Retrieved {len(conversations)} conversations from database")
         
         # Format conversations for response
@@ -1014,72 +971,29 @@ async def conversation_history(request: Request):
         {"request": request}
     )
 
-@app.get("/api/thread-conversations")
-async def get_thread_conversations():
-    """Get all conversations grouped by thread"""
+@app.get("/api/thread-conversations/{thread_id}")
+async def get_thread_conversations(thread_id: str):
+    """Get all conversations in a thread"""
     try:
-        # Get all conversations
-        conversations = chat_db.get_all_conversations()
-        
-        if not conversations:
-            return JSONResponse(
-                content={
-                    "status": "success",
-                    "threads": [],
-                    "message": "No conversations found"
-                }
-            )
-        
-        # Group conversations by thread_id
-        thread_groups = {}
-        for conv in conversations:
-            thread_id = conv.get("thread_id") or conv.get("id")
-            if thread_id not in thread_groups:
-                thread_groups[thread_id] = []
-            thread_groups[thread_id].append(conv)
-        
-        # Format thread summaries
-        threads = []
-        for thread_id, convs in thread_groups.items():
-            # Sort conversations in thread by timestamp
-            sorted_convs = sorted(convs, key=lambda x: x.get("created_at", ""))
-            first_conv = sorted_convs[0]
-            last_conv = sorted_convs[-1]
-            
-            thread_summary = {
-                "thread_id": thread_id,
-                "created_at": first_conv.get("created_at"),
-                "initial_query": first_conv.get("query"),
-                "conversations": [{
-                    "id": conv.get("id"),
-                    "created_at": conv.get("created_at"),
-                    "query": conv.get("query"),
-                    "technical_details": conv.get("technical_details"),
-                    "architect_response": conv.get("architect_response"),
-                    "feedback_status": conv.get("feedback_status", "pending")
-                } for conv in sorted_convs],
-                "message_count": len(sorted_convs),
-                "feedback_status": last_conv.get("feedback_status", "pending"),
-                "has_architect_response": any(c.get("architect_response") for c in sorted_convs)
-            }
-            threads.append(thread_summary)
-        
-        # Sort threads by creation date (newest first)
-        threads.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        
-        return JSONResponse(
-            content={
-                "status": "success",
-                "threads": threads,
-                "total": len(threads)
-            }
-        )
-        
+        logger.info(f"Fetching conversations for thread: {thread_id}")
+        conversations = chat_db.get_conversations_by_thread(thread_id)
+        return JSONResponse(content={"conversations": conversations})
     except Exception as e:
-        logger.error(f"Error getting thread conversations: {e}")
+        logger.error(f"Error retrieving thread conversations: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/thread-conversations")
+async def get_all_threads():
+    """Get all thread IDs with their latest conversation"""
+    try:
+        logger.info("Fetching all threads")
+        threads = chat_db.get_all_threads()
+        return JSONResponse(content={"threads": threads})
+    except Exception as e:
+        logger.error(f"Error getting thread conversations: {str(e)}", exc_info=True)
         return JSONResponse(
-            content={"status": "error", "message": str(e)},
-            status_code=500
+            status_code=500,
+            content={"error": f"Failed to get threads: {str(e)}", "detail": "Check server logs for more information"}
         )
 
 @app.post("/api/search-schemas")
@@ -1198,46 +1112,33 @@ conversation_id: {conversation_id}
 async def get_architect_response(conversation_id: str):
     try:
         # Get the conversation to extract necessary details
-        chat_db = ChatDatabase()
         conversation = chat_db.get_conversation(conversation_id)
         
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
         
-        # Get technical details
-        technical_details = conversation.get("technical_details", "{}")
-        if isinstance(technical_details, str):
-            try:
-                technical_details = json.loads(technical_details)
-            except json.JSONDecodeError:
-                technical_details = {}
-        
         # Get original question
         original_question = conversation.get("query", "")
         
-        # Initialize agents
-        schema_search_agent = SchemaSearchAgent()
-        github_search_agent = GitHubCodeSearchAgent()
-        data_architect_agent = DataArchitectAgent()
+        # Process the question with our new data architect agent
+        result = data_architect_agent.process_question(original_question)
         
-        # Get search results
-        schema_results = schema_search_agent.search_schemas(technical_details)
-        code_results = github_search_agent.search_code(technical_details)
+        # Extract the response
+        response = result.get("response", "I couldn't generate a response. Please try again.")
         
-        # Generate architect response
-        architect_response = data_architect_agent.generate_response(
-            parsed_question=technical_details,
-            schema_results=schema_results,
-            code_results=code_results,
-            original_question=original_question
-        )
-        
-        if not architect_response:
-            raise HTTPException(status_code=500, detail="Failed to generate architect response")
-
         # Save the architect response to the database
         try:
-            # Convert the architect response to JSON string for storage
+            # Create a response object
+            architect_response = {
+                "response": response,
+                "processing_time": result.get("processing_time", 0),
+                "question_type": result.get("question_type", "UNKNOWN"),
+                "github_results": result.get("github_results", {}),
+                "sql_results": result.get("sql_results", {}),
+                "doc_results": result.get("doc_results", {})
+            }
+            
+            # Convert to JSON for storage
             architect_response_json = json.dumps(architect_response)
             
             # Update the conversation with the architect response
@@ -1254,14 +1155,13 @@ async def get_architect_response(conversation_id: str):
             logger.info(f"Saved architect response for conversation {conversation_id}")
         except Exception as e:
             logger.error(f"Error saving architect response: {e}")
-            # Continue with the response even if save fails
             
         return JSONResponse(content={
             "status": "success",
-            "response": architect_response.get("response", ""),
-            "schema_results": architect_response.get("schema_results", []),
-            "code_results": architect_response.get("code_results", []),
-            "sections": architect_response.get("sections", {})
+            "response": response,
+            "conversation_id": conversation_id,
+            "processing_time": result.get("processing_time", 0),
+            "question_type": result.get("question_type", "UNKNOWN")
         })
         
     except Exception as e:
@@ -1302,53 +1202,115 @@ async def upload_git_zip(file: UploadFile = File(...)):
         }
 
 @app.post("/architect/analyze/")
-async def analyze_with_data_architect(request: Request):
-    """Analyze data architecture query with the Data Architect agent."""
+async def analyze_with_architect(request: ArchitectRequest):
+    """Process a question with the data architect agent"""
     try:
-        request_data = await request.json()
-        query = request_data.get('query', '')
+        logger.info(f"Processing architect request: {request.query}... [conv_id: {request.conversation_id}]")
         
-        # Get or generate conversation ID and thread ID
-        conversation_id = request_data.get('conversation_id', str(uuid.uuid4()))
-        thread_id = request_data.get('thread_id', conversation_id)
+        # Create a new conversation ID if not provided
+        conversation_id = request.conversation_id or str(uuid.uuid4())
+        thread_id = request.thread_id or conversation_id
         
-        # Prepare config with IDs
-        config = {
-            'conversation_id': conversation_id,
-            'thread_id': thread_id,
-            'source': request_data.get('source', 'web'),
-            'metadata': request_data.get('metadata', {})
+        # Process the question
+        start_time = time.time()
+        
+        # Get the agent
+        agent = get_data_architect_agent(
+            db_manager=db_manager,
+            chat_db=chat_db,
+            save_chat_func=chat_db.save_conversation,
+            conversation_id=conversation_id
+        )
+        
+        # Process the question
+        result = agent.process_question(
+            question=request.query,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
+            metadata=request.metadata
+        )
+        
+        # Calculate processing time
+        processing_time = time.time() - start_time
+        logger.info(f"Architect response generated in {processing_time:.2f} seconds")
+        
+        # Get the response
+        response = result.get("response", "I couldn't generate a response. Please try again.")
+        
+        # Return the response
+        return {
+            "response": response,
+            "conversation_id": result.get("conversation_id", conversation_id),
+            "thread_id": result.get("thread_id", thread_id),
+            "processing_time": result.get("processing_time", processing_time),
+            "question_type": result.get("question_type", "UNKNOWN"),
+            "github_results": result.get("github_results", {}),
+            "sql_results": result.get("sql_results", {}),
+            "doc_results": result.get("doc_results", {}),
+            "dbt_results": result.get("dbt_results", {}),
+            "relationship_results": result.get("relationship_results", {})
         }
         
-        # Log the analysis request
-        logger.info(f"Data Architect analysis started: {query[:100]}... [conv_id: {conversation_id}]")
-        
-        # Call the analyze method with the new signature
-        result = data_architect_system.analyze(question=query, config=config)
-        
-        # Save to database
-        chat_db.save_conversation(result)
-        
-        # Return success response
-        return JSONResponse({
-            'success': True,
-            'conversation_id': result.get('conversation_id'),
-            'thread_id': result.get('thread_id'),
-            'output': result.get('architect_response'),
-            'technical_details': result.get('technical_details', {}),
-            'code_context': result.get('code_context', {})
-        })
-    
     except Exception as e:
-        # Log error details
-        logger.error(f"Error in data architect analysis: {str(e)}", exc_info=True)
+        logger.error(f"Error processing architect request: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing request: {str(e)}"
+        )
+
+@app.get("/conversations")
+async def get_conversations(limit: int = 10, offset: int = 0):
+    """Get a list of recent conversations"""
+    try:
+        conversations = chat_db.get_recent_conversations(limit, offset)
+        return JSONResponse(content={"conversations": conversations})
+    except Exception as e:
+        logger.error(f"Error retrieving conversations: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+def get_data_architect_agent(db_manager, chat_db, save_chat_func, conversation_id=None):
+    """Get or create a data architect agent"""
+    try:
+        # Create search tools with the db_manager
+        tools = SearchTools(db_manager)
         
-        # Return error response
-        return JSONResponse({
-            'success': False,
-            'error': str(e),
-            'output': "I encountered an error while analyzing your question. Please try rephrasing or providing more details."
-        })
+        # Create a new agent with just the tools parameter
+        agent = create_data_architect_agent(tools=tools)
+        
+        # Set the database and other properties after creation
+        agent.db = chat_db
+        
+        return agent
+    except Exception as e:
+        logger.error(f"Error creating data architect agent: {str(e)}")
+        raise
+
+# Add these endpoints for thread-based conversation retrieval
+@app.get("/thread-conversations/{thread_id}")
+async def get_thread_conversations(thread_id: str):
+    """Get all conversations in a thread"""
+    try:
+        conversations = chat_db.get_conversations_by_thread(thread_id)
+        return JSONResponse(content={"conversations": conversations})
+    except Exception as e:
+        logger.error(f"Error retrieving thread conversations: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/thread-conversations")
+async def get_all_threads():
+    """Get all thread IDs with their latest conversation"""
+    try:
+        # Get all threads with their summaries
+        threads = chat_db.get_all_threads()  # Make sure this is the correct method name
+        return JSONResponse(content={"threads": threads})
+    except Exception as e:
+        # Add more detailed error logging
+        logger.error(f"Error getting thread conversations: {str(e)}", exc_info=True)
+        # Return a more helpful error message
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Failed to get threads: {str(e)}", "detail": "Check server logs for more information"}
+        )
 
 if __name__ == "__main__":
     main() 

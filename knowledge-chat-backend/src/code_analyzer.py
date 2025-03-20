@@ -445,119 +445,53 @@ class CodeAnalyzer:
 
     def analyze_dbt(self, file_path: str) -> Dict[str, Any]:
         """
-        Enhanced analysis of a DBT SQL file to extract metadata, lineage, and git information.
+        Analyze a DBT model file.
         
         Args:
-            file_path: Path to the DBT file
+            file_path: Path to the DBT model file
             
         Returns:
-            Dictionary with enhanced analysis results
+            Dictionary with analysis results
         """
         try:
-            # Initialize basic analysis
-            model_type = self._determine_dbt_model_type(file_path)
-            basic_analysis = {
-                "file_path": file_path,
-                "file_type": f"dbt_{model_type}",
-                "model_name": os.path.basename(file_path).split('.')[0],
-                "model_type": model_type,
-                "size": os.path.getsize(file_path)
-            }
-
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-
-            # Extract YAML frontmatter if present
-            yaml_data = {}
-            yaml_match = re.search(r'---\s+(.*?)\s+---', content, re.DOTALL)
-            if yaml_match:
-                try:
-                    yaml_text = yaml_match.group(1)
-                    yaml_data = yaml.safe_load(yaml_text)
-                    # Remove the YAML frontmatter for SQL parsing
-                    content = content.replace(yaml_match.group(0), '')
-                except Exception as e:
-                    logger.warning(f"Error parsing YAML frontmatter: {str(e)}")
-
-            # Add YAML config to analysis
-            if yaml_data:
-                basic_analysis.update({
-                    "yaml_config": yaml_data,
-                    "description": yaml_data.get('description', ''),
-                    "config": yaml_data.get('config', {}),
-                    "columns": yaml_data.get('columns', {})
-                })
             
-            # Add lineage information
-            lineage = self._build_dbt_lineage(file_path)
-            if lineage:
-                basic_analysis['lineage'] = {
-                    'upstream_models': lineage.upstream_models,
-                    'downstream_models': lineage.downstream_models,
-                    'sources': lineage.sources,
-                    'intermediate_models': lineage.intermediate_models,
-                    'target_tables': lineage.target_tables,
-                    'materialization': lineage.materialization,
-                    'freshness': lineage.freshness,
-                    'tags': lineage.tags
-                }
+            # Get git metadata
+            git_metadata = self._get_git_metadata(file_path)
             
-            # Add git metadata
-            git_info = self._get_git_metadata(file_path)
-            if git_info:
-                basic_analysis['git_metadata'] = {
-                    'last_modified': git_info.last_modified.isoformat(),
-                    'last_author': git_info.last_author,
-                    'commit_hash': git_info.commit_hash,
-                    'commit_message': git_info.commit_message,
-                    'branch_name': git_info.branch_name,
-                    'total_commits': git_info.total_commits,
-                    'contributors': git_info.contributors,
-                    'file_history': [
-                        {
-                            'commit_hash': h['commit_hash'],
-                            'author': h['author'],
-                            'timestamp': h['timestamp'].isoformat(),
-                            'message': h['message']
-                        }
-                        for h in git_info.file_history
-                    ]
-                }
+            # Basic file info
+            basic_analysis = {
+                "file_path": file_path,
+                "file_type": "dbt",
+                "size": os.path.getsize(file_path),
+                "git_metadata": git_metadata,
+                "last_modified": git_metadata.get("commit_date") if git_metadata else None,
+                "last_author": git_metadata.get("author") if git_metadata else None
+            }
             
-            # Add documentation context
-            docs_path = os.path.join(os.path.dirname(file_path), 'docs.md')
-            if os.path.exists(docs_path):
-                try:
-                    with open(docs_path, 'r', encoding='utf-8') as f:
-                        basic_analysis['documentation'] = f.read()
-                except Exception as e:
-                    logger.warning(f"Error reading docs.md: {str(e)}")
-
-            # Extract SQL-specific information
+            # Try to build DBT lineage
             try:
-                # Extract Jinja macros and references
-                jinja_refs = re.findall(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', content)
-                jinja_sources = re.findall(r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}', content)
-                jinja_macros = re.findall(r'{{\s*([a-zA-Z0-9_]+)\(', content)
-
-                basic_analysis.update({
-                    "jinja_references": list(set(jinja_refs)),
-                    "jinja_sources": [{"source": s[0], "table": s[1]} for s in jinja_sources],
-                    "jinja_macros": list(set(jinja_macros))
-                })
-
-                # Extract SQL comments for additional documentation
-                sql_comments = re.findall(r'--\s*(.*?)(?:\n|$)', content)
-                if sql_comments:
-                    basic_analysis["sql_comments"] = sql_comments
-
-                # Extract doc blocks (multiline comments)
-                doc_blocks = re.findall(r'/\*\*(.*?)\*/', content, re.DOTALL)
-                if doc_blocks:
-                    basic_analysis["doc_blocks"] = [block.strip() for block in doc_blocks]
-
-                # Try to extract SQL by removing/simplifying Jinja
-                simplified_sql = self._preprocess_jinja_sql(content)
+                lineage = self._build_dbt_lineage(file_path)
+                if lineage:
+                    basic_analysis["lineage"] = {
+                        "model_name": lineage.model_name,
+                        "upstream_models": lineage.upstream_models,
+                        "downstream_models": lineage.downstream_models,
+                        "sources": lineage.sources,
+                        "materialization": lineage.materialization,
+                        "tags": lineage.tags
+                    }
+                    if lineage.freshness:
+                        basic_analysis["lineage"]["freshness"] = lineage.freshness
+            except Exception as e:
+                logger.warning(f"Error building DBT lineage: {str(e)}")
+            
+            # Try to extract SQL information
+            try:
+                # Remove Jinja templating for SQL analysis
+                simplified_sql = re.sub(r'{%.*?%}', '', content, flags=re.DOTALL)
+                simplified_sql = re.sub(r'{{.*?}}', '', simplified_sql, flags=re.DOTALL)
                 
                 # Extract tables and relationships
                 tables, relationships = self._extract_sql_metadata(simplified_sql)
@@ -580,101 +514,63 @@ class CodeAnalyzer:
                 "size": os.path.getsize(file_path)
             }
 
-    def _get_git_metadata(self, file_path: str) -> Optional[GitMetadata]:
-        """Get Git metadata for a file"""
+    def _get_git_metadata(self, file_path: str) -> Dict[str, Any]:
+        """
+        Get Git metadata for a file.
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            Dictionary with Git metadata
+        """
         try:
             # Get the repository root directory
-            repo_root = None
-            try:
-                repo_root = subprocess.check_output(
-                    ['git', 'rev-parse', '--show-toplevel'],
-                    text=True,
-                    cwd=os.path.dirname(file_path)
-                ).strip()
-            except subprocess.CalledProcessError:
-                # If we can't get the repo root, this might be a temp cloned repo
-                # Try to initialize it as a new repo
-                try:
-                    temp_dir = os.path.dirname(file_path)
-                    subprocess.run(['git', 'init'], cwd=temp_dir, check=True, capture_output=True)
-                    subprocess.run(['git', 'add', '.'], cwd=temp_dir, check=True, capture_output=True)
-                    subprocess.run(
-                        ['git', 'commit', '-m', 'Initial commit'],
-                        cwd=temp_dir,
-                        check=True,
-                        capture_output=True,
-                        env={'GIT_AUTHOR_NAME': 'Analyzer', 'GIT_AUTHOR_EMAIL': 'analyzer@example.com',
-                             'GIT_COMMITTER_NAME': 'Analyzer', 'GIT_COMMITTER_EMAIL': 'analyzer@example.com'}
-                    )
-                    repo_root = temp_dir
-                except Exception as e:
-                    logger.warning(f"Could not initialize temporary git repo: {str(e)}")
-                    return None
-
-            if not repo_root:
-                return None
-
-            # Get relative path from repo root
-            rel_path = os.path.relpath(file_path, repo_root)
-
-            # Get last commit info
-            git_log = subprocess.check_output(
-                ['git', 'log', '-1', '--format=%H|%an|%at|%s', '--', rel_path],
-                text=True,
-                cwd=repo_root
-            ).strip().split('|')
+            repo_dir = os.path.dirname(file_path)
+            while repo_dir and not os.path.isdir(os.path.join(repo_dir, '.git')):
+                parent = os.path.dirname(repo_dir)
+                if parent == repo_dir:  # Reached root directory
+                    repo_dir = None
+                    break
+                repo_dir = parent
             
-            if not git_log or len(git_log) != 4:
-                return None
-                
-            commit_hash, author, timestamp, message = git_log
+            if not repo_dir:
+                logger.warning(f"Could not find Git repository for {file_path}")
+                return {}
             
-            # Get file history
-            history = subprocess.check_output(
-                ['git', 'log', '--format=%H|%an|%at|%s', '--', rel_path],
-                text=True,
-                cwd=repo_root
-            ).strip().split('\n')
+            # Get the relative path within the repository
+            rel_path = os.path.relpath(file_path, repo_dir)
             
-            file_history = []
-            for entry in history:
-                if entry:
-                    h, a, t, m = entry.split('|')
-                    file_history.append({
-                        'commit_hash': h,
-                        'author': a,
-                        'timestamp': datetime.fromtimestamp(int(t)),
-                        'message': m
-                    })
-            
-            # Get current branch
-            branch = subprocess.check_output(
-                ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
-                text=True,
-                cwd=repo_root
+            # Get the last commit information
+            git_info = subprocess.check_output(
+                ["git", "log", "-1", "--format=%H|%an|%at|%s", "--", rel_path],
+                cwd=repo_dir,  # Use the repository root as the working directory
+                text=True
             ).strip()
             
-            # Get unique contributors
-            contributors = subprocess.check_output(
-                ['git', 'log', '--format=%an', '--', rel_path],
-                text=True,
-                cwd=repo_root
-            ).strip().split('\n')
+            if not git_info:
+                return {}
+                
+            # Parse the git info
+            parts = git_info.split('|')
+            if len(parts) < 4:
+                return {}
+                
+            commit_hash, author, timestamp, message = parts
             
-            return GitMetadata(
-                last_modified=datetime.fromtimestamp(int(timestamp)),
-                last_author=author,
-                commit_hash=commit_hash,
-                commit_message=message,
-                file_history=file_history,
-                branch_name=branch,
-                total_commits=len(file_history),
-                contributors=list(set(contributors))
-            )
+            # Convert timestamp to datetime
+            commit_date = datetime.fromtimestamp(int(timestamp))
+            
+            return {
+                "commit_hash": commit_hash,
+                "author": author,
+                "commit_date": commit_date.isoformat(),
+                "commit_message": message
+            }
             
         except Exception as e:
             logger.warning(f"Error getting git metadata for {file_path}: {str(e)}")
-            return None
+            return {}
 
     def _build_dbt_lineage(self, model_path: str) -> Optional[DbtLineage]:
         """Build comprehensive DBT lineage for a model"""
@@ -1148,3 +1044,74 @@ class CodeAnalyzer:
                 })
         
         return tables
+
+    def analyze_yaml(self, file_path: str) -> Dict[str, Any]:
+        """
+        Analyze a YAML file.
+        
+        Args:
+            file_path: Path to the YAML file
+            
+        Returns:
+            Dictionary with analysis results
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Try to parse the YAML
+            try:
+                yaml_data = yaml.safe_load(content)
+            except Exception as e:
+                logger.warning(f"Error parsing YAML file {file_path}: {str(e)}")
+                yaml_data = None
+            
+            # Get git metadata if available
+            git_metadata = self._get_git_metadata(file_path)
+            
+            return {
+                "file_path": file_path,
+                "file_type": "yaml",
+                "yaml_structure": yaml_data if yaml_data else {},
+                "git_metadata": git_metadata
+            }
+        except Exception as e:
+            logger.error(f"Error analyzing YAML file {file_path}: {str(e)}")
+            return {"file_path": file_path, "error": str(e), "file_type": "yaml"}
+
+    def analyze_markdown(self, file_path: str) -> Dict[str, Any]:
+        """
+        Analyze a Markdown file.
+        
+        Args:
+            file_path: Path to the Markdown file
+            
+        Returns:
+            Dictionary with analysis results
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Extract headers
+            headers = re.findall(r'^(#{1,6})\s+(.+)$', content, re.MULTILINE)
+            structured_headers = []
+            
+            for h in headers:
+                level = len(h[0])
+                text = h[1].strip()
+                structured_headers.append({"level": level, "text": text})
+            
+            # Get git metadata if available
+            git_metadata = self._get_git_metadata(file_path)
+            
+            return {
+                "file_path": file_path,
+                "file_type": "markdown",
+                "headers": structured_headers,
+                "content_length": len(content),
+                "git_metadata": git_metadata
+            }
+        except Exception as e:
+            logger.error(f"Error analyzing Markdown file {file_path}: {str(e)}")
+            return {"file_path": file_path, "error": str(e), "file_type": "markdown"}
