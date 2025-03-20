@@ -81,6 +81,9 @@ import { CodeDisplay } from '../components/CodeDisplay'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { v4 as uuidv4 } from 'uuid'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
 // Sample chat history data
 const chatHistory = [
@@ -581,6 +584,196 @@ const renderMessageContent = (content) => {
   return <Text whiteSpace="pre-wrap">{content}</Text>;
 };
 
+// Add this component to better display code results
+
+const CodeResultDisplay = ({ result }) => {
+  if (!result) return null;
+  
+  const { file, repository, content } = result;
+  
+  return (
+    <Box 
+      borderWidth="1px" 
+      borderRadius="md" 
+      p={3} 
+      mb={3}
+      bg="gray.50"
+    >
+      <HStack mb={2}>
+        <Text fontWeight="bold">{file?.path || 'Unknown file'}</Text>
+        {repository && (
+          <Badge colorScheme="purple">
+            {repository.name}
+          </Badge>
+        )}
+      </HStack>
+      
+      <Code p={2} borderRadius="md" fontSize="sm" overflowX="auto" whiteSpace="pre">
+        {content || 'No content available'}
+      </Code>
+      
+      {result.dbt_info && (
+        <Box mt={2} p={2} bg="purple.50" borderRadius="md">
+          <Text fontWeight="bold" mb={1}>DBT Model Info</Text>
+          {result.dbt_info.model_name && (
+            <Text fontSize="sm">Model: {result.dbt_info.model_name}</Text>
+          )}
+          {result.dbt_info.materialization && (
+            <Text fontSize="sm">Materialization: {result.dbt_info.materialization}</Text>
+          )}
+          {result.dbt_info.references && result.dbt_info.references.length > 0 && (
+            <Text fontSize="sm">References: {result.dbt_info.references.join(', ')}</Text>
+          )}
+        </Box>
+      )}
+    </Box>
+  );
+};
+
+// Update the renderMessage function to better display architect responses
+
+const renderMessage = (message) => {
+  if (!message) return null;
+  
+  const isUser = message.role === 'user';
+  const isArchitectResponse = message.role === 'assistant' && message.type === 'architect';
+  
+  return (
+    <Box
+      key={message.id}
+      bg={isUser ? 'blue.50' : isArchitectResponse ? 'purple.50' : 'white'}
+      p={4}
+      borderRadius="md"
+      maxWidth={isUser ? '70%' : '90%'}
+      alignSelf={isUser ? 'flex-end' : 'flex-start'}
+      boxShadow="sm"
+      mb={4}
+      border="1px solid"
+      borderColor={isUser ? 'blue.100' : isArchitectResponse ? 'purple.100' : 'gray.200'}
+    >
+      <VStack align="stretch" spacing={3}>
+        <HStack>
+          <Avatar 
+            size="sm" 
+            bg={isUser ? 'blue.500' : isArchitectResponse ? 'purple.500' : 'green.500'} 
+            name={isUser ? 'You' : isArchitectResponse ? 'Data Architect' : 'Assistant'} 
+          />
+          <Text fontWeight="bold" color={
+            isUser ? 'blue.700' : 
+            isArchitectResponse ? 'purple.700' : 
+            'green.700'
+          }>
+            {isUser ? 'You' : isArchitectResponse ? 'Data Architect' : 'Assistant'}
+          </Text>
+          
+          {isArchitectResponse && message.details?.processing_time && (
+            <Badge colorScheme="purple" ml={2}>
+              {message.details.processing_time.toFixed(1)}s
+            </Badge>
+          )}
+          
+          {isArchitectResponse && message.details?.question_type && (
+            <Badge colorScheme="blue" ml={2}>
+              {message.details.question_type}
+            </Badge>
+          )}
+        </HStack>
+        
+        <Box flex="1">
+          {renderMessageContent(message.content)}
+        </Box>
+        
+        {/* Show GitHub results */}
+        {isArchitectResponse && message.details?.github_results?.length > 0 && (
+          <Box mt={3}>
+            <Accordion allowToggle>
+              <AccordionItem>
+                <h2>
+                  <AccordionButton>
+                    <Box flex="1" textAlign="left" fontWeight="medium">
+                      GitHub Code Results ({message.details.github_results.length})
+                    </Box>
+                    <AccordionIcon />
+                  </AccordionButton>
+                </h2>
+                <AccordionPanel pb={4}>
+                  <VStack align="stretch" spacing={2}>
+                    {message.details.github_results.map((result, idx) => (
+                      <CodeResultDisplay key={idx} result={result} />
+                    ))}
+                  </VStack>
+                </AccordionPanel>
+              </AccordionItem>
+            </Accordion>
+          </Box>
+        )}
+        
+        {/* Show SQL results */}
+        {isArchitectResponse && message.details?.sql_results?.length > 0 && (
+          <Box mt={3}>
+            <Accordion allowToggle>
+              <AccordionItem>
+                <h2>
+                  <AccordionButton>
+                    <Box flex="1" textAlign="left" fontWeight="medium">
+                      SQL Schema Results ({message.details.sql_results.length})
+                    </Box>
+                    <AccordionIcon />
+                  </AccordionButton>
+                </h2>
+                <AccordionPanel pb={4}>
+                  <VStack align="stretch" spacing={2}>
+                    {message.details.sql_results.map((result, idx) => (
+                      <Box 
+                        key={idx}
+                        p={3}
+                        bg="gray.50"
+                        borderRadius="md"
+                        borderLeft="3px solid"
+                        borderColor="blue.300"
+                      >
+                        <Text fontWeight="medium">{result.metadata?.source || 'SQL Schema'}</Text>
+                        <Code p={2} mt={2} fontSize="sm" overflowX="auto" whiteSpace="pre">
+                          {result.content || 'No SQL content available'}
+                        </Code>
+                      </Box>
+                    ))}
+                  </VStack>
+                </AccordionPanel>
+              </AccordionItem>
+            </Accordion>
+          </Box>
+        )}
+        
+        {/* Show DBT results */}
+        {isArchitectResponse && message.details?.dbt_results?.length > 0 && (
+          <Box mt={3}>
+            <Accordion allowToggle>
+              <AccordionItem>
+                <h2>
+                  <AccordionButton>
+                    <Box flex="1" textAlign="left" fontWeight="medium">
+                      DBT Model Results ({message.details.dbt_results.length})
+                    </Box>
+                    <AccordionIcon />
+                  </AccordionButton>
+                </h2>
+                <AccordionPanel pb={4}>
+                  <VStack align="stretch" spacing={2}>
+                    {message.details.dbt_results.map((result, idx) => (
+                      <CodeResultDisplay key={idx} result={result} />
+                    ))}
+                  </VStack>
+                </AccordionPanel>
+              </AccordionItem>
+            </Accordion>
+          </Box>
+        )}
+      </VStack>
+    </Box>
+  );
+};
+
 const ChatPage = () => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -747,13 +940,17 @@ const ChatPage = () => {
     setProcessingStep('Analyzing your question with Data Architect...');
     
     try {
-      // Use the new Data Architect agent endpoint directly
+      // Use the Data Architect agent endpoint
       const response = await fetch('http://localhost:8000/architect/analyze/', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ query: userMessage })
+        body: JSON.stringify({ 
+          query: userMessage,
+          conversation_id: currentConversationId,
+          thread_id: currentConversationId
+        })
       });
       
       if (!response.ok) {
@@ -770,16 +967,17 @@ const ChatPage = () => {
       setMessages(prev => [...prev, {
         role: 'assistant',
         type: 'architect',
-        content: data.output,
+        content: data.response,
         id: prev.length,
         details: {
           conversation_id: responseConversationId,
-          technical_details: data.technical_details,
-          github_context: data.github_context,
-          code_context: data.code_context,
-          doc_context: data.doc_context,
-          question_analysis: data.question_analysis,
-          is_architect_response: true
+          question_type: data.question_type,
+          processing_time: data.processing_time,
+          github_results: data.github_results?.results || [],
+          sql_results: data.sql_results?.results || [],
+          doc_results: data.doc_results?.results || [],
+          dbt_results: data.dbt_results?.results || [],
+          relationship_results: data.relationship_results?.results || []
         }
       }]);
       
@@ -824,99 +1022,6 @@ const ChatPage = () => {
       status: 'info',
       duration: 3000
     });
-  };
-
-  // Update the renderMessage function to better handle architect responses
-  const renderMessage = (message) => {
-    if (!message) return null;
-    
-    const isUser = message.role === 'user';
-    const isArchitectResponse = message.role === 'assistant' && message.type === 'architect';
-    
-    return (
-      <Box
-        key={message.id}
-        bg={isUser ? 'blue.50' : isArchitectResponse ? 'purple.50' : 'white'}
-        p={4}
-        borderRadius="md"
-        maxWidth={isUser ? '70%' : '90%'}
-        alignSelf={isUser ? 'flex-end' : 'flex-start'}
-        boxShadow="sm"
-        mb={4}
-        border="1px solid"
-        borderColor={isUser ? 'blue.100' : isArchitectResponse ? 'purple.100' : 'gray.200'}
-      >
-        <VStack align="stretch" spacing={3}>
-          <HStack>
-            <Avatar 
-              size="sm" 
-              bg={isUser ? 'blue.500' : isArchitectResponse ? 'purple.500' : 'green.500'} 
-              name={isUser ? 'You' : isArchitectResponse ? 'Data Architect' : 'Assistant'} 
-            />
-            <Text fontWeight="bold" color={
-              isUser ? 'blue.700' : 
-              isArchitectResponse ? 'purple.700' : 
-              'green.700'
-            }>
-              {isUser ? 'You' : isArchitectResponse ? 'Data Architect' : 'Assistant'}
-            </Text>
-          </HStack>
-          
-          <Box flex="1">
-            {renderMessageContent(message.content)}
-          </Box>
-          
-          {/* Show code results for architect responses */}
-          {isArchitectResponse && message.details?.code_context?.results && (
-            <Box mt={3}>
-              <Text fontWeight="medium" mb={2}>Relevant Code Examples:</Text>
-              <VStack align="stretch" spacing={2}>
-                {message.details.code_context.results.map((code, idx) => (
-                  <Box 
-                    key={idx}
-                    p={3}
-                    bg="gray.50"
-                    borderRadius="md"
-                    borderLeft="3px solid"
-                    borderColor="purple.300"
-                  >
-                    <Text fontWeight="medium">{code.source || code.file_path}</Text>
-                    <Code p={2} mt={2} fontSize="sm" overflowX="auto" whiteSpace="pre">
-                      {code.content || code.code_snippet || 'No code snippet available'}
-                    </Code>
-                  </Box>
-                ))}
-              </VStack>
-            </Box>
-          )}
-          
-          {/* Show GitHub results for architect responses */}
-          {isArchitectResponse && message.details?.github_context?.results && (
-            <Box mt={3}>
-              <Text fontWeight="medium" mb={2}>GitHub Repository Code Examples:</Text>
-              <VStack align="stretch" spacing={2}>
-                {message.details.github_context.results.map((code, idx) => (
-                  <Box 
-                    key={idx}
-                    p={3}
-                    bg="gray.50"
-                    borderRadius="md"
-                    borderLeft="3px solid"
-                    borderColor="blue.300"
-                  >
-                    <Text fontWeight="medium">{code.file_path}</Text>
-                    <Text fontSize="sm" color="gray.600">{code.repo_info?.name || 'Repository'}</Text>
-                    <Code p={2} mt={2} fontSize="sm" overflowX="auto" whiteSpace="pre">
-                      {code.code_snippet || 'No code snippet available'}
-                    </Code>
-                  </Box>
-                ))}
-              </VStack>
-            </Box>
-          )}
-        </VStack>
-      </Box>
-    );
   };
 
   return (

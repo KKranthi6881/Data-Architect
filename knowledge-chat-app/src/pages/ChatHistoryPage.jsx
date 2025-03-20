@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Heading,
@@ -37,7 +37,9 @@ import {
   Alert,
   AlertIcon,
   UnorderedList,
-  ListItem
+  ListItem,
+  CardHeader,
+  SimpleGrid
 } from '@chakra-ui/react';
 import { 
   IoCalendar, 
@@ -47,13 +49,16 @@ import {
   IoDownloadOutline,
   IoDocumentTextOutline,
   IoChevronBack,
-  IoArrowBack
+  IoArrowBack,
+  IoTrash,
+  IoRefresh
 } from 'react-icons/io5';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import remarkGfm from 'remark-gfm';
 
 // Define API base URL directly in the component
 const API_BASE_URL = 'http://localhost:8000';
@@ -66,7 +71,7 @@ const ChatHistoryPage = () => {
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const toast = useToast();
   const navigate = useNavigate();
-  const { conversationId } = useParams();
+  const { conversationId, threadId } = useParams();
   
   // For direct conversation fetching
   const [directConversation, setDirectConversation] = useState(null);
@@ -83,6 +88,15 @@ const ChatHistoryPage = () => {
 
   // Add new state for threads
   const [threads, setThreads] = useState([]);
+
+  // State for selected thread
+  const [selectedThread, setSelectedThread] = useState(null);
+  const [threadConversations, setThreadConversations] = useState([]);
+  const [isLoadingThread, setIsLoadingThread] = useState(false);
+  
+  // Colors
+  const cardBg = useColorModeValue('white', 'gray.800');
+  const hoverBg = useColorModeValue('gray.50', 'gray.700');
 
   // Fetch conversations list
   useEffect(() => {
@@ -103,11 +117,19 @@ const ChatHistoryPage = () => {
     }
   }, [conversationId]);
 
+  // Load thread if threadId is provided in URL
+  useEffect(() => {
+    if (threadId) {
+      handleThreadSelect(threadId);
+    }
+  }, [threadId]);
+
   // Update fetchThreads function
   const fetchThreads = async () => {
     try {
       setIsLoading(true);
-      console.log("1. Starting to fetch threads...");
+      console.log("Starting to fetch threads...");
+      
       const response = await fetch(`${API_BASE_URL}/api/thread-conversations`);
       
       if (!response.ok) {
@@ -115,13 +137,14 @@ const ChatHistoryPage = () => {
       }
       
       const data = await response.json();
-      console.log("2. API Response:", data);
+      console.log("API Response:", data);
       
-      if (data.status === 'success' && Array.isArray(data.threads)) {
-        console.log("3. Setting threads:", data.threads);
+      // Check if threads array exists in the response
+      if (Array.isArray(data.threads)) {
         setThreads(data.threads);
       } else {
-        console.warn("4. Unexpected response format:", data);
+        console.warn("Unexpected response format:", data);
+        setThreads([]);
         toast({
           title: 'Warning',
           description: 'Received unexpected data format from server',
@@ -130,7 +153,8 @@ const ChatHistoryPage = () => {
         });
       }
     } catch (error) {
-      console.error('5. Error fetching threads:', error);
+      console.error('Error fetching threads:', error);
+      setThreads([]);
       toast({
         title: 'Error',
         description: error.message,
@@ -138,7 +162,6 @@ const ChatHistoryPage = () => {
         duration: 5000,
       });
     } finally {
-      console.log("6. Setting isLoading to false");
       setIsLoading(false);
     }
   };
@@ -398,15 +421,28 @@ const ChatHistoryPage = () => {
     }
   };
 
-  const formatDate = (dateStr) => {
-    if (!dateStr) return 'Unknown date';
+  // Add this helper function for date formatting
+  const formatDate = (dateString) => {
+    if (!dateString) return 'Unknown date';
     
     try {
-      const date = new Date(dateStr);
-      return date.toLocaleString();
-    } catch (e) {
-      console.error('Error formatting date:', e);
-      return dateStr;
+      const date = new Date(dateString);
+      
+      // Check if date is valid
+      if (isNaN(date.getTime())) {
+        return 'Invalid date';
+      }
+      
+      return date.toLocaleString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch (error) {
+      console.error('Error formatting date:', error);
+      return 'Date error';
     }
   };
 
@@ -516,6 +552,110 @@ const ChatHistoryPage = () => {
         </SyntaxHighlighter>
       </Box>
     );
+  };
+
+  // Fetch conversations for a specific thread
+  const fetchThreadConversations = async (threadId) => {
+    try {
+      setIsLoadingThread(true);
+      console.log(`Fetching conversations for thread: ${threadId}`);
+      
+      // First try the thread-conversations endpoint
+      let response = await fetch(`${API_BASE_URL}/api/thread-conversations/${threadId}`);
+      
+      // If that fails, try to get the individual conversation
+      if (!response.ok) {
+        console.log(`Thread endpoint failed, trying individual conversation: ${threadId}`);
+        response = await fetch(`${API_BASE_URL}/api/conversation/${threadId}`);
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch conversation: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log("Individual conversation response:", data);
+        
+        // Convert the individual conversation to an array with proper field mapping
+        setThreadConversations([{
+          conversation_id: data.id || threadId,
+          thread_id: threadId,
+          question: data.query || "No question available",
+          answer: data.response || "No response available",
+          metadata: data.technical_details || {},
+          timestamp: data.timestamp || new Date().toISOString()
+        }]);
+        
+        return;
+      }
+      
+      const data = await response.json();
+      console.log("Thread conversations response:", data);
+      
+      if (Array.isArray(data.conversations)) {
+        // Make sure we have valid data in each conversation
+        const validatedConversations = data.conversations.map(conv => ({
+          ...conv,
+          question: conv.question || "No question available",
+          answer: conv.answer || "No response available"
+        }));
+        
+        setThreadConversations(validatedConversations);
+      } else {
+        console.warn("Unexpected response format:", data);
+        setThreadConversations([]);
+        toast({
+          title: 'Warning',
+          description: 'Received unexpected data format from server',
+          status: 'warning',
+          duration: 5000,
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching thread conversations:', error);
+      setThreadConversations([]);
+      toast({
+        title: 'Error',
+        description: error.message,
+        status: 'error',
+        duration: 5000,
+      });
+    } finally {
+      setIsLoadingThread(false);
+    }
+  };
+  
+  // Handle thread selection
+  const handleThreadSelect = (threadId) => {
+    console.log(`Selecting thread: ${threadId}`);
+    
+    // Update URL without full page reload
+    navigate(`/history/${threadId}`, { replace: false });
+    
+    // Find the thread in our list
+    const thread = threads.find(t => t.thread_id === threadId);
+    if (thread) {
+      setSelectedThread(thread);
+      
+      // Fetch conversations for this thread
+      fetchThreadConversations(threadId);
+    } else {
+      // If thread not in our list, fetch it directly
+      fetchThreadConversations(threadId);
+      
+      // Create a placeholder thread
+      setSelectedThread({
+        thread_id: threadId,
+        latest_question: "Loading...",
+        conversation_count: 0
+      });
+    }
+  };
+  
+  // Clear selected thread
+  const clearSelectedThread = () => {
+    setSelectedThread(null);
+    setThreadConversations([]);
+    navigate('/history', { replace: true });
   };
 
   // If we're viewing a specific conversation by direct URL access
@@ -717,276 +857,200 @@ const ChatHistoryPage = () => {
       <Container maxW="container.xl">
         {console.log("Rendering with:", { isLoading, threads })}
         
-        {selectedConversation && conversationDetails ? (
-          // Conversation detail view
+        {selectedThread ? (
+          // Thread detail view
           <Box>
-            <HStack mb={6} spacing={4}>
-              <Button 
-                leftIcon={<IoChevronBack />} 
-                onClick={clearSelectedConversation}
-                variant="outline"
-              >
-                Back to List
-              </Button>
-              <Heading size="lg" flex="1">Conversation Details</Heading>
-              <Button 
-                colorScheme="orange" 
-                onClick={() => goToChat(selectedConversation.id)}
-              >
-                Continue in Chat
-              </Button>
-            </HStack>
+            <Button 
+              leftIcon={<IoArrowBack />} 
+              variant="outline" 
+              mb={4}
+              onClick={clearSelectedThread}
+            >
+              Back to All Threads
+            </Button>
             
-            <Card mb={6} borderWidth="1px" borderColor={borderColor} borderRadius="lg">
-              <CardBody>
-                <HStack justify="space-between" mb={3}>
-                  {selectedConversation.feedback_status && (
-                    <Badge 
-                      colorScheme={
-                        selectedConversation.feedback_status === 'approved' ? 'green' : 
-                        selectedConversation.feedback_status === 'needs_improvement' ? 'orange' : 
-                        'blue'
-                      }
-                      fontSize="sm"
-                      p={2}
-                    >
-                      {selectedConversation.feedback_status === 'approved' ? 'Approved' : 
-                       selectedConversation.feedback_status === 'needs_improvement' ? 'Needs Review' : 
-                       'Pending'}
-                    </Badge>
-                  )}
-                  <Text fontSize="sm" color="gray.500">
-                    Started on {formatDate(selectedConversation.timestamp)}
-                  </Text>
+            <Card borderWidth="1px" borderColor={borderColor} mb={4}>
+              <CardHeader>
+                <HStack justify="space-between">
+                  <Heading size="md">
+                    Thread: {selectedThread.latest_question || "Untitled Thread"}
+                  </Heading>
+                  <Badge colorScheme="blue">
+                    {selectedThread.conversation_count || threadConversations.length} messages
+                  </Badge>
                 </HStack>
-                
-                <Heading size="md" mb={2}>{getTopicPreview(selectedConversation)}</Heading>
-                
-                <Divider my={4} />
-                
-                {isLoadingDetail ? (
-                  <Flex justify="center" align="center" height="300px">
-                    <Spinner size="xl" color="orange.500" />
+                <Text fontSize="sm" color="gray.500" mt={2}>
+                  Last updated: {formatDate(selectedThread.latest_timestamp)}
+                </Text>
+              </CardHeader>
+              
+              <CardBody>
+                {isLoadingThread ? (
+                  <Flex justify="center" py={8}>
+                    <Spinner size="xl" />
                   </Flex>
+                ) : threadConversations.length === 0 ? (
+                  <Text color="gray.500" textAlign="center" py={4}>
+                    No conversations found in this thread
+                  </Text>
                 ) : (
-                  <Tabs variant="enclosed" colorScheme="orange">
-                    <TabList>
-                      <Tab>Conversation</Tab>
-                      <Tab>Metadata</Tab>
-                    </TabList>
+                  <>
+                    <Button 
+                      size="xs" 
+                      colorScheme="blue" 
+                      variant="outline" 
+                      mb={4}
+                      onClick={() => {
+                        console.log("Thread conversations:", threadConversations);
+                      }}
+                    >
+                      Debug Conversations
+                    </Button>
                     
-                    <TabPanels>
-                      {/* Conversation Tab */}
-                      <TabPanel>
-                        <VStack align="stretch" spacing={4} p={2}>
-                          {!conversationDetails ? (
-                            <Text color="gray.500" textAlign="center" py={8}>
-                              Loading conversation details...
+                    <VStack spacing={6} align="stretch">
+                      {threadConversations.map((conv, index) => (
+                        <Box key={conv.conversation_id} borderWidth="1px" borderRadius="md" p={4}>
+                          <Text fontWeight="bold" mb={2}>
+                            Question:
+                          </Text>
+                          <Box bg="blue.50" p={3} borderRadius="md" mb={4}>
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              components={{
+                                code({node, inline, className, children, ...props}) {
+                                  const match = /language-(\w+)/.exec(className || '')
+                                  return !inline && match ? (
+                                    <SyntaxHighlighter
+                                      style={atomDark}
+                                      language={match[1]}
+                                      PreTag="div"
+                                      {...props}
+                                    >
+                                      {String(children).replace(/\n$/, '')}
+                                    </SyntaxHighlighter>
+                                  ) : (
+                                    <code className={className} {...props}>
+                                      {children}
+                                    </code>
+                                  )
+                                }
+                              }}
+                            >
+                              {conv.question}
+                            </ReactMarkdown>
+                          </Box>
+                          
+                          <Text fontWeight="bold" mb={2}>
+                            Answer:
+                          </Text>
+                          <Box bg="gray.50" p={3} borderRadius="md">
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              components={{
+                                code({node, inline, className, children, ...props}) {
+                                  const match = /language-(\w+)/.exec(className || '')
+                                  return !inline && match ? (
+                                    <SyntaxHighlighter
+                                      style={atomDark}
+                                      language={match[1]}
+                                      PreTag="div"
+                                      {...props}
+                                    >
+                                      {String(children).replace(/\n$/, '')}
+                                    </SyntaxHighlighter>
+                                  ) : (
+                                    <code className={className} {...props}>
+                                      {children}
+                                    </code>
+                                  )
+                                }
+                              }}
+                            >
+                              {conv.answer}
+                            </ReactMarkdown>
+                          </Box>
+                          
+                          <Divider my={3} />
+                          
+                          <HStack justify="space-between">
+                            <Text fontSize="sm" color="gray.500">
+                              {formatDate(conv.timestamp)}
                             </Text>
-                          ) : conversationDetails.messages.length === 0 ? (
-                            <Text color="gray.500" textAlign="center" py={8}>
-                              No messages found for this conversation.
-                            </Text>
-                          ) : (
-                            <Flex direction="column" width="100%">
-                              {conversationDetails.messages.map((message, idx) => (
-                                <Box
-                                  key={message.id || `msg-${idx}`}
-                                  p={4}
-                                  mb={4}
-                                  borderRadius="md"
-                                  bg={message.role === 'user' ? messageBgUser : messageBgAssistant}
-                                  borderWidth="1px"
-                                  borderColor={borderColor}
-                                >
-                                  <HStack mb={2} justify="space-between">
-                                    <Badge colorScheme={message.role === 'user' ? 'orange' : 'blue'}>
-                                      {message.role === 'user' ? 'You' : 'Assistant'}
-                                    </Badge>
-                                    <Text fontSize="xs" color={textSecondary}>
-                                      {formatDate(message.timestamp || '')}
-                                    </Text>
-                                  </HStack>
-                                  
-                                  <Text whiteSpace="pre-wrap">
-                                    {message.content || "No content available"}
-                                  </Text>
-                                </Box>
-                              ))}
-                            </Flex>
-                          )}
-                        </VStack>
-                      </TabPanel>
-                      
-                      {/* Metadata Tab */}
-                      <TabPanel>
-                        <Box p={4} bg="gray.50" borderRadius="md">
-                          <Heading size="sm" mb={3}>Conversation Metadata</Heading>
-                          <Code p={4} borderRadius="md" width="100%" overflowX="auto">
-                            {JSON.stringify(conversationDetails.metadata, null, 2)}
-                          </Code>
+                            <Badge colorScheme="purple">
+                              {conv.metadata?.question_type || "General"}
+                            </Badge>
+                          </HStack>
                         </Box>
-                      </TabPanel>
-                    </TabPanels>
-                  </Tabs>
+                      ))}
+                    </VStack>
+                  </>
                 )}
               </CardBody>
             </Card>
           </Box>
         ) : (
-          // Conversation list view (keep the current list view)
-          <>
-            <Flex justifyContent="space-between" alignItems="center" mb={6}>
-              <Heading size="lg" color={primaryColor}>Conversation History</Heading>
-              
-              <HStack spacing={4}>
-                <Button
-                  leftIcon={<IoFilterOutline />}
-                  variant="outline"
-                  size="sm"
-                >
-                  Filter
-                </Button>
-                <Button
-                  leftIcon={<IoDownloadOutline />}
-                  variant="outline"
-                  size="sm"
-                >
-                  Export
-                </Button>
-              </HStack>
-            </Flex>
+          // Threads list view
+          <Box>
+            <HStack justify="space-between" mb={4}>
+              <Heading size="md">All Conversation Threads</Heading>
+              <Button 
+                leftIcon={<IoRefresh />}
+                onClick={fetchThreads}
+                isLoading={isLoading}
+              >
+                Refresh
+              </Button>
+            </HStack>
             
             {isLoading ? (
-              <Flex justify="center" align="center" height="200px">
-                <Spinner size="xl" color="orange.500" thickness="4px" />
+              <Flex justify="center" py={8}>
+                <Spinner size="xl" />
               </Flex>
             ) : threads.length === 0 ? (
-              <Box 
-                p={10} 
-                borderRadius="lg" 
-                bg="gray.50" 
-                textAlign="center"
-                borderWidth="1px"
-                borderColor={borderColor}
-              >
-                <Icon as={IoDocumentTextOutline} boxSize={12} color="gray.400" mb={4} />
-                <Heading size="md" mb={2} color="gray.600">No conversations yet</Heading>
-                <Text color="gray.500" mb={6}>Start a new chat to see your conversation history here.</Text>
-                <Button 
-                  as={Link} 
-                  to="/chat" 
-                  colorScheme="orange" 
-                  leftIcon={<IoChevronForward />}
-                >
-                  Start a New Conversation
-                </Button>
-              </Box>
+              <Text color="gray.500" textAlign="center" py={8}>
+                No conversation threads found
+              </Text>
             ) : (
-              <Accordion allowToggle width="100%">
-                {threads.map((thread) => (
-                  <AccordionItem 
-                    key={thread.thread_id} 
-                    border="1px solid" 
+              <SimpleGrid columns={{ base: 1, md: 2, lg: 3 }} spacing={4}>
+                {threads.map(thread => (
+                  <Card 
+                    key={thread.thread_id}
+                    borderWidth="1px"
                     borderColor={borderColor}
-                    borderRadius="md"
-                    mb={3}
+                    bg={cardBg}
+                    _hover={{ bg: hoverBg, cursor: 'pointer' }}
+                    onClick={() => handleThreadSelect(thread.thread_id)}
                   >
-                    <AccordionButton py={4} px={5}>
-                      <HStack flex="1" spacing={4} textAlign="left">
-                        <Icon as={IoDocumentTextOutline} color="orange.500" boxSize={5} />
-                        <Box>
-                          <Text fontWeight="medium" fontSize="md">
-                            {thread.initial_query}
+                    <CardBody>
+                      <VStack align="start" spacing={2}>
+                        <Heading size="sm" noOfLines={2}>
+                          {thread.latest_question || "Untitled Thread"}
+                        </Heading>
+                        
+                        <HStack justify="space-between" w="100%">
+                          <Badge colorScheme="blue">
+                            {thread.conversation_count} messages
+                          </Badge>
+                          <Text fontSize="xs" color="gray.500">
+                            {formatDate(thread.latest_timestamp)}
                           </Text>
-                          <Text fontSize="xs" color={textSecondary} mt={1}>
-                            <Icon as={IoCalendar} boxSize={3} mr={1} />
-                            {formatDate(thread.created_at)} • {thread.message_count} messages
-                          </Text>
-                        </Box>
-                      </HStack>
-                      <HStack spacing={3}>
-                        <Badge colorScheme={
-                          thread.has_architect_response ? 'green' : 'orange'
-                        }>
-                          {thread.has_architect_response ? 'Completed' : 'In Progress'}
-                        </Badge>
-                        <AccordionIcon />
-                      </HStack>
-                    </AccordionButton>
-                    
-                    <AccordionPanel pb={4}>
-                      <VStack align="stretch" spacing={4}>
-                        {thread.conversations.map((conv, idx) => (
-                          <Box 
-                            key={conv.id}
-                            p={4}
-                            bg={idx % 2 === 0 ? 'gray.50' : 'white'}
-                            borderRadius="md"
-                          >
-                            <Text fontSize="sm" color="gray.500" mb={2}>
-                              {formatDate(conv.created_at)}
-                            </Text>
-                            
-                            {conv.query && (
-                              <Box mb={3}>
-                                <Text fontWeight="medium">Query:</Text>
-                                <Text>{conv.query}</Text>
-                              </Box>
-                            )}
-
-                            {conv.architect_response && (
-                              <Box>
-                                <Text fontWeight="medium">Architect Response:</Text>
-                                <Box p={2} bg="white" borderRadius="md">
-                                  <ReactMarkdown
-                                    components={{
-                                      code: ({node, inline, className, children, ...props}) => {
-                                        const match = /language-(\w+)/.exec(className || '');
-                                        return inline ? (
-                                          <Code colorScheme="orange" px={2} py={0.5} {...props}>
-                                            {children}
-                                          </Code>
-                                        ) : (
-                                          <Box 
-                                            bg="gray.800" 
-                                            borderRadius="md" 
-                                            p={4} 
-                                            my={4}
-                                            overflow="auto"
-                                          >
-                                            <SyntaxHighlighter
-                                              language={match ? match[1] : ''}
-                                              style={atomDark}
-                                              customStyle={{
-                                                margin: 0,
-                                                background: 'transparent',
-                                                fontSize: '0.9em',
-                                              }}
-                                            >
-                                              {String(children).replace(/\n$/, '')}
-                                            </SyntaxHighlighter>
-                                          </Box>
-                                        );
-                                      }
-                                    }}
-                                  >
-                                    {typeof conv.architect_response === 'string' 
-                                      ? conv.architect_response 
-                                      : conv.architect_response.response || JSON.stringify(conv.architect_response, null, 2)}
-                                  </ReactMarkdown>
-                                </Box>
-                              </Box>
-                            )}
-                          </Box>
-                        ))}
+                        </HStack>
+                        
+                        <HStack w="100%" justify="flex-end">
+                          <IconButton
+                            icon={<IoChevronForward />}
+                            variant="ghost"
+                            size="sm"
+                            aria-label="View thread"
+                          />
+                        </HStack>
                       </VStack>
-                    </AccordionPanel>
-                  </AccordionItem>
+                    </CardBody>
+                  </Card>
                 ))}
-              </Accordion>
+              </SimpleGrid>
             )}
-          </>
+          </Box>
         )}
       </Container>
     </Box>
