@@ -111,52 +111,37 @@ class SearchTools:
         
         for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
             # Extract repository information
-            repo_url = metadata.get('repo_url', 'Unknown repository')
-            repo_owner = metadata.get('repo_owner', 'Unknown owner')
-            repo_name = metadata.get('repo_name', 'Unknown repository')
-            file_path = metadata.get('file_path', 'Unknown file')
-            language = metadata.get('language', 'Unknown language')
+            repo_url = metadata.get('repo_url', '')
+            repo_name = repo_url.split('/')[-1] if repo_url else 'Unknown'
+            file_path = metadata.get('file_path', '')
+            language = metadata.get('file_type', '')
+            
+            # Format the result with proper metadata structure
+            formatted_result = {
+                "id": i + 1,
+                "content": doc,
+                "metadata": {
+                    "file_path": file_path,
+                    "repo_url": repo_url,
+                    "repo_name": repo_name,
+                    "file_type": language,
+                    "source": "github"
+                }
+            }
+            
+            # Add score if available
+            if 'distances' in results:
+                formatted_result["score"] = results['distances'][0][i]
             
             # Extract dbt-specific information if available
-            dbt_info = {}
             if language == 'dbt' or metadata.get('is_dbt', False):
-                dbt_info = {
+                formatted_result["dbt_info"] = {
                     'model_name': metadata.get('model_name', ''),
                     'materialization': metadata.get('materialization', ''),
                     'description': metadata.get('description', ''),
                     'references': metadata.get('references', '').split(',') if metadata.get('references', '') else [],
-                    'sources': metadata.get('sources', '').split(',') if metadata.get('sources', '') else [],
-                    'columns': metadata.get('columns', '').split(',') if metadata.get('columns', '') else [],
-                    'schema_models': metadata.get('schema_models', '').split(',') if metadata.get('schema_models', '') else []
+                    'sources': metadata.get('sources', '').split(',') if metadata.get('sources', '') else []
                 }
-            
-            # Extract lineage information if available
-            lineage_info = {}
-            if 'relationships' in metadata:
-                lineage_info['relationships'] = metadata.get('relationships', '')
-            
-            if 'analysis_summary' in metadata and isinstance(metadata['analysis_summary'], dict):
-                for key, value in metadata['analysis_summary'].items():
-                    if 'lineage' in key.lower() or 'depend' in key.lower():
-                        lineage_info[key] = value
-            
-            # Format the result
-            formatted_result = {
-                "id": i + 1,
-                "repository": {
-                    "url": repo_url,
-                    "owner": repo_owner,
-                    "name": repo_name
-                },
-                "file": {
-                    "path": file_path,
-                    "language": language
-                },
-                "content": doc,
-                "score": results['distances'][0][i] if 'distances' in results else None,
-                "dbt_info": dbt_info if dbt_info else None,
-                "lineage": lineage_info if lineage_info else None
-            }
             
             formatted_results.append(formatted_result)
         
@@ -670,4 +655,61 @@ class SearchTools:
             return {
                 "status": "error",
                 "error": str(e)
-            } 
+            }
+
+    def _log_search_results(self, source: str, results: Dict[str, Any]) -> None:
+        """Log detailed search results for debugging."""
+        try:
+            status = results.get('status', 'unknown')
+            result_list = results.get('results', [])
+            
+            logger.info(f"{source} search status: {status}, found {len(result_list)} results")
+            
+            # Log a preview of each result
+            for i, result in enumerate(result_list[:3], 1):  # Log first 3 results
+                logger.info(f"{source} result {i}:")
+                
+                # Get metadata from the result
+                metadata = result.get('metadata', {})
+                
+                # Log different fields based on result type
+                if source == "GitHub":
+                    file_path = metadata.get('file_path', 'Unknown')
+                    repo_url = metadata.get('repo_url', 'Unknown')
+                    repo_name = repo_url.split('/')[-1] if repo_url != 'Unknown' else 'Unknown'
+                    language = metadata.get('file_type', 'Unknown')
+                    
+                    logger.info(f"  File: {file_path}")
+                    logger.info(f"  Repo: {repo_name}")
+                    logger.info(f"  Language: {language}")
+                    
+                    # Log DBT info if available
+                    dbt_info = result.get('dbt_info', {})
+                    if dbt_info:
+                        logger.info(f"  DBT Model: {dbt_info.get('model_name', 'Unknown')}")
+                        logger.info(f"  Materialization: {dbt_info.get('materialization', 'Unknown')}")
+                
+                elif source == "SQL":
+                    logger.info(f"  Source: {metadata.get('source', 'Unknown')}")
+                    logger.info(f"  Tables: {', '.join(metadata.get('tables', []))[:100]}")
+                
+                elif source == "DBT":
+                    dbt_info = result.get('dbt_info', {})
+                    if dbt_info:
+                        logger.info(f"  Model: {dbt_info.get('model_name', 'Unknown')}")
+                        logger.info(f"  References: {', '.join(dbt_info.get('references', []))[:100]}")
+                
+                elif source == "Relationships":
+                    logger.info(f"  Source: {result.get('source', 'Unknown')}")
+                    logger.info(f"  Model: {result.get('model', 'Unknown')}")
+                
+                # Log content preview for all result types
+                content = result.get('content', '')
+                if content:
+                    content_preview = content[:100] + "..." if len(content) > 100 else content
+                    logger.info(f"  Content preview: {content_preview}")
+                
+                logger.info("  ---")
+                
+        except Exception as e:
+            logger.error(f"Error logging {source} search results: {str(e)}") 

@@ -68,26 +68,23 @@ class DataArchitectAgent:
         self.db = ChatDatabase()
         self._lock = Lock()
         
-        # Initialize models
+        # Initialize models with appropriate settings
         self.question_model = ChatOllama(
             model="gemma3:latest",
             temperature=0,
             base_url="http://localhost:11434",
-            timeout=60,
         )
         
         self.analysis_model = ChatOllama(
             model="gemma3:latest",
             temperature=0,
             base_url="http://localhost:11434",
-            timeout=120,
         )
         
         self.response_model = ChatOllama(
             model="gemma3:latest",
             temperature=0.2,
             base_url="http://localhost:11434",
-            timeout=180,
         )
         
         # Initialize parsers
@@ -478,34 +475,41 @@ class DataArchitectAgent:
             relationship_results = state.get('relationship_results', {}).get('results', [])
             
             # Log the number of results from each source
-            logger.info(f"Combining results: GitHub={len(github_results)}, SQL={len(sql_results)}, Docs={len(doc_results)}, DBT={len(dbt_results)}, Relationships={len(relationship_results)}")
+            logger.info(f"Combining results: GitHub={len(github_results)}, SQL={len(sql_results)}, "
+                       f"Docs={len(doc_results)}, DBT={len(dbt_results)}, "
+                       f"Relationships={len(relationship_results)}")
             
-            # Format the results for the LLM
-            formatted_github = self._format_results_for_llm(github_results, "GitHub")
-            formatted_sql = self._format_results_for_llm(sql_results, "SQL")
-            formatted_docs = self._format_results_for_llm(doc_results, "Documentation")
-            formatted_dbt = self._format_results_for_llm(dbt_results, "DBT")
-            formatted_relationships = self._format_results_for_llm(relationship_results, "Relationships")
+            # Check if we have any results at all
+            if not any([github_results, sql_results, doc_results, dbt_results, relationship_results]):
+                logger.warning("No results found from any source")
+                state['combined_analysis'] = "No relevant information found in any of the searched sources."
+                return state
             
-            # Create a combined analysis prompt
-            combined_analysis = f"""
-# Search Results Analysis
-
-## GitHub Code Results
-{formatted_github}
-
-## SQL Query Results
-{formatted_sql}
-
-## Documentation Results
-{formatted_docs}
-
-## DBT Model Results
-{formatted_dbt}
-
-## Relationship Results
-{formatted_relationships}
-"""
+            # Format each type of result
+            formatted_results = []
+            
+            if github_results:
+                formatted_github = self._format_results_for_llm(github_results, "GitHub")
+                formatted_results.append(formatted_github)
+                
+            if sql_results:
+                formatted_sql = self._format_results_for_llm(sql_results, "SQL")
+                formatted_results.append(formatted_sql)
+                
+            if doc_results:
+                formatted_docs = self._format_results_for_llm(doc_results, "Documentation")
+                formatted_results.append(formatted_docs)
+                
+            if dbt_results:
+                formatted_dbt = self._format_results_for_llm(dbt_results, "DBT")
+                formatted_results.append(formatted_dbt)
+                
+            if relationship_results:
+                formatted_relationships = self._format_results_for_llm(relationship_results, "Relationships")
+                formatted_results.append(formatted_relationships)
+            
+            # Combine all formatted results
+            combined_analysis = "\n\n".join(formatted_results)
             
             # Update the state with the combined analysis
             state['combined_analysis'] = combined_analysis
@@ -548,58 +552,184 @@ class DataArchitectAgent:
         
         return formatted
 
+    def _safe_llm_call(self, model: ChatOllama, prompt: str, purpose: str = "general", max_retries: int = 2) -> str:
+        """Safely call the LLM model with error handling, logging, and retries."""
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Starting LLM call for {purpose} (attempt {attempt + 1}/{max_retries})...")
+                
+                # Break prompt into chunks if it's too long
+                if len(prompt) > 4000:  # Adjust this threshold based on your model's limits
+                    logger.info(f"Large prompt detected ({len(prompt)} chars), breaking into chunks")
+                    chunks = [prompt[i:i + 4000] for i in range(0, len(prompt), 4000)]
+                    responses = []
+                    
+                    for i, chunk in enumerate(chunks):
+                        logger.info(f"Processing chunk {i + 1}/{len(chunks)}")
+                        chunk_response = model.invoke(chunk)
+                        chunk_content = chunk_response.content if hasattr(chunk_response, 'content') else str(chunk_response)
+                        responses.append(chunk_content.strip())
+                    
+                    content = " ".join(responses)
+                else:
+                    response = model.invoke(prompt)
+                    content = response.content if hasattr(response, 'content') else str(response)
+                
+                if not content.strip():
+                    raise ValueError(f"Empty response received from LLM during {purpose}")
+                
+                logger.info(f"Successfully completed LLM call for {purpose}")
+                return content.strip()
+                
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Error in LLM call for {purpose} (attempt {attempt + 1}): {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(2)  # Wait before retrying
+                continue
+        
+        # If we get here, all retries failed
+        logger.error(f"All attempts failed for {purpose}: {str(last_error)}")
+        raise last_error
+
     def _generate_response(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Generate a final response based on the combined analysis."""
         try:
             # Get the combined analysis
             combined_analysis = state.get('combined_analysis', '')
             if not combined_analysis:
-                return {"final_response": "I couldn't find any relevant information to answer your question."}
+                return {
+                    "final_response": "I couldn't find any relevant information to answer your question. "
+                                    "Please try rephrasing your question or providing more specific details.",
+                    "metadata": {
+                        "error": "No search results found",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                }
             
-            # Get the original question
+            # Get the original question and question analysis
             messages = state.get('messages', [])
             if not messages:
                 return {"final_response": "I couldn't process your question. Please try again."}
             
             question = messages[-1].content if isinstance(messages[-1], BaseMessage) else str(messages[-1])
             
-            # Create a prompt for the response generation
-            prompt = f"""
-You are a helpful data architect assistant. Answer the following question based ONLY on the search results provided.
-Do not make up information or reference things not in the search results.
-
-QUESTION:
-{question}
-
-SEARCH RESULTS:
-{combined_analysis}
-
-INSTRUCTIONS:
-1. Provide a direct answer to the question based only on the search results
-2. Include relevant code examples from the search results
-3. Explain any technical concepts mentioned
-4. Format your response with markdown headings and code blocks
-
-Your response should be comprehensive but focused on answering the specific question.
-"""
+            # First, determine the question type using the classifier method
+            initial_type = self._classify_question_type(question)
+            logger.info(f"Initial question type classification: {initial_type}")
             
-            # Generate the response (without timeout parameter)
-            logger.info("Generating response with LLM...")
-            response = self.response_model.invoke(prompt)
+            try:
+                # Get question type using LLM with retries
+                question_type = self._safe_llm_call(
+                    self.question_model,
+                    self._get_question_type_prompt(question, initial_type),
+                    "question classification",
+                    max_retries=2
+                )
+                
+                # Validate question type
+                valid_types = ["MODEL_EXPLANATION", "IMPLEMENTATION_GUIDE", "ENHANCEMENT", "TROUBLESHOOTING", "GENERAL"]
+                if question_type not in valid_types:
+                    logger.warning(f"Invalid question type '{question_type}', falling back to initial classification")
+                    question_type = initial_type
+                    
+            except Exception as e:
+                logger.warning(f"Error in LLM classification: {str(e)}, falling back to initial classification")
+                question_type = initial_type
             
-            # Extract content from response
-            response_content = response.content if hasattr(response, 'content') else str(response)
+            logger.info(f"Final question type determination: {question_type}")
             
-            # Log a preview of the response
-            preview = response_content[:100] + "..." if len(response_content) > 100 else response_content
-            logger.info(f"Generated response preview: {preview}")
+            # Get the appropriate instruction template
+            instructions = self._get_instructions_for_type(question_type, question)
             
-            # Return the final response
-            return {"final_response": response_content}
+            try:
+                # Generate response using safe LLM call with retries
+                response_content = self._safe_llm_call(
+                    self.response_model,
+                    self._get_response_prompt(question, question_type, combined_analysis, instructions),
+                    "response generation",
+                    max_retries=2
+                )
+                
+                # Log response preview
+                preview = response_content[:200] + "..." if len(response_content) > 200 else response_content
+                logger.info(f"Successfully generated response. Preview: {preview}")
+                
+                return {
+                    "final_response": response_content,
+                    "metadata": self._create_response_metadata(state, initial_type, question_type)
+                }
+                
+            except Exception as response_error:
+                logger.error(f"Error in response generation: {str(response_error)}")
+                return self._create_error_response(state, question_type, str(response_error))
             
         except Exception as e:
-            logger.error(f"Error generating response: {str(e)}", exc_info=True)
-            return {"final_response": f"I'm sorry, I encountered an error while generating a response: {str(e)}"}
+            logger.error(f"Error in response generation process: {str(e)}", exc_info=True)
+            return {
+                "final_response": f"I apologize, but I encountered an error while processing your question: {str(e)}",
+                "metadata": {
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat()
+                }
+            }
+
+    def _get_instructions_for_type(self, question_type: str, question: str) -> str:
+        """Get the appropriate instruction template based on question type."""
+        if question_type == "MODEL_EXPLANATION":
+            return self._get_model_explanation_instructions(question)
+        elif question_type == "IMPLEMENTATION_GUIDE":
+            return self._get_implementation_instructions(question)
+        elif question_type == "ENHANCEMENT":
+            return self._get_enhancement_instructions(question)
+        elif question_type == "TROUBLESHOOTING":
+            return self._get_troubleshooting_instructions(question)
+        else:
+            return self._get_general_instructions(question)
+
+    def _create_response_metadata(self, state: Dict[str, Any], initial_type: str, question_type: str) -> Dict[str, Any]:
+        """Create metadata for the response."""
+        return {
+            "question_type": question_type,
+            "timestamp": datetime.now().isoformat(),
+            "sources": {
+                "github_results": bool(state.get('github_results')),
+                "sql_results": bool(state.get('sql_results')),
+                "doc_results": bool(state.get('doc_results')),
+                "dbt_results": bool(state.get('dbt_results')),
+                "relationship_results": bool(state.get('relationship_results'))
+            },
+            "processing_info": {
+                "initial_classification": initial_type,
+                "final_classification": question_type
+            }
+        }
+
+    def _create_error_response(self, state: Dict[str, Any], question_type: str, error: str) -> Dict[str, Any]:
+        """Create an error response with available information."""
+        error_response = f"""I apologize, but I encountered an issue while generating the response. 
+Here's what I found in the search results:
+
+1. Available Information:
+- GitHub Results: {bool(state.get('github_results'))}
+- SQL Results: {bool(state.get('sql_results'))}
+- DBT Results: {bool(state.get('dbt_results'))}
+- Documentation: {bool(state.get('doc_results'))}
+
+2. Question Type: {question_type}
+
+Please try rephrasing your question or providing more specific details."""
+        
+        return {
+            "final_response": error_response,
+            "metadata": {
+                "error": error,
+                "question_type": question_type,
+                "timestamp": datetime.now().isoformat()
+            }
+        }
 
     def _classify_question_type(self, query: str) -> str:
         """Classify the question type to provide a more tailored response."""
@@ -818,6 +948,83 @@ Your response should be comprehensive but focused on answering the specific ques
         
         Include file paths and code references where relevant.
         """
+
+    def _get_question_type_prompt(self, question: str, initial_type: str) -> str:
+        """Generate the prompt for question type classification."""
+        return f"""
+You are a data architecture expert. Analyze the following question and determine the most appropriate response type.
+
+QUESTION:
+{question}
+
+AVAILABLE CATEGORIES:
+1. MODEL_EXPLANATION - Questions about understanding data models, schemas, structures, or relationships
+2. IMPLEMENTATION_GUIDE - Questions about how to implement, create, or set up something
+3. ENHANCEMENT - Questions about improving, optimizing, or extending existing functionality
+4. TROUBLESHOOTING - Questions about fixing issues, errors, or problems
+5. GENERAL - Other types of questions that don't fit above categories
+
+Initial classification: {initial_type}
+
+Respond with ONLY ONE of these exact category names:
+MODEL_EXPLANATION
+IMPLEMENTATION_GUIDE
+ENHANCEMENT
+TROUBLESHOOTING
+GENERAL
+"""
+
+    def _get_response_prompt(self, question: str, question_type: str, combined_analysis: str, instructions: str) -> str:
+        """Generate the main response prompt."""
+        return f"""
+You are an expert data architect assistant. Answer the following question based ONLY on the search results provided.
+Do not make up information or reference things not in the search results.
+
+ORIGINAL QUESTION:
+{question}
+
+QUESTION TYPE:
+{question_type}
+
+SEARCH RESULTS SUMMARY:
+{combined_analysis[:4000]}...
+
+THINKING STEPS:
+1. ANALYZE AVAILABLE INFORMATION
+   - Review all search results carefully
+   - Identify relevant code snippets, schemas, and documentation
+   - Note any relationships or dependencies mentioned
+
+2. VALIDATE INFORMATION SOURCES
+   - Confirm all information comes from the search results
+   - Check file paths and references are accurate
+   - Verify code examples are complete and relevant
+
+3. ORGANIZE RESPONSE STRUCTURE
+   - Follow the template format strictly
+   - Include all required sections
+   - Ensure logical flow of information
+
+4. PROVIDE SPECIFIC DETAILS
+   - Include exact file paths when referencing code
+   - Quote relevant code snippets directly from results
+   - Reference specific models, tables, or schemas mentioned
+
+5. VERIFY COMPLETENESS
+   - Ensure all parts of the question are addressed
+   - Check that response follows template format
+   - Confirm all statements are supported by search results
+
+RESPONSE INSTRUCTIONS:
+{instructions}
+
+IMPORTANT GUIDELINES:
+- Use ONLY information from the provided search results
+- Include specific file paths and code references
+- Format code examples with proper syntax highlighting
+- Maintain clear section headers and structure
+- If certain information is not found in results, explicitly state that
+"""
 
     def _enhance_response(self, response: str, question_type: str, github_results: List[Dict[str, Any]], sql_results: List[Dict[str, Any]], doc_results: List[Dict[str, Any]], dbt_results: List[Dict[str, Any]], relationship_results: List[Dict[str, Any]]) -> str:
         """
