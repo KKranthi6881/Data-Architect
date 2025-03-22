@@ -70,19 +70,19 @@ class DataArchitectAgent:
         
         # Initialize models with appropriate settings
         self.question_model = ChatOllama(
-            model="gemma3:latest",
+            model="gemma3:1B",
             temperature=0,
             base_url="http://localhost:11434",
         )
         
         self.analysis_model = ChatOllama(
-            model="gemma3:latest",
+            model="gemma3:1B",
             temperature=0,
             base_url="http://localhost:11434",
         )
         
         self.response_model = ChatOllama(
-            model="gemma3:latest",
+            model="gemma3:1B",
             temperature=0.2,
             base_url="http://localhost:11434",
         )
@@ -787,166 +787,378 @@ Please try rephrasing your question or providing more specific details."""
         return "GENERAL"
 
     def _get_model_explanation_instructions(self, query: str) -> str:
-        """Get instructions for model explanation questions."""
+        """Get instructions for DBT model explanation questions."""
         return """
-        IMPORTANT: Your response should explain the data model based ONLY on the actual code provided above. 
-        Focus on clear explanations of structure, relationships, and purpose.
+        IMPORTANT: Provide a DBT-specific model explanation based ONLY on the code found in the repository.
+        Maximum response length: 500 words.
         
         TASK:
-        1. Explain what the model is based ONLY on the provided code
-        2. Describe its structure, fields, and relationships as shown in the code
-        3. Explain the business purpose of the model
-        4. Explain how it relates to other models and sources
-        5. Provide a summary of the technical implementation shown in the code
+        1. Analyze DBT model structure and dependencies
+        2. Explain key transformations and business logic
+        3. Document model configurations and tests
+        4. Show critical model relationships
         
-        FORMAT YOUR RESPONSE AS FOLLOWS:
+        FORMAT:
         
         ## Model Overview
-        [Provide a concise overview of what this model represents in the data architecture]
+        [One paragraph summary of the DBT model's purpose - max 50 words]
         
-        ## Structure and Fields
-        [List and explain ONLY the fields/columns actually present in the code]
+        ## Model Structure
         
-        ## Business Purpose
-        [Explain the business purpose of this model]
+        ### 1. Source Configuration
+        ```yaml
+        # models/schema.yml
+        version: 2
         
-        ## Related Models and Sources
-        [Explain how this model relates to other models/sources mentioned in the code]
+        sources:
+          [Relevant source definition]
+        ```
         
-        ## Technical Implementation
-        [Explain how the model is technically implemented, including ETL logic]
+        ### 2. Base Model Definition
+        ```sql
+        -- models/staging/[model_name].sql
+        [Key SQL transformations]
+        ```
         
-        Include file paths and code references where relevant.
+        ### 3. Model Configuration
+        ```yaml
+        # models/[model_name].yml
+        version: 2
+        
+        models:
+          [Model configuration details]
+        ```
+        
+        ## Key Transformations
+        1. [Main transformation step]
+        2. [Additional transformation step]
+        3. [Final transformation step]
+        
+        ## Dependencies
+        ```mermaid
+        graph TD
+          [Dependency graph showing upstream/downstream models]
+        ```
+        
+        ## Testing & Documentation
+        ```yaml
+        version: 2
+        
+        models:
+          - name: [model_name]
+            description: [model description]
+            tests:
+              [Existing test configurations]
+        ```
+        
+        ## Usage Examples
+        ```sql
+        -- Example of how this model is used
+        [SQL example]
+        ```
+        
+        Note:
+        - All explanations must reference actual code in the repository
+        - Include only existing configurations and tests
+        - Show real dependencies from DBT manifest
+        - If information isn't in the codebase, state "Not found in repository"
         """
 
     def _get_implementation_instructions(self, query: str) -> str:
-        """Get instructions for implementation guide questions."""
+        """Get instructions for DBT implementation guide questions."""
         return """
-        IMPORTANT: Your response should provide a practical implementation guide based ONLY on the actual code provided above.
-        Focus on concrete steps, code examples, and best practices.
+        IMPORTANT: Provide DBT-specific implementation with code examples for each step.
+        Focus on practical model development and transformations.
         
         TASK:
-        1. Provide a step-by-step implementation guide based on the code examples
-        2. Include specific code examples showing how to implement the required functionality
-        3. Explain any configuration or setup required
-        4. Highlight key considerations and potential challenges
-        5. Suggest testing strategies for the implementation
+        1. Show complete DBT model development
+        2. Include all necessary configurations
+        3. Show testing and documentation
+        4. Provide final working model
         
-        FORMAT YOUR RESPONSE AS FOLLOWS:
+        FORMAT:
         
-        ## Implementation Steps
-        [Provide a numbered list of implementation steps]
+        ## Model Development Steps
         
-        ## Code Examples
-        [Provide specific code examples for each step, using the actual code from the search results]
+        ### Step 1: Define Source Configuration
+        ```yaml
+        # models/schema.yml
+        [Source configuration code]
+        ```
         
-        ## Configuration Required
-        [Explain any configuration or setup required]
+        ### Step 2: Create Base Model
+        ```sql
+        -- models/staging/[model_name].sql
+        [Base model SQL transformation]
+        ```
         
-        ## Key Considerations
-        [Highlight important considerations and potential challenges]
+        ### Step 3: Add Model Configuration
+        ```yaml
+        # models/[model_name].yml
+        [Model configuration with schema and tests]
+        ```
         
-        ## Testing Strategy
-        [Suggest how to test the implementation]
+        ### Step 4: Create Intermediate/Final Model
+        ```sql
+        -- models/marts/[model_name].sql
+        [Final transformation logic]
+        ```
         
-        Include file paths and code references where relevant.
+        ## Complete Implementation
+        
+        ### Source Configuration
+        ```yaml
+        version: 2
+        
+        sources:
+          [Complete source definition]
+        ```
+        
+        ### Model SQL
+        ```sql
+        [Complete model SQL code]
+        ```
+        
+        ### Model Configuration
+        ```yaml
+        version: 2
+        
+        models:
+          [Complete model configuration]
+        ```
+        
+        ### Model Tests
+        ```yaml
+        [Complete test configuration]
+        ```
+        
+        ## Required DBT Configurations
+        - [DBT project configuration requirement]
+        - [Package dependencies]
+        - [Database connection]
+        
+        Note:
+        - All SQL must follow DBT best practices
+        - Include only code found in search results
+        - Each code block must be complete and properly referenced
+        - Models must include source references and documentation
+        - If specific code is not found, state "DBT code not found in provided results"
         """
 
     def _get_enhancement_instructions(self, query: str) -> str:
-        """Get instructions for enhancement questions."""
+        """Get instructions for DBT model enhancement questions."""
         return """
-        IMPORTANT: Your response should suggest enhancements based ONLY on the actual code provided above.
-        Focus on practical improvements that build on the existing code.
+        IMPORTANT: Provide DBT-specific enhancements based ONLY on the existing code. Focus on practical model improvements.
+        Maximum response length: 600 words.
         
         TASK:
-        1. Suggest specific enhancements based on the existing code
-        2. Provide sample code for each enhancement
-        3. Explain the benefits of each enhancement
-        4. Outline implementation steps for each enhancement
-        5. Highlight any dependencies or prerequisites
+        1. Review existing DBT model structure
+        2. Identify key enhancement areas
+        3. Provide step-by-step implementation
+        4. Include complete code blocks
         
-        FORMAT YOUR RESPONSE AS FOLLOWS:
+        FORMAT:
         
-        ## Suggested Enhancements
-        [List suggested enhancements based on the existing code]
+        ## Current Model Analysis
+        [Brief analysis of existing model - max 50 words]
         
-        ## Enhancement Details
-        [For each enhancement, provide:
-        1. Description of the enhancement
-        2. Sample code showing how to implement it
-        3. Benefits of the enhancement
-        4. Implementation steps]
+        ## Enhancement Steps
         
-        ## Implementation Approach
-        [Suggest an overall approach for implementing these enhancements]
+        ### 1. Source Configuration Updates
+        ```yaml
+        # models/schema.yml
+        version: 2
         
-        ## Prerequisites
-        [List any dependencies or prerequisites for these enhancements]
+        sources:
+          [Enhanced source configuration]
+        ```
         
-        Include file paths and code references where relevant.
+        ### 2. Base Model Improvements
+        ```sql
+        -- models/staging/[model_name].sql
+        [Enhanced base model SQL]
+        ```
+        
+        ### 3. Model Configuration Enhancements
+        ```yaml
+        # models/[model_name].yml
+        version: 2
+        
+        models:
+          [Enhanced model configuration with tests]
+        ```
+        
+        ### 4. Intermediate/Final Model Optimizations
+        ```sql
+        -- models/marts/[model_name].sql
+        [Enhanced transformation logic]
+        ```
+        
+        ## Complete Enhanced Implementation
+        
+        ### Updated Source Configuration
+        ```yaml
+        version: 2
+        
+        sources:
+          [Complete enhanced source definition]
+        ```
+        
+        ### Enhanced Model SQL
+        ```sql
+        [Complete enhanced model SQL]
+        ```
+        
+        ### Updated Model Configuration
+        ```yaml
+        version: 2
+        
+        models:
+          [Complete enhanced model configuration]
+        ```
+        
+        ### Additional Tests
+        ```yaml
+        version: 2
+        
+        models:
+          - name: [model_name]
+            tests:
+              [Enhanced test configurations]
+        ```
+        
+        ## Implementation Requirements
+        1. [Required DBT package/version]
+        2. [Database dependency]
+        3. [Other critical requirements]
+        
+        ## Validation Steps
+        1. [How to test the enhancement]
+        2. [What to verify]
+        3. [Expected outcome]
+        
+        Note:
+        - All enhancements must follow DBT best practices
+        - Include only modifications found in search results
+        - Each code block must be complete and properly referenced
+        - All SQL must be properly formatted and documented
+        - If specific enhancement details aren't found, state "Enhancement details not found in provided code"
         """
 
     def _get_troubleshooting_instructions(self, query: str) -> str:
-        """Get instructions for troubleshooting questions."""
+        """Get instructions for DBT troubleshooting questions."""
         return """
-        IMPORTANT: Your response should provide troubleshooting guidance based ONLY on the actual code provided above.
-        Focus on identifying potential issues and practical solutions.
+        IMPORTANT: Provide DBT-specific troubleshooting guidance based ONLY on the code in the repository.
+        Maximum response length: 400 words.
         
         TASK:
-        1. Identify potential issues in the code that could cause problems
-        2. Suggest specific fixes for each issue
-        3. Provide diagnostic steps to identify the root cause
-        4. Offer code examples for solutions
-        5. Suggest preventative measures for the future
+        1. Identify specific DBT model issues
+        2. Check configurations and dependencies
+        3. Verify SQL transformations
+        4. Validate tests and documentation
         
-        FORMAT YOUR RESPONSE AS FOLLOWS:
+        FORMAT:
         
-        ## Potential Issues
-        [List potential issues identified in the code]
+        ## Issue Analysis
+        [Brief description of the DBT-specific issue - max 50 words]
         
         ## Diagnostic Steps
-        [Provide steps to diagnose the issues]
         
-        ## Recommended Solutions
-        [For each issue, provide:
-        1. Explanation of the solution
-        2. Code example showing the fix
-        3. How to verify the fix worked]
+        ### 1. Configuration Check
+        ```yaml
+        # dbt_project.yml
+        [Relevant project configuration]
+        ```
         
-        ## Preventative Measures
-        [Suggest ways to prevent similar issues in the future]
+        ### 2. Model Validation
+        ```sql
+        -- models/[model_path].sql
+        [Problematic SQL code]
+        ```
         
-        Include file paths and code references where relevant.
+        ### 3. Dependency Verification
+        ```yaml
+        # models/schema.yml
+        version: 2
+        
+        models:
+          [Relevant model dependencies]
+        ```
+        
+        ## Solution Steps
+        
+        ### 1. Fix Configuration
+        ```yaml
+        # Updated configuration
+        [Corrected YAML]
+        ```
+        
+        ### 2. Update Model
+        ```sql
+        -- Corrected SQL
+        [Fixed transformation logic]
+        ```
+        
+        ### 3. Add Tests
+        ```yaml
+        version: 2
+        
+        models:
+          - name: [model_name]
+            tests:
+              [Additional test coverage]
+        ```
+        
+        ## Verification Process
+        1. [DBT command to test fix]
+        2. [Expected output]
+        3. [Validation query]
+        
+        ## Prevention Steps
+        1. [Recommended test to add]
+        2. [Documentation update]
+        3. [Best practice to implement]
+        
+        Note:
+        - All solutions must reference actual DBT code
+        - Include specific DBT commands to verify fixes
+        - Show exact file paths from repository
+        - If specific details aren't found, state "Not found in repository"
         """
 
     def _get_general_instructions(self, query: str) -> str:
         """Get instructions for general questions."""
         return """
-        IMPORTANT: Your response should be based ONLY on the actual code provided above. 
-        Do not make assumptions about what a typical implementation might contain if it's not shown in the code.
+        IMPORTANT: Answer based ONLY on the code provided. Keep responses direct and concise.
+        Maximum response length: 300 words.
         
         TASK:
-        1. Address the user's question as specifically as possible using the provided code
-        2. Provide relevant code examples from the search results
-        3. Explain concepts clearly and concisely
-        4. Include practical advice based on the code
-        5. Highlight relevant file locations and code snippets
+        1. Answer the core question directly
+        2. Provide relevant code snippet
+        3. Give practical context
+        4. Note key considerations
         
-        FORMAT YOUR RESPONSE AS FOLLOWS:
+        FORMAT (keep sections brief):
         
         ## Answer
-        [Provide a direct answer to the user's question]
+        [Direct response in 1-2 sentences]
         
-        ## Code Examples
-        [Include relevant code examples from the search results]
+        ## Code Context
+        ```
+        [Most relevant code snippet]
+        ```
+        [One sentence explaining the code]
         
-        ## Explanation
-        [Provide a clear explanation of concepts mentioned]
+        ## Key Points
+        - [Important point 1]
+        - [Important point 2]
+        - [Important point 3]
+        (Maximum 3 points)
         
-        ## Practical Advice
-        [Offer practical advice based on the code]
+        ## Next Steps
+        [Optional: 1-2 practical next steps if relevant]
         
-        Include file paths and code references where relevant.
+        Note: If information isn't in the code, state "Not specified in provided code" rather than making assumptions.
         """
 
     def _get_question_type_prompt(self, question: str, initial_type: str) -> str:
