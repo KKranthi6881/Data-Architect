@@ -14,7 +14,8 @@ import { Link, useLocation } from 'react-router-dom';
 import { 
   IoChatbubbles, 
   IoCloudUpload, 
-  IoTime 
+  IoTime,
+  IoServer
 } from 'react-icons/io5';
 
 const AppHeader = () => {
@@ -60,6 +61,15 @@ const AppHeader = () => {
               colorScheme="orange"
             >
               Upload
+            </Button>
+            <Button
+              as={Link}
+              to="/connectors"
+              leftIcon={<IoServer />}
+              variant={isActive('/connectors') ? 'solid' : 'ghost'}
+              colorScheme="orange"
+            >
+              Connectors
             </Button>
             <Button
               as={Link}

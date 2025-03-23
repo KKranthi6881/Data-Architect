@@ -109,43 +109,76 @@ class SearchTools:
         
         formatted_results = []
         
-        for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
-            # Extract repository information
-            repo_url = metadata.get('repo_url', '')
-            repo_name = repo_url.split('/')[-1] if repo_url else 'Unknown'
-            file_path = metadata.get('file_path', '')
-            language = metadata.get('file_type', '')
+        try:
+            for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
+                try:
+                    # Extract repository information
+                    repo_url = metadata.get('repo_url', '')
+                    repo_name = metadata.get('repo_name', '')  # Try to get from metadata first
+                    if not repo_name and repo_url:  # Fall back to extracting from URL
+                        repo_name = repo_url.split('/')[-1] if repo_url else 'Unknown'
+                    
+                    # Get file path from metadata
+                    file_path = metadata.get('file_path', '')
+                    if not file_path and 'source' in metadata:  # Fall back to source if file_path not found
+                        file_path = metadata.get('source', '')
+                    
+                    # Ensure we have a valid file path
+                    if not file_path:
+                        logger.warning(f"No file path found in metadata: {metadata}")
+                        continue
+                    
+                    # Extract language/file type
+                    language = metadata.get('file_type', '')
+                    if not language and file_path:  # Try to determine from file extension
+                        ext = file_path.split('.')[-1].lower() if '.' in file_path else ''
+                        language = ext if ext else 'unknown'
+                    
+                    # Format the result with proper metadata structure
+                    formatted_result = {
+                        "id": i + 1,
+                        "content": doc,
+                        "metadata": {
+                            "file_path": file_path,
+                            "repo_url": repo_url,
+                            "repo_name": repo_name,
+                            "file_type": language,
+                            "source": "github",
+                            "full_path": f"{repo_name}/{file_path}" if repo_name and file_path else file_path
+                        }
+                    }
+                    
+                    # Add score if available
+                    if 'distances' in results:
+                        formatted_result["score"] = results['distances'][0][i]
+                    
+                    # Extract dbt-specific information if available
+                    if language == 'dbt' or metadata.get('is_dbt', False):
+                        formatted_result["dbt_info"] = {
+                            'model_name': metadata.get('model_name', ''),
+                            'materialization': metadata.get('materialization', ''),
+                            'description': metadata.get('description', ''),
+                            'references': metadata.get('references', '').split(',') if metadata.get('references', '') else [],
+                            'sources': metadata.get('sources', '').split(',') if metadata.get('sources', '') else []
+                        }
+                    
+                    # Log the formatted result for debugging
+                    logger.info(f"Formatted GitHub result {i + 1}:")
+                    logger.info(f"  File path: {file_path}")
+                    logger.info(f"  Repo: {repo_name}")
+                    logger.info(f"  Language: {language}")
+                    
+                    formatted_results.append(formatted_result)
+                    
+                except Exception as e:
+                    logger.error(f"Error formatting result {i}: {str(e)}")
+                    continue
             
-            # Format the result with proper metadata structure
-            formatted_result = {
-                "id": i + 1,
-                "content": doc,
-                "metadata": {
-                    "file_path": file_path,
-                    "repo_url": repo_url,
-                    "repo_name": repo_name,
-                    "file_type": language,
-                    "source": "github"
-                }
-            }
+            return formatted_results
             
-            # Add score if available
-            if 'distances' in results:
-                formatted_result["score"] = results['distances'][0][i]
-            
-            # Extract dbt-specific information if available
-            if language == 'dbt' or metadata.get('is_dbt', False):
-                formatted_result["dbt_info"] = {
-                    'model_name': metadata.get('model_name', ''),
-                    'materialization': metadata.get('materialization', ''),
-                    'description': metadata.get('description', ''),
-                    'references': metadata.get('references', '').split(',') if metadata.get('references', '') else [],
-                    'sources': metadata.get('sources', '').split(',') if metadata.get('sources', '') else []
-                }
-            
-            formatted_results.append(formatted_result)
-        
-        return formatted_results
+        except Exception as e:
+            logger.error(f"Error in _format_github_results: {str(e)}")
+            return []
     
     def search_sql_schema(self, query: str, limit: int = 3) -> Dict[str, Any]:
         """
@@ -305,8 +338,23 @@ class SearchTools:
             # Get the GitHub documents collection
             collection = self.db_manager.get_or_create_collection("github_documents")
             
-            # Create a more specific query for dbt models
-            dbt_query = f"dbt model {query}"
+            # Check if query contains a specific model path
+            model_path_match = re.search(r'models/([^/]+)/([^/]+)/([^/]+\.sql)', query)
+            if model_path_match:
+                # Extract model path components
+                model_type, model_category, model_file = model_path_match.groups()
+                model_name = model_file.replace('.sql', '')
+                expected_path = f"models/{model_type}/{model_category}/{model_file}"
+                
+                # Create a more specific query for the exact model
+                dbt_query = f"dbt model {model_name} path:{expected_path}"
+                
+                # Log the search parameters
+                logger.info(f"Searching for exact DBT model: {expected_path}")
+                logger.info(f"Using query: {dbt_query}")
+            else:
+                # Use the original query
+                dbt_query = f"dbt model {query}"
             
             # Search for documents
             results = self.db_manager.hybrid_search(
@@ -326,11 +374,46 @@ class SearchTools:
             dbt_results = []
             for result in results.get('results', []):
                 metadata = result.get('metadata', {})
-                if metadata.get('language') == 'dbt' or metadata.get('is_dbt', False):
-                    dbt_results.append(result)
+                
+                # Get file path from metadata or source
+                file_path = metadata.get('file_path', '')
+                if not file_path:
+                    file_path = result.get('source', '')
+                
+                # If we're looking for a specific model, ensure exact path match
+                if model_path_match:
+                    if not file_path.endswith(expected_path):
+                        logger.info(f"Skipping result with path {file_path} - does not match expected path {expected_path}")
+                        continue
+                
+                # Ensure the result is a DBT model
+                if not (metadata.get('language') == 'dbt' or metadata.get('is_dbt', False)):
+                    logger.info(f"Skipping result - not a DBT model: {file_path}")
+                    continue
+                
+                # Ensure file path is included in the result
+                if 'file_path' not in metadata:
+                    metadata['file_path'] = file_path
+                
+                # Add the file path to the content for context
+                if 'content' in result:
+                    # Extract the actual SQL content
+                    sql_content = result['content']
+                    # Add file path context
+                    result['content'] = f"File: {file_path}\n\nSQL Content:\n{sql_content}"
+                
+                # Add model name if not present
+                if 'model_name' not in metadata:
+                    metadata['model_name'] = model_name if model_path_match else file_path.split('/')[-1].replace('.sql', '')
+                
+                # Log the matched result
+                logger.info(f"Found matching DBT model: {file_path}")
+                
+                dbt_results.append(result)
             
             # If we filtered out all results, try a more general search
             if not dbt_results:
+                logger.info("No exact matches found, trying more general search")
                 return {
                     "status": "success",
                     "results": [],
@@ -401,10 +484,54 @@ class SearchTools:
             if 'dbt_info' not in enhanced_result:
                 enhanced_result['dbt_info'] = {}
             
+            # Get model type and category from file path
+            file_path = metadata.get('file_path', '')
+            if not file_path:
+                file_path = result.get('source', '')
+            
+            path_parts = file_path.split('/')
+            model_type = path_parts[-3] if len(path_parts) >= 3 else 'unknown'
+            model_category = path_parts[-2] if len(path_parts) >= 2 else 'unknown'
+            
+            # Extract SQL content for analysis
+            sql_content = result.get('content', '')
+            # Remove the file path prefix if it exists
+            if sql_content.startswith('File:'):
+                sql_content = sql_content.split('\n\n', 1)[1]
+            if sql_content.startswith('SQL Content:'):
+                sql_content = sql_content.split('\n', 1)[1]
+            
+            # Log the content being processed
+            logger.info(f"Processing SQL content for model: {model_name}")
+            logger.info(f"File path: {file_path}")
+            logger.info(f"Content length: {len(sql_content)}")
+            
+            # Add detailed lineage information
             enhanced_result['dbt_info']['lineage'] = {
+                'model_name': model_name,
+                'model_type': model_type,
+                'model_category': model_category,
+                'file_path': file_path,
                 'upstream': upstream_models,
-                'downstream': downstream_models
+                'downstream': downstream_models,
+                'materialization': metadata.get('materialization', 'view'),
+                'description': metadata.get('description', ''),
+                'tags': metadata.get('tags', []),
+                'columns': metadata.get('columns', []),
+                'tests': metadata.get('tests', []),
+                'sql_content': sql_content,
+                'relationships': metadata.get('relationships', []),
+                'tables': metadata.get('tables', []),
+                'sources': metadata.get('sources', [])
             }
+            
+            # Add source information if available
+            if 'sources' in metadata:
+                enhanced_result['dbt_info']['lineage']['sources'] = metadata['sources']
+            
+            # Ensure file path is visible in the content
+            if 'content' in enhanced_result:
+                enhanced_result['content'] = f"File: {file_path}\n\nSQL Content:\n{sql_content}"
             
             enhanced_results.append(enhanced_result)
         

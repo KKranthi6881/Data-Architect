@@ -7,6 +7,8 @@ import AboutPage from './pages/AboutPage'
 import ChatPage from './pages/ChatPage'
 import FileUploadPage from './pages/knowledge/FileUploadPage'
 import ChatHistoryPage from './pages/ChatHistoryPage'
+import ConnectorsPage from './pages/ConnectorsPage'
+import GitHubConnectorPage from './pages/connectors/GitHubConnectorPage'
 
 // Create theme
 const theme = extendTheme({
@@ -51,6 +53,16 @@ function App() {
             <Route path="/history/:conversationId" element={
               <MainLayout>
                 <ChatHistoryPage />
+              </MainLayout>
+            } />
+            <Route path="/connectors" element={
+              <MainLayout>
+                <ConnectorsPage />
+              </MainLayout>
+            } />
+            <Route path="/connectors/github" element={
+              <MainLayout>
+                <GitHubConnectorPage />
               </MainLayout>
             } />
             <Route path="*" element={<Navigate to="/" />} />

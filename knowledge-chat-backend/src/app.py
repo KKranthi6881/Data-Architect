@@ -32,7 +32,7 @@ app = FastAPI(title="Knowledge Chat API")
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust this in production
+    allow_origins=["*"],  # In production, replace with specific origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -95,6 +95,8 @@ class GitHubRepoRequest(BaseModel):
     repo_url: str
     username: str = ""
     token: str = ""
+    is_dbt_repo: bool = False
+    dbt_path: str = ""
 
 class ChatRequest(BaseModel):
     message: str
@@ -224,7 +226,9 @@ async def add_github_repo(request: GitHubRepoRequest):
         result = db_manager.process_github(
             repo_url=request.repo_url,
             username=request.username,
-            token=request.token
+            token=request.token,
+            is_dbt_repo=request.is_dbt_repo,
+            dbt_path=request.dbt_path
         )
         
         if result.get("status") == "error":
@@ -240,7 +244,9 @@ async def add_github_repo(request: GitHubRepoRequest):
             "status": "success",
             "message": f"Successfully processed GitHub repository: {request.repo_url}",
             "files_processed": result.get("files_processed", 0),
-            "repo_url": request.repo_url
+            "repo_url": request.repo_url,
+            "is_dbt_repo": request.is_dbt_repo,
+            "dbt_path": request.dbt_path
         }
         
     except Exception as e:
@@ -1269,21 +1275,37 @@ async def get_conversations(limit: int = 10, offset: int = 0):
         raise HTTPException(status_code=500, detail=str(e))
 
 def get_data_architect_agent(db_manager, chat_db, save_chat_func, conversation_id=None):
-    """Get or create a data architect agent"""
+    """Get or create a data architect agent with the latest GitHub configuration."""
     try:
-        # Create search tools with the db_manager
-        tools = SearchTools(db_manager)
-        
-        # Create a new agent with just the tools parameter
-        agent = create_data_architect_agent(tools=tools)
-        
-        # Set the database and other properties after creation
-        agent.db = chat_db
-        
-        return agent
+        # Get the latest GitHub connector configuration
+        with chat_db._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT value FROM settings 
+                WHERE key = 'github_connectors' 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """)
+            result = cursor.fetchone()
+            
+            if result:
+                configs = json.loads(result[0])
+                if configs:
+                    # Use the most recent configuration
+                    latest_config = configs[-1]
+                    repo_url = latest_config.get('repoUrl', '')
+                    username = latest_config.get('username', '')
+                    token = latest_config.get('token', '')
+                    
+                    logger.info(f"Creating Data Architect Agent with repository: {repo_url}")
+                    return create_data_architect_agent(repo_url, username, token)
+            
+            logger.warning("No GitHub connector configuration found, creating agent without repository")
+            return create_data_architect_agent()
+            
     except Exception as e:
-        logger.error(f"Error creating data architect agent: {str(e)}")
-        raise
+        logger.error(f"Error getting data architect agent: {str(e)}")
+        return create_data_architect_agent()
 
 # Add these endpoints for thread-based conversation retrieval
 @app.get("/thread-conversations/{thread_id}")
@@ -1311,6 +1333,110 @@ async def get_all_threads():
             status_code=500,
             content={"error": f"Failed to get threads: {str(e)}", "detail": "Check server logs for more information"}
         )
+
+@app.post("/api/settings/github_connectors")
+async def save_github_connectors(configs: List[Dict[str, Any]]):
+    """Save GitHub connector configurations to the database"""
+    try:
+        logger.info(f"Received GitHub connector configurations: {configs}")
+        with chat_db._get_connection() as conn:
+            cursor = conn.cursor()
+            # First, ensure the settings table exists
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            logger.info("Settings table created/verified")
+            
+            # Save the configurations
+            cursor.execute("""
+                INSERT INTO settings (key, value)
+                VALUES (?, ?)
+            """, ('github_connectors', json.dumps(configs)))
+            
+            conn.commit()
+            logger.info("Successfully saved GitHub configurations to database")
+            
+        return {"status": "success", "message": "GitHub configurations saved"}
+    except Exception as e:
+        logger.error(f"Error saving GitHub configurations: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/settings/github_connectors/{config_id}")
+async def delete_github_connector(config_id: str):
+    """Delete a specific GitHub connector configuration"""
+    try:
+        with chat_db._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get current configurations
+            cursor.execute("""
+                SELECT value FROM settings 
+                WHERE key = 'github_connectors' 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """)
+            result = cursor.fetchone()
+            
+            if not result:
+                raise HTTPException(status_code=404, detail="No GitHub configurations found")
+            
+            configs = json.loads(result[0])
+            
+            # Convert config_id to string for comparison since frontend uses Date.now()
+            config_id_str = str(config_id)
+            
+            # Filter out the configuration to delete
+            updated_configs = [config for config in configs if str(config.get('id')) != config_id_str]
+            
+            if len(updated_configs) == len(configs):
+                raise HTTPException(status_code=404, detail="Configuration not found")
+            
+            # Save updated configurations
+            cursor.execute("""
+                INSERT INTO settings (key, value)
+                VALUES (?, ?)
+            """, ('github_connectors', json.dumps(updated_configs)))
+            
+            conn.commit()
+            logger.info(f"Successfully deleted GitHub configuration with ID: {config_id}")
+            
+        return {"status": "success", "message": "GitHub configuration deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting GitHub configuration: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/settings/github_connectors")
+async def get_github_connectors():
+    """Get all GitHub connector configurations"""
+    try:
+        with chat_db._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get latest configurations
+            cursor.execute("""
+                SELECT value FROM settings 
+                WHERE key = 'github_connectors' 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """)
+            result = cursor.fetchone()
+            
+            if not result:
+                return {"status": "success", "configs": []}
+            
+            configs = json.loads(result[0])
+            return {"status": "success", "configs": configs}
+            
+    except Exception as e:
+        logger.error(f"Error fetching GitHub configurations: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     main() 

@@ -761,7 +761,28 @@ const renderMessage = (message) => {
                 <AccordionPanel pb={4}>
                   <VStack align="stretch" spacing={2}>
                     {message.details.dbt_results.map((result, idx) => (
-                      <CodeResultDisplay key={idx} result={result} />
+                      <Box key={idx} p={4} borderWidth="1px" borderRadius="md">
+                        <Text fontWeight="medium">{result.model_name}</Text>
+                        <Text fontSize="sm" color="gray.500">{result.description}</Text>
+                        {result.dependencies && (
+                          <Box mt={2}>
+                            <Text fontSize="sm" fontWeight="medium">Dependencies:</Text>
+                            <UnorderedList fontSize="sm" ml={4}>
+                              {result.dependencies.map((dep, depIdx) => (
+                                <ListItem key={depIdx}>{dep}</ListItem>
+                              ))}
+                            </UnorderedList>
+                          </Box>
+                        )}
+                        {result.sql && (
+                          <Box mt={2}>
+                            <Text fontSize="sm" fontWeight="medium">SQL:</Text>
+                            <Code display="block" p={2} borderRadius="md" fontSize="sm">
+                              {result.sql}
+                            </Code>
+                          </Box>
+                        )}
+                      </Box>
                     ))}
                   </VStack>
                 </AccordionPanel>

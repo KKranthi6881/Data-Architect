@@ -3,7 +3,7 @@ from src.patches import patch_chromadb_numpy
 patch_chromadb_numpy()
 
 import os
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 import chromadb
 from chromadb.config import Settings
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
@@ -558,8 +558,8 @@ class ChromaDBManager:
 
     def process_github(self, repo_url: str, username: str = "", token: str = "") -> Dict[str, Any]:
         """
-        Process a GitHub repository by cloning it and analyzing its contents.
-        Supports both standard github.com and enterprise GitHub instances.
+        Process a GitHub repository by cloning it and loading its contents.
+        Focuses on essential file information for effective searching.
         
         Args:
             repo_url: URL of the GitHub repository
@@ -572,103 +572,81 @@ class ChromaDBManager:
         try:
             logger.info(f"Processing GitHub repository: {repo_url}")
             
-            # Create a temporary directory with a shorter path
+            # Create a temporary directory
             temp_dir = tempfile.mkdtemp(prefix="github_repo_", dir="/tmp")
             
             # Clone the repository
             logger.info(f"Cloning repository to {temp_dir}")
-            
-            # Use subprocess with cwd parameter to avoid path issues
             if username and token:
                 auth_url = f"https://{username}:{token}@github.com/{repo_url.split('github.com/')[1]}"
                 subprocess.run(["git", "clone", auth_url, temp_dir], check=True)
             else:
                 subprocess.run(["git", "clone", repo_url, temp_dir], check=True)
             
-            # Initialize code analyzer
-            code_analyzer = CodeAnalyzer()
-            
             # Process the repository files
             file_count = 0
             documents = []
             
+            # Supported file types
+            supported_extensions = {'.sql', '.py', '.md', '.yml', '.yaml', '.json', '.txt'}
+            
             for root, _, files in os.walk(temp_dir):
                 for file in files:
-                    if file.endswith(('.sql', '.py', '.md', '.yml', '.yaml')):
-                        file_path = os.path.join(root, file)
-                        rel_path = os.path.relpath(file_path, temp_dir)
+                    # Skip hidden files and directories
+                    if file.startswith('.') or any(part.startswith('.') for part in Path(root).parts):
+                        continue
                         
-                        try:
-                            # Use git command with proper working directory and relative path
-                            git_info = subprocess.check_output(
-                                ["git", "log", "-1", "--format=%H|%an|%at|%s", "--", rel_path],
-                                cwd=temp_dir,
-                                text=True
-                            ).strip()
-                            
-                            # Process the file with git metadata
-                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                content = f.read()
-                            
-                            # Analyze the file based on its type
-                            file_analysis = {}
-                            if file.endswith('.sql'):
-                                if 'models' in rel_path and rel_path.count('/') >= 2:
-                                    # This is likely a DBT model
-                                    file_analysis = code_analyzer.analyze_dbt(file_path)
-                                else:
-                                    # Regular SQL file
-                                    file_analysis = code_analyzer.analyze_sql(file_path)
-                            elif file.endswith(('.yml', '.yaml')):
-                                # Check if it's a DBT schema file
-                                if 'models' in rel_path or 'sources' in rel_path:
-                                    file_analysis = code_analyzer.analyze_dbt_schema(file_path)
-                                else:
-                                    file_analysis = code_analyzer.analyze_yaml(file_path)
-                            elif file.endswith('.py'):
-                                file_analysis = code_analyzer.analyze_python(file_path)
-                            elif file.endswith('.md'):
-                                file_analysis = code_analyzer.analyze_markdown(file_path)
-                            
-                            # Create document ID
-                            doc_id = hashlib.md5(f"{repo_url}:{rel_path}".encode()).hexdigest()
-                            
-                            # Create document with metadata
-                            document = {
-                                "id": doc_id,
-                                "text": content,
-                                "metadata": {
-                                    "source": "github",
-                                    "repo_url": repo_url,
-                                    "file_path": rel_path,
-                                    "git_info": git_info,
-                                    "file_type": file_path.split('.')[-1],
-                                    "analysis": file_analysis
-                                }
-                            }
-                            
-                            # Add to documents list
-                            documents.append(document)
-                            
-                            # Add to vector store
-                            self.add_document(
-                                collection_name="github_documents",
-                                document_id=doc_id,
-                                text=content,
-                                metadata={
-                                    "source": "github",
-                                    "repo_url": repo_url,
-                                    "file_path": rel_path,
-                                    "git_info": git_info,
-                                    "file_type": file_path.split('.')[-1]
-                                }
-                            )
-                            
-                            file_count += 1
-                            
-                        except Exception as e:
-                            logger.warning(f"Error processing file {rel_path}: {str(e)}")
-                            # Continue with next file
+                    # Check file extension
+                    ext = os.path.splitext(file)[1].lower()
+                    if ext not in supported_extensions:
+                        continue
+                    
+                    file_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(file_path, temp_dir)
+                    
+                    try:
+                        # Read file content
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        
+                        # Create document ID
+                        doc_id = hashlib.md5(f"{repo_url}:{rel_path}".encode()).hexdigest()
+                        
+                        # Create basic metadata
+                        metadata = {
+                            "source": "github",
+                            "repo_url": repo_url,
+                            "file_path": rel_path,
+                            "file_name": file,
+                            "file_extension": ext.lstrip('.'),
+                            "file_size": os.path.getsize(file_path),
+                            "last_modified": datetime.fromtimestamp(os.path.getmtime(file_path)).isoformat()
+                        }
+                        
+                        # Create document
+                        document = {
+                            "id": doc_id,
+                            "content": content,
+                            "metadata": metadata
+                        }
+                        
+                        # Add to documents list
+                        documents.append(document)
+                        
+                        # Add to vector store with the same metadata
+                        self.add_document(
+                            collection_name="github_documents",
+                            document_id=doc_id,
+                            text=content,
+                            metadata=metadata
+                        )
+                        
+                        file_count += 1
+                        logger.info(f"Processed file {file_count}: {rel_path}")
+                        
+                    except Exception as e:
+                        logger.warning(f"Error processing file {rel_path}: {str(e)}")
+                        continue
             
             # Clean up
             shutil.rmtree(temp_dir)
@@ -1096,3 +1074,115 @@ class ChromaDBManager:
             
         except Exception as e:
             logger.error(f"Error linking dbt dependencies: {str(e)}")
+
+    def _enhance_dbt_results_with_lineage(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Enhance dbt results with lineage information by finding related models.
+        """
+        enhanced_results = []
+        
+        # Create a mapping of model names to result indices for faster lookups
+        model_map = {}
+        for i, result in enumerate(results):
+            metadata = result.get('metadata', {})
+            model_name = metadata.get('model_name', '')
+            if model_name:
+                model_map[model_name] = i
+        
+        # For each result, find its upstream and downstream dependencies
+        for result in results:
+            metadata = result.get('metadata', {})
+            model_name = metadata.get('model_name', '')
+            
+            if not model_name:
+                enhanced_results.append(result)
+                continue
+            
+            # Find upstream models (models this model depends on)
+            upstream_models = metadata.get('references', '').split(',') if metadata.get('references', '') else []
+            upstream_models = [m.strip() for m in upstream_models if m.strip()]
+            
+            # Find downstream models (models that depend on this model)
+            downstream_models = []
+            
+            # Check if any other model has this model in its references
+            for other_result in results:
+                other_metadata = other_result.get('metadata', {})
+                other_model = other_metadata.get('model_name', '')
+                if not other_model or other_model == model_name:
+                    continue
+                    
+                other_refs = other_metadata.get('references', '').split(',') if other_metadata.get('references', '') else []
+                other_refs = [r.strip() for r in other_refs if r.strip()]
+                
+                # If this model is referenced by the other model, it's a downstream dependency
+                if model_name in other_refs:
+                    downstream_models.append(other_model)
+            
+            # Create enhanced result
+            enhanced_result = result.copy()
+            
+            # Add lineage information
+            if 'dbt_info' not in enhanced_result:
+                enhanced_result['dbt_info'] = {}
+            
+            # Check if there's more detailed lineage info in the analysis metadata
+            analysis = metadata.get('analysis', {})
+            lineage_from_analysis = analysis.get('lineage', {})
+            
+            if lineage_from_analysis and isinstance(lineage_from_analysis, dict):
+                # Use the more detailed lineage information if available
+                enhanced_result['dbt_info']['lineage'] = lineage_from_analysis
+            else:
+                # Use what we've gathered
+                enhanced_result['dbt_info']['lineage'] = {
+                    'upstream': upstream_models,
+                    'downstream': downstream_models
+                }
+            
+            enhanced_results.append(enhanced_result)
+        
+        return enhanced_results
+
+    def _flatten_dict_for_chroma(self, metadata: Dict[str, Any]) -> Dict[str, Union[str, int, float, bool]]:
+        """Flatten and convert nested dictionary to a format suitable for ChromaDB metadata."""
+        flattened = {}
+        
+        for key, value in metadata.items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                # Keep primitive types as is (handle None as empty string)
+                flattened[key] = value if value is not None else ""
+            elif isinstance(value, dict):
+                # For dictionaries, serialize to JSON string
+                try:
+                    flattened[key] = json.dumps(self._clean_for_json(value))
+                except Exception as e:
+                    logger.warning(f"Error serializing dict for key {key}: {str(e)}")
+                    flattened[key] = str(value)
+            elif isinstance(value, list):
+                # For lists, serialize to JSON string
+                try:
+                    flattened[key] = json.dumps(self._clean_for_json(value))
+                except Exception as e:
+                    logger.warning(f"Error serializing list for key {key}: {str(e)}")
+                    flattened[key] = str(value)
+            else:
+                # For any other type, convert to string
+                flattened[key] = str(value)
+        
+        return flattened
+
+    def _deserialize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Deserialize JSON strings in metadata back into Python objects."""
+        deserialized = {}
+        
+        for key, value in metadata.items():
+            if isinstance(value, str) and (value.startswith('{') or value.startswith('[')):
+                try:
+                    deserialized[key] = json.loads(value)
+                except json.JSONDecodeError:
+                    deserialized[key] = value
+            else:
+                deserialized[key] = value
+        
+        return deserialized

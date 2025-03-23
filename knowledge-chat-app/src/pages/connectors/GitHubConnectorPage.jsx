@@ -1,391 +1,375 @@
-import { useState } from 'react'
+import React, { useState, useEffect } from 'react';
 import {
   Box,
+  Container,
   Heading,
-  Button,
-  VStack,
   Text,
+  VStack,
+  HStack,
   FormControl,
   FormLabel,
   Input,
-  InputGroup,
-  InputLeftElement,
+  Button,
+  Switch,
+  useToast,
   Card,
   CardBody,
   CardHeader,
-  CardFooter,
-  HStack,
   Divider,
-  useToast,
-  Switch,
-  FormHelperText,
-  Code,
-  useColorModeValue,
+  Icon,
   Badge,
   Alert,
   AlertIcon,
   AlertTitle,
   AlertDescription,
-  Link,
-  Progress
-} from '@chakra-ui/react'
-import { FaGithub, FaKey, FaUser, FaLock, FaCheck, FaTimes, FaExternalLinkAlt } from 'react-icons/fa'
-import { IoCloudUpload } from 'react-icons/io5'
+  useColorModeValue,
+} from '@chakra-ui/react';
+import { FaGithub, FaBuilding, FaGlobe } from 'react-icons/fa';
 
 const GitHubConnectorPage = () => {
-  const [isConnected, setIsConnected] = useState(false)
-  const [isConnecting, setIsConnecting] = useState(false)
-  const [connectionDetails, setConnectionDetails] = useState({
+  const [isEnterprise, setIsEnterprise] = useState(false);
+  const [config, setConfig] = useState({
+    enterpriseUrl: '',
     username: '',
     token: '',
-    usePersonalToken: true
-  })
-  const [gitZipFile, setGitZipFile] = useState(null)
-  const [isUploading, setIsUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState(0)
-  const toast = useToast()
-  const codeBg = useColorModeValue('gray.50', 'gray.700')
+    repoUrl: '',
+    isPublic: false,
+  });
+  const [savedConfigs, setSavedConfigs] = useState([]);
+  const toast = useToast();
+  
+  const cardBg = useColorModeValue('white', 'gray.800');
+  const borderColor = useColorModeValue('gray.200', 'gray.700');
+  const textColor = useColorModeValue('gray.600', 'gray.300');
 
-  const handleConnect = () => {
+  // Load saved configurations on mount
+  useEffect(() => {
+    const loadConfigurations = async () => {
+      try {
+        const response = await fetch('/api/settings/github_connectors');
+        if (!response.ok) {
+          throw new Error('Failed to fetch configurations');
+        }
+        const data = await response.json();
+        setSavedConfigs(data.configs || []);
+      } catch (error) {
+        console.error('Error loading configurations:', error);
+        toast({
+          title: 'Error',
+          description: 'Failed to load saved configurations',
+          status: 'error',
+          duration: 3000,
+          isClosable: true,
+        });
+      }
+    };
+
+    loadConfigurations();
+  }, []);
+
+  const handleInputChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setConfig(prev => ({
+      ...prev,
+      [name]: type === 'checkbox' ? checked : value
+    }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    
     // Validate required fields
-    if (!connectionDetails.username || !connectionDetails.token) {
+    if (!config.repoUrl) {
       toast({
-        title: 'Missing required fields',
-        description: 'Please fill in all required fields.',
+        title: 'Error',
+        description: 'Repository URL is required',
         status: 'error',
         duration: 3000,
         isClosable: true,
-      })
-      return
+      });
+      return;
     }
-    
-    setIsConnecting(true)
-    
-    // Simulate connection
-    setTimeout(() => {
-      setIsConnecting(false)
-      setIsConnected(true)
-      
+
+    if (isEnterprise && !config.enterpriseUrl) {
       toast({
-        title: 'Connection successful',
-        description: `Connected to GitHub as ${connectionDetails.username}`,
+        title: 'Error',
+        description: 'Enterprise URL is required',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    if (!config.isPublic && (!config.username || !config.token)) {
+      toast({
+        title: 'Error',
+        description: 'Username and token are required for private repositories',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
+    }
+
+    try {
+      // Create new configuration
+      const newConfig = {
+        id: Date.now(),
+        ...config,
+        isEnterprise,
+        createdAt: new Date().toISOString(),
+      };
+
+      console.log('Sending configuration to backend:', newConfig);
+      console.log('Full request payload:', [...savedConfigs, newConfig]);
+
+      // Save to backend database
+      const response = await fetch('/api/settings/github_connectors', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify([...savedConfigs, newConfig]),
+      });
+
+      console.log('Response status:', response.status);
+      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Error response:', errorData);
+        throw new Error(errorData.detail || 'Failed to save configuration');
+      }
+
+      const result = await response.json();
+      console.log('Success response:', result);
+      
+      // Update local state
+      setSavedConfigs([...savedConfigs, newConfig]);
+
+      // Clear form
+      setConfig({
+        enterpriseUrl: '',
+        username: '',
+        token: '',
+        repoUrl: '',
+        isPublic: false,
+      });
+
+      toast({
+        title: 'Success',
+        description: 'GitHub connector configuration saved',
         status: 'success',
         duration: 3000,
         isClosable: true,
-      })
-    }, 2000)
-  }
-
-  const handleDisconnect = () => {
-    setIsConnected(false)
-    toast({
-      title: 'Disconnected',
-      description: 'GitHub connection closed',
-      status: 'info',
-      duration: 2000,
-      isClosable: true,
-    })
-  }
-
-  const handleInputChange = (e) => {
-    const { name, value } = e.target
-    setConnectionDetails({
-      ...connectionDetails,
-      [name]: value
-    })
-  }
-
-  const handleSwitchChange = () => {
-    setConnectionDetails({
-      ...connectionDetails,
-      usePersonalToken: !connectionDetails.usePersonalToken
-    })
-  }
-
-  const handleGitZipFileChange = (e) => {
-    if (e.target.files[0]) {
-      setGitZipFile(e.target.files[0])
-    }
-  }
-
-  const handleGitZipUpload = () => {
-    if (!gitZipFile) {
+      });
+    } catch (error) {
+      console.error('Error saving configuration:', error);
       toast({
-        title: 'ZIP file required',
-        description: 'Please select a ZIP file containing your Git repository',
+        title: 'Error',
+        description: `Failed to save configuration: ${error.message}`,
         status: 'error',
-        duration: 3000,
-      })
-      return
+        duration: 5000,
+        isClosable: true,
+      });
     }
-    
-    setIsUploading(true)
-    setUploadProgress(0)
-    
-    const formData = new FormData()
-    formData.append('file', gitZipFile)
-    
-    // Create a simulated progress interval for visual feedback
-    const progressInterval = setInterval(() => {
-      setUploadProgress(prev => Math.min(prev + 5, 95))
-    }, 200)
-    
-    // Make the actual API call to upload the ZIP file
-    fetch('http://localhost:8000/git-zip/', {
-      method: 'POST',
-      body: formData,
-    })
-      .then(response => response.json())
-      .then(data => {
-        clearInterval(progressInterval)
-        setUploadProgress(100)
-        
-        if (data.status === 'success') {
-          toast({
-            title: 'Repository uploaded',
-            description: 'Git repository ZIP has been successfully processed',
-            status: 'success',
-            duration: 5000,
-          })
-          
-          // Reset form and fetch updated list
-          setGitZipFile(null)
-          fetchKnowledgeSources()
-        } else {
-          throw new Error(data.message || 'Unknown error occurred')
-        }
-      })
-      .catch(error => {
-        clearInterval(progressInterval)
-        setUploadProgress(0)
-        console.error('Error uploading ZIP:', error)
-        
-        toast({
-          title: 'Upload failed',
-          description: error.message || 'Failed to process Git repository ZIP',
-          status: 'error',
-          duration: 5000,
-        })
-      })
-      .finally(() => {
-        setIsUploading(false)
-      })
-  }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      console.log('Attempting to delete configuration:', id);
+      const response = await fetch(`/api/settings/github_connectors/${id}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Delete request failed:', errorData);
+        throw new Error(errorData.detail || 'Failed to delete configuration');
+      }
+
+      // Update local state
+      const updatedConfigs = savedConfigs.filter(config => config.id !== id);
+      setSavedConfigs(updatedConfigs);
+      
+      toast({
+        title: 'Success',
+        description: 'Configuration deleted successfully',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+    } catch (error) {
+      console.error('Error deleting configuration:', error);
+      toast({
+        title: 'Error',
+        description: `Failed to delete configuration: ${error.message}`,
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  };
 
   return (
-    <Box maxW="1000px" mx="auto" py={4}>
-      <Heading mb={6} display="flex" alignItems="center">
-        <FaGithub style={{ marginRight: '12px' }} />
-        GitHub Connector
-      </Heading>
-      
-      <Text mb={6}>
-        Connect to GitHub to allow the AI to access your repositories, issues, and pull requests.
-      </Text>
-      
-      {isConnected && (
-        <Alert status="success" mb={6} borderRadius="md">
-          <AlertIcon />
-          <Box flex="1">
-            <AlertTitle>Connected to GitHub</AlertTitle>
-            <AlertDescription display="block">
-              Username: {connectionDetails.username}<br />
-              Authentication: {connectionDetails.usePersonalToken ? 'Personal Access Token' : 'OAuth'}
-            </AlertDescription>
-          </Box>
-          <Button 
-            colorScheme="red" 
-            variant="outline" 
-            size="sm" 
-            onClick={handleDisconnect}
-            leftIcon={<FaTimes />}
-          >
-            Disconnect
-          </Button>
-        </Alert>
-      )}
-      
-      <Card mb={8}>
-        <CardHeader>
-          <Heading size="md">GitHub Connection Details</Heading>
-        </CardHeader>
-        <CardBody>
-          <VStack spacing={4} align="stretch">
-            <FormControl isRequired>
-              <FormLabel>GitHub Username</FormLabel>
-              <InputGroup>
-                <InputLeftElement pointerEvents="none">
-                  <FaUser color="gray.300" />
-                </InputLeftElement>
-                <Input 
-                  name="username"
-                  value={connectionDetails.username}
-                  onChange={handleInputChange}
-                  placeholder="your-github-username"
-                  isDisabled={isConnected}
-                />
-              </InputGroup>
-            </FormControl>
-            
-            <FormControl display="flex" alignItems="center">
-              <Switch 
-                id="use-personal-token" 
-                isChecked={connectionDetails.usePersonalToken}
-                onChange={handleSwitchChange}
-                colorScheme="brand"
-                mr={3}
-                isDisabled={isConnected}
-              />
-              <FormLabel htmlFor="use-personal-token" mb={0}>
-                Use Personal Access Token
-              </FormLabel>
-            </FormControl>
-            
-            <FormControl isRequired>
-              <FormLabel>
-                {connectionDetails.usePersonalToken ? 'Personal Access Token' : 'OAuth Token'}
-              </FormLabel>
-              <InputGroup>
-                <InputLeftElement pointerEvents="none">
-                  <FaKey color="gray.300" />
-                </InputLeftElement>
-                <Input 
-                  name="token"
-                  type="password"
-                  value={connectionDetails.token}
-                  onChange={handleInputChange}
-                  placeholder="••••••••••••••••••••••••"
-                  isDisabled={isConnected}
-                />
-              </InputGroup>
-              <FormHelperText>
-                {connectionDetails.usePersonalToken ? (
-                  <Text>
-                    Create a token with 'repo' scope. 
-                    <Link 
-                      href="https://github.com/settings/tokens" 
-                      isExternal 
-                      color="brand.500" 
-                      ml={1}
-                    >
-                      Generate token <FaExternalLinkAlt size="0.8em" />
-                    </Link>
-                  </Text>
-                ) : (
-                  'OAuth token for GitHub API access'
-                )}
-              </FormHelperText>
-            </FormControl>
-          </VStack>
-        </CardBody>
-        <CardFooter>
-          {!isConnected ? (
-            <Button 
-              colorScheme="brand" 
-              leftIcon={<FaGithub />}
-              onClick={handleConnect}
-              isLoading={isConnecting}
-              loadingText="Connecting..."
-            >
-              Connect to GitHub
-            </Button>
-          ) : (
-            <Button 
-              colorScheme="red" 
-              variant="outline"
-              leftIcon={<FaTimes />}
-              onClick={handleDisconnect}
-            >
-              Disconnect
-            </Button>
-          )}
-        </CardFooter>
-      </Card>
-      
-      {isConnected && (
-        <Card mb={8}>
-          <CardHeader>
-            <Heading size="md">Connected GitHub Account</Heading>
-          </CardHeader>
-          <CardBody>
-            <VStack align="stretch" spacing={4}>
-              <Box bg={codeBg} p={4} borderRadius="md">
-                <HStack justify="space-between">
-                  <VStack align="start" spacing={1}>
-                    <Heading size="sm">{connectionDetails.username}</Heading>
-                    <Text fontSize="sm">
-                      <Badge colorScheme="green" mr={2}>Connected</Badge>
-                      Authentication: {connectionDetails.usePersonalToken ? 'Personal Access Token' : 'OAuth'}
-                    </Text>
-                  </VStack>
-                  <FaGithub size="2em" />
-                </HStack>
-              </Box>
-              
-              <Text>
-                The AI can now access your GitHub repositories, issues, and pull requests to provide more personalized assistance.
-              </Text>
-              
-              <Alert status="info" borderRadius="md">
-                <AlertIcon />
-                <Text fontSize="sm">
-                  Your GitHub token is securely stored and only used for API requests. We never store your token on our servers.
-                </Text>
-              </Alert>
-            </VStack>
-          </CardBody>
-        </Card>
-      )}
-
-      {/* Add a divider */}
-      <Divider my={6} />
-
-      {/* ZIP Upload Section */}
-      <Card variant="outline">
-        <CardHeader>
-          <Heading size="md">Or Upload Repository ZIP File</Heading>
-        </CardHeader>
-        <CardBody>
-          <VStack spacing={4} align="stretch">
-            <Text>
-              If direct GitHub connection isn't working, you can upload a ZIP export of your repository.
+    <Box py={8}>
+      <Container maxW="container.xl">
+        <VStack spacing={8} align="stretch">
+          <Box>
+            <Heading size="lg" mb={2}>GitHub Connector</Heading>
+            <Text color="gray.600">
+              Configure GitHub repository connections for analyzing DBT models and SQL scripts.
             </Text>
-            
-            <FormControl>
-              <FormLabel>Git Repository ZIP File</FormLabel>
-              <Input
-                type="file"
-                accept=".zip"
-                onChange={handleGitZipFileChange}
-                p={1}
-              />
-              <FormHelperText>
-                Export your repository as a ZIP file and upload it directly
-              </FormHelperText>
-            </FormControl>
-            
-            <Button
-              leftIcon={<IoCloudUpload />}
-              colorScheme="purple"
-              variant="outline"
-              onClick={handleGitZipUpload}
-              isDisabled={!gitZipFile || isUploading}
-              isLoading={isUploading && gitZipFile}
-              loadingText="Uploading..."
-              size="md"
-              width="100%"
-            >
-              Upload Repository ZIP
-            </Button>
-            
-            {isUploading && gitZipFile && (
-              <Progress value={uploadProgress} size="sm" colorScheme="purple" borderRadius="md" />
-            )}
-          </VStack>
-        </CardBody>
-      </Card>
-    </Box>
-  )
-}
+          </Box>
 
-export default GitHubConnectorPage 
+          <Card bg={cardBg} borderWidth="1px" borderColor={borderColor}>
+            <CardHeader>
+              <HStack spacing={4}>
+                <Icon as={FaGithub} boxSize={6} color="orange.500" />
+                <Heading size="md">Add New Connection</Heading>
+              </HStack>
+            </CardHeader>
+            <CardBody>
+              <form onSubmit={handleSubmit}>
+                <VStack spacing={6} align="stretch">
+                  <FormControl display="flex" alignItems="center">
+                    <FormLabel mb="0">Enterprise GitHub</FormLabel>
+                    <Switch
+                      isChecked={isEnterprise}
+                      onChange={(e) => setIsEnterprise(e.target.checked)}
+                      colorScheme="orange"
+                    />
+                  </FormControl>
+
+                  {isEnterprise && (
+                    <FormControl>
+                      <FormLabel>Enterprise URL</FormLabel>
+                      <Input
+                        name="enterpriseUrl"
+                        value={config.enterpriseUrl}
+                        onChange={handleInputChange}
+                        placeholder="https://github.your-company.com"
+                        type="url"
+                      />
+                    </FormControl>
+                  )}
+
+                  <FormControl>
+                    <FormLabel>Repository URL</FormLabel>
+                    <Input
+                      name="repoUrl"
+                      value={config.repoUrl}
+                      onChange={handleInputChange}
+                      placeholder="https://github.com/username/repo"
+                      type="url"
+                    />
+                  </FormControl>
+
+                  <FormControl display="flex" alignItems="center">
+                    <FormLabel mb="0">Public Repository</FormLabel>
+                    <Switch
+                      name="isPublic"
+                      isChecked={config.isPublic}
+                      onChange={handleInputChange}
+                      colorScheme="orange"
+                    />
+                  </FormControl>
+
+                  {!config.isPublic && (
+                    <>
+                      <FormControl>
+                        <FormLabel>Username</FormLabel>
+                        <Input
+                          name="username"
+                          value={config.username}
+                          onChange={handleInputChange}
+                          placeholder="GitHub username"
+                        />
+                      </FormControl>
+
+                      <FormControl>
+                        <FormLabel>Personal Access Token</FormLabel>
+                        <Input
+                          name="token"
+                          value={config.token}
+                          onChange={handleInputChange}
+                          type="password"
+                          placeholder="GitHub personal access token"
+                        />
+                      </FormControl>
+                    </>
+                  )}
+
+                  <Button
+                    type="submit"
+                    colorScheme="orange"
+                    leftIcon={<FaGithub />}
+                  >
+                    Add Connection
+                  </Button>
+                </VStack>
+              </form>
+            </CardBody>
+          </Card>
+
+          {savedConfigs.length > 0 && (
+            <Box>
+              <Heading size="md" mb={4}>Saved Connections</Heading>
+              <VStack spacing={4} align="stretch">
+                {savedConfigs.map((savedConfig) => (
+                  <Card key={savedConfig.id} bg={cardBg} borderWidth="1px" borderColor={borderColor}>
+                    <CardBody>
+                      <VStack align="stretch" spacing={3}>
+                        <HStack justify="space-between">
+                          <HStack>
+                            <Icon
+                              as={savedConfig.isEnterprise ? FaBuilding : FaGlobe}
+                              color="orange.500"
+                            />
+                            <Heading size="sm">{savedConfig.repoUrl}</Heading>
+                          </HStack>
+                          <Badge colorScheme={savedConfig.isPublic ? 'green' : 'blue'}>
+                            {savedConfig.isPublic ? 'Public' : 'Private'}
+                          </Badge>
+                        </HStack>
+                        
+                        {savedConfig.isEnterprise && (
+                          <Text fontSize="sm" color={textColor}>
+                            Enterprise URL: {savedConfig.enterpriseUrl}
+                          </Text>
+                        )}
+                        
+                        {!savedConfig.isPublic && (
+                          <Text fontSize="sm" color={textColor}>
+                            Username: {savedConfig.username}
+                          </Text>
+                        )}
+                        
+                        <HStack justify="space-between">
+                          <Text fontSize="sm" color={textColor}>
+                            Added: {new Date(savedConfig.createdAt).toLocaleDateString()}
+                          </Text>
+                          <Button
+                            size="sm"
+                            colorScheme="red"
+                            variant="ghost"
+                            onClick={() => handleDelete(savedConfig.id)}
+                          >
+                            Delete
+                          </Button>
+                        </HStack>
+                      </VStack>
+                    </CardBody>
+                  </Card>
+                ))}
+              </VStack>
+            </Box>
+          )}
+        </VStack>
+      </Container>
+    </Box>
+  );
+};
+
+export default GitHubConnectorPage; 
