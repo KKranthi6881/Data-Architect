@@ -524,6 +524,7 @@ async def process_feedback(request: dict):
                     # Create a new conversation entry with the architect's response
                     new_conversation_id = str(uuid.uuid4())
                     new_conversation_data = {
+                        "conversation_id": new_conversation_id,
                         "query": original_question,
                         "output": architect_response.get("response", ""),
                         "technical_details": json.dumps({
@@ -541,7 +542,7 @@ async def process_feedback(request: dict):
                     }
                     
                     # Save the new conversation
-                    chat_db.save_conversation(new_conversation_id, new_conversation_data)
+                    chat_db.save_conversation(new_conversation_data)
                     
                     # Include the new conversation ID in the result
                     result["new_conversation_id"] = new_conversation_id
@@ -552,6 +553,7 @@ async def process_feedback(request: dict):
                     
                     # Update the original conversation to mark it as processed
                     conversation_data = {
+                        "conversation_id": conversation_id,
                         "query": conversation.get("query", ""),
                         "output": conversation.get("output", ""),
                         "technical_details": conversation.get("technical_details", ""),
@@ -559,7 +561,7 @@ async def process_feedback(request: dict):
                         "feedback_status": "processed",  # Mark as processed
                         "thread_id": thread_id
                     }
-                    chat_db.save_conversation(conversation_id, conversation_data)
+                    chat_db.save_conversation(conversation_data)
                 else:
                     logger.error("Failed to generate architect response")
                     result["error"] = "Failed to generate architect response"
@@ -1081,14 +1083,21 @@ conversation_id: {conversation_id}
         
         # Save to conversation table
         conversation_data = {
-            "query": message,
-            "output": response_text,
-            "technical_details": json.dumps(result),
-            "code_context": "{}",
-            "thread_id": thread_id,  # Always include thread_id
-            "feedback_status": "pending"  # Mark as pending feedback
+            "conversation_id": conversation_id,
+            "thread_id": thread_id,
+            "question": message,
+            "answer": response_text,
+            "metadata": {
+                "processing_time": result.get("processing_time", 0),
+                "question_type": result.get("question_type", "UNKNOWN"),
+                "github_results": result.get("github_results", {}),
+                "sql_results": result.get("sql_results", {}),
+                "doc_results": result.get("doc_results", {}),
+                "dbt_results": result.get("dbt_results", {}),
+                "relationship_results": result.get("relationship_results", {})
+            }
         }
-        chat_db.save_conversation(conversation_id, conversation_data)
+        chat_db.save_conversation(conversation_data)
         
         # Process feedback if provided
         if feedback:
@@ -1243,6 +1252,26 @@ async def analyze_with_architect(request: ArchitectRequest):
         # Get the response
         response = result.get("response", "I couldn't generate a response. Please try again.")
         
+        # Save the conversation to the database
+        conversation_data = {
+            "conversation_id": conversation_id,
+            "thread_id": thread_id,
+            "question": request.query,
+            "answer": response,
+            "metadata": {
+                "processing_time": processing_time,
+                "question_type": result.get("question_type", "UNKNOWN"),
+                "github_results": result.get("github_results", {}),
+                "sql_results": result.get("sql_results", {}),
+                "doc_results": result.get("doc_results", {}),
+                "dbt_results": result.get("dbt_results", {}),
+                "relationship_results": result.get("relationship_results", {})
+            }
+        }
+        
+        chat_db.save_conversation(conversation_data)
+        logger.info(f"Saved conversation {conversation_id} to database")
+        
         # Return the response
         return {
             "response": response,
@@ -1301,11 +1330,11 @@ def get_data_architect_agent(db_manager, chat_db, save_chat_func, conversation_i
                     return create_data_architect_agent(repo_url, username, token)
             
             logger.warning("No GitHub connector configuration found, creating agent without repository")
-            return create_data_architect_agent()
+            return create_data_architect_agent("", "", "")  # Create with empty strings
             
     except Exception as e:
         logger.error(f"Error getting data architect agent: {str(e)}")
-        return create_data_architect_agent()
+        return create_data_architect_agent("", "", "")  # Create with empty strings
 
 # Add these endpoints for thread-based conversation retrieval
 @app.get("/thread-conversations/{thread_id}")
