@@ -78,12 +78,12 @@ import {
 } from 'react-icons/io5'
 import { useParams, useNavigate } from 'react-router-dom'
 import { CodeDisplay } from '../components/CodeDisplay'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { Prism } from 'react-syntax-highlighter'
+import { atomDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 import { v4 as uuidv4 } from 'uuid'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 
 // Sample chat history data
 const chatHistory = [
@@ -536,7 +536,7 @@ const CodeBlock = ({ code, language }) => {
           />
         </HStack>
       </HStack>
-      <SyntaxHighlighter
+      <Prism
         language={language || 'sql'}
         style={atomDark}
         customStyle={{
@@ -547,7 +547,7 @@ const CodeBlock = ({ code, language }) => {
         }}
       >
         {code}
-      </SyntaxHighlighter>
+      </Prism>
     </Box>
   );
 };

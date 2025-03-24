@@ -56,8 +56,8 @@ import {
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { Prism } from 'react-syntax-highlighter';
+import { atomDark } from 'react-syntax-highlighter/dist/cjs/styles/prism';
 import remarkGfm from 'remark-gfm';
 
 // Define API base URL directly in the component
@@ -538,7 +538,7 @@ const ChatHistoryPage = () => {
   const formatCodeBlock = (code, language = '') => {
     return (
       <Box borderRadius="md" overflow="hidden" my={2}>
-        <SyntaxHighlighter
+        <Prism
           language={language}
           style={atomDark}
           customStyle={{
@@ -549,7 +549,7 @@ const ChatHistoryPage = () => {
           }}
         >
           {code}
-        </SyntaxHighlighter>
+        </Prism>
       </Box>
     );
   };
@@ -741,7 +741,7 @@ const ChatHistoryPage = () => {
                                 my={4}
                                 overflow="auto"
                               >
-                                <SyntaxHighlighter
+                                <Prism
                                   language={match ? match[1] : ''}
                                   style={atomDark}
                                   customStyle={{
@@ -751,7 +751,7 @@ const ChatHistoryPage = () => {
                                   }}
                                 >
                                   {String(children).replace(/\n$/, '')}
-                                </SyntaxHighlighter>
+                                </Prism>
                               </Box>
                             );
                           },
@@ -920,14 +920,14 @@ const ChatHistoryPage = () => {
                                 code({node, inline, className, children, ...props}) {
                                   const match = /language-(\w+)/.exec(className || '')
                                   return !inline && match ? (
-                                    <SyntaxHighlighter
+                                    <Prism
                                       style={atomDark}
                                       language={match[1]}
                                       PreTag="div"
                                       {...props}
                                     >
                                       {String(children).replace(/\n$/, '')}
-                                    </SyntaxHighlighter>
+                                    </Prism>
                                   ) : (
                                     <code className={className} {...props}>
                                       {children}
@@ -950,14 +950,14 @@ const ChatHistoryPage = () => {
                                 code({node, inline, className, children, ...props}) {
                                   const match = /language-(\w+)/.exec(className || '')
                                   return !inline && match ? (
-                                    <SyntaxHighlighter
+                                    <Prism
                                       style={atomDark}
                                       language={match[1]}
                                       PreTag="div"
                                       {...props}
                                     >
                                       {String(children).replace(/\n$/, '')}
-                                    </SyntaxHighlighter>
+                                    </Prism>
                                   ) : (
                                     <code className={className} {...props}>
                                       {children}
