@@ -27,7 +27,37 @@ class RepoSingleton:
         with cls._lock:
             if cls._instance is None:
                 cls._instance = cls()
+                cls._instance._load_repos()
         return cls._instance
+    
+    def __init__(self):
+        self._cache_file = os.path.join(os.path.expanduser("~"), ".dbt_data_architect", "repo_cache.json")
+        os.makedirs(os.path.dirname(self._cache_file), exist_ok=True)
+    
+    def _load_repos(self):
+        """Load repository mapping from cache file"""
+        try:
+            if os.path.exists(self._cache_file):
+                with open(self._cache_file, 'r') as f:
+                    cache_data = json.load(f)
+                    # Validate each repo path exists before adding it
+                    for repo_url, repo_path in cache_data.items():
+                        if os.path.exists(repo_path) and os.path.exists(os.path.join(repo_path, ".git")):
+                            self._repos[repo_url] = repo_path
+                        else:
+                            logger.warning(f"Ignoring cached repo path that doesn't exist: {repo_path}")
+                logger.info(f"Loaded {len(self._repos)} repository mappings from cache")
+        except Exception as e:
+            logger.warning(f"Error loading repository cache: {str(e)}")
+    
+    def _save_repos(self):
+        """Save repository mapping to cache file"""
+        try:
+            with open(self._cache_file, 'w') as f:
+                json.dump(self._repos, f)
+            logger.info(f"Saved {len(self._repos)} repository mappings to cache")
+        except Exception as e:
+            logger.warning(f"Error saving repository cache: {str(e)}")
     
     def get_repo_path(self, repo_url: str) -> Optional[str]:
         """Get repository path if already cloned"""
@@ -36,13 +66,21 @@ class RepoSingleton:
     def set_repo_path(self, repo_url: str, repo_path: str):
         """Set repository path after cloning"""
         self._repos[repo_url] = repo_path
+        self._save_repos()
         
     def cleanup_all(self):
         """Clean up all temporary directories"""
-        for repo_path in self._repos.values():
-            if repo_path and os.path.exists(repo_path):
-                shutil.rmtree(repo_path)
-        self._repos = {}
+        # Only clean up directories that are in temp location, not our persistent repos
+        temp_dirs = [path for url, path in self._repos.items() if '/tmp/' in path or path.startswith('/var/folders')]
+        for temp_dir in temp_dirs:
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+                # Remove from our mapping
+                for url, path in list(self._repos.items()):
+                    if path == temp_dir:
+                        del self._repos[url]
+        # Save the updated repo mapping
+        self._save_repos()
 
 
 # Simple data structures
@@ -90,6 +128,9 @@ class GitHubRepoManager:
     
     def __init__(self):
         self.singleton = RepoSingleton.get_instance()
+        # Create a permanent directory for storing repositories
+        self.repos_dir = os.path.join(os.path.expanduser("~"), ".dbt_data_architect", "repos")
+        os.makedirs(self.repos_dir, exist_ok=True)
     
     def _get_auth_url(self, repo_url: str, username: str = "", token: str = "") -> str:
         """Add authentication to GitHub URL if credentials are provided"""
@@ -98,6 +139,35 @@ class GitHubRepoManager:
             return f"{parsed.scheme}://{username}:{token}@{parsed.netloc}{parsed.path}"
         return repo_url
     
+    def _get_repo_hash(self, repo_url: str) -> str:
+        """Generate a unique hash for the repository URL"""
+        import hashlib
+        # Use the last part of the URL as a readable name prefix
+        repo_name = repo_url.rstrip('/').split('/')[-1]
+        # Add a hash suffix for uniqueness
+        url_hash = hashlib.md5(repo_url.encode()).hexdigest()[:8]
+        return f"{repo_name}_{url_hash}"
+    
+    def _should_update_repo(self, repo_path: str) -> bool:
+        """Check if the repository should be updated based on remote changes"""
+        try:
+            # Fetch latest changes without merging
+            subprocess.run(["git", "-C", repo_path, "fetch"], check=True, capture_output=True)
+            
+            # Check if there are differences between local and remote
+            result = subprocess.run(
+                ["git", "-C", repo_path, "rev-list", "HEAD..origin/HEAD", "--count"],
+                check=True, capture_output=True, text=True
+            )
+            
+            # If count is > 0, there are changes to pull
+            count = int(result.stdout.strip() or "0")
+            return count > 0
+        except Exception as e:
+            logger.warning(f"Error checking if repo needs update: {str(e)}")
+            # Default to True if we can't determine
+            return True
+    
     def clone_repository(self, repo_url: str, username: str = "", token: str = "") -> str:
         """Clone a GitHub repository only if not already cloned"""
         # Check if already cloned
@@ -105,44 +175,60 @@ class GitHubRepoManager:
         if repo_path and os.path.exists(repo_path):
             logger.info(f"Using existing repository at {repo_path}")
             
-            # Pull latest changes
-            try:
-                logger.info("Pulling latest changes...")
-                subprocess.run(["git", "-C", repo_path, "pull"], check=True, capture_output=True)
-                logger.info("Successfully pulled latest changes")
-            except Exception as e:
-                logger.warning(f"Warning: Could not pull latest changes: {str(e)}")
+            # Check if we need to update
+            if self._should_update_repo(repo_path):
+                # Pull latest changes
+                try:
+                    logger.info("Pulling latest changes...")
+                    subprocess.run(["git", "-C", repo_path, "pull"], check=True, capture_output=True)
+                    logger.info("Successfully pulled latest changes")
+                except Exception as e:
+                    logger.warning(f"Warning: Could not pull latest changes: {str(e)}")
+            else:
+                logger.info("Repository is already up to date, skipping pull")
                 
             return repo_path
             
         # Clone new repository
         try:
-            temp_dir = tempfile.mkdtemp(prefix="dbt_repo_")
-            logger.info(f"Cloning repository to {temp_dir}")
+            # Create a persistent directory for this repo based on its URL
+            repo_hash = self._get_repo_hash(repo_url)
+            persistent_dir = os.path.join(self.repos_dir, repo_hash)
+            
+            # Clean up if directory exists but is not a git repo
+            if os.path.exists(persistent_dir):
+                if not os.path.exists(os.path.join(persistent_dir, ".git")):
+                    logger.info(f"Removing existing non-git directory: {persistent_dir}")
+                    shutil.rmtree(persistent_dir)
+                    os.makedirs(persistent_dir)
+            else:
+                os.makedirs(persistent_dir, exist_ok=True)
+                
+            logger.info(f"Cloning repository to {persistent_dir}")
             
             auth_url = self._get_auth_url(repo_url, username, token)
             
             # Clone with depth 1 for faster cloning
             subprocess.run(
-                ["git", "clone", "--depth", "1", auth_url, temp_dir], 
+                ["git", "clone", "--depth", "1", auth_url, persistent_dir], 
                 check=True, 
                 capture_output=True
             )
             
-            logger.info(f"Successfully cloned repository to {temp_dir}")
-            self.singleton.set_repo_path(repo_url, temp_dir)
-            return temp_dir
+            logger.info(f"Successfully cloned repository to {persistent_dir}")
+            self.singleton.set_repo_path(repo_url, persistent_dir)
+            return persistent_dir
             
         except subprocess.CalledProcessError as e:
             logger.error(f"Git process error: {e.stderr.decode() if e.stderr else str(e)}")
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
+            if os.path.exists(persistent_dir) and not os.path.exists(os.path.join(persistent_dir, ".git")):
+                shutil.rmtree(persistent_dir)
             raise RuntimeError(f"Failed to clone repository: {e.stderr.decode() if e.stderr else str(e)}")
             
         except Exception as e:
             logger.error(f"Error cloning repository: {str(e)}")
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
+            if os.path.exists(persistent_dir) and not os.path.exists(os.path.join(persistent_dir, ".git")):
+                shutil.rmtree(persistent_dir)
             raise
 
 

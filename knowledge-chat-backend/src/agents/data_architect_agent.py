@@ -63,7 +63,7 @@ class DataArchitectAgent:
     
     def __init__(self, repo_url: str = "", username: str = "", token: str = ""):
         """Initialize the data architect agent."""
-        self.llm = ChatOllama(model="gemma3:latest")
+        self.llm = ChatOllama(model="deepseek-r1:8b")
         self.repo_url = repo_url
         self.username = username
         self.token = token
@@ -188,21 +188,44 @@ class DataArchitectAgent:
         def route_by_question_type(state: AgentState) -> str:
             question_type = state["question_analysis"].get("question_type", "GENERAL")
             entities = state["question_analysis"].get("entities", [])
+            intent = state["question_analysis"].get("intent", "")
+            
+            logger.info(f"Routing based on question type: {question_type}")
             
             # Model information questions
             if question_type == "MODEL_INFO" and entities:
+                logger.info("Routing to search_models for MODEL_INFO question")
                 return "search_models"
                 
             # Lineage and dependency questions
             elif question_type in ["LINEAGE", "DEPENDENCIES"] and entities:
+                logger.info("Routing to get_model_details for LINEAGE/DEPENDENCIES question")
                 return "get_model_details"
+            
+            # Development and code enhancement questions typically need both model and column details
+            elif question_type in ["DEVELOPMENT", "CODE_ENHANCEMENT"] and entities:
+                # Look for column-specific entities for column operations
+                column_entities = [entity for entity in entities if "_" in entity or "." in entity]
+                file_paths = [entity for entity in entities if "/" in entity or ".sql" in entity]
+                
+                if column_entities:
+                    logger.info(f"Routing to search_columns for {question_type} question with column entities")
+                    return "search_columns"
+                elif file_paths:
+                    logger.info(f"Routing to get_model_details for {question_type} question with file paths")
+                    return "get_model_details"
+                else:
+                    logger.info(f"Routing to search_models for {question_type} question with model entities")
+                    return "search_models"
                 
             # If there are potential column names in the entities
-            elif any(len(entity.split('.')) == 2 for entity in entities):
+            elif any(len(entity.split('.')) == 2 for entity in entities) or any("_" in entity for entity in entities):
+                logger.info("Routing to search_columns for question with column references")
                 return "search_columns"
                 
             # For all other cases, try content search
             else:
+                logger.info("Routing to search_content as fallback")
                 return "search_content"
         
         # Add conditional edges
@@ -231,9 +254,30 @@ class DataArchitectAgent:
     def _parse_question(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Parse the user's question to determine intent, entities, and search terms."""
         try:
-            # Get the last message
-            messages = state["messages"]
-            last_message = messages[-1].content
+            # Get the last message, handling both dict and object formats
+            last_message = ""
+            if "messages" in state:
+                messages = state["messages"]
+                if isinstance(messages, list) and messages:
+                    last_msg = messages[-1]
+                    # Handle both dict-like and object formats
+                    if hasattr(last_msg, 'content'):
+                        last_message = last_msg.content
+                    elif isinstance(last_msg, dict) and 'content' in last_msg:
+                        last_message = last_msg['content']
+                elif isinstance(messages, str):
+                    # If messages is just a string (direct question)
+                    last_message = messages
+            
+            # Fallback if we couldn't get the message
+            if not last_message:
+                logger.warning("Could not extract message content from state. Using fallback.")
+                if isinstance(state, dict) and "input" in state:
+                    last_message = state["input"]
+                else:
+                    last_message = "What are the models in this project?"
+            
+            logger.info(f"Processing question: {last_message}")
             
             # Look for column-specific patterns
             column_patterns = self._extract_column_patterns(last_message)
@@ -243,33 +287,48 @@ class DataArchitectAgent:
             Analyze the following question about DBT models and data architecture. Determine:
             
             1. Question Type - Select ONE from:
-               - MODEL_INFO: Questions about model structure, SQL code, purpose, and functionality
-               - LINEAGE: Questions about model relationships, dependencies, and data flow
-               - DEPENDENCIES: Questions about specific model dependencies and potential impact
-               - CODE_ENHANCEMENT: Questions about improving or optimizing DBT code
-               - DOCUMENTATION: Questions about generating or improving documentation
-               - DEVELOPMENT: Questions about implementation and development tasks
-               - GENERAL: Other types of questions
+               - MODEL_INFO: Questions that ask about what a model does, its structure, purpose, or columns. Examples: "What does model X do?", "How is model Y structured?", "What columns are in model Z?"
+               
+               - LINEAGE: Questions about relationships and how data flows through models. Examples: "What models feed into X?", "What is the lineage of Y?", "How does data flow from A to B?"
+               
+               - DEPENDENCIES: Questions about what models depend on others or impact analysis. Examples: "What depends on model X?", "What would break if I change Y?", "What are the dependencies of Z?"
+               
+               - CODE_ENHANCEMENT: Questions about improving, modifying, or optimizing existing code. Examples: "How can I make this query faster?", "How do I modify X to include Y?", "How can I delete/add/change column Z?"
+               
+               - DOCUMENTATION: Questions about documenting models or generating documentation. Examples: "How should I document X?", "Can you create documentation for Y?", "What should be in the docs for Z?"
+               
+               - DEVELOPMENT: Questions about implementing new features or models. Examples: "How do I create a new model for X?", "How do I implement Y?", "Can you help me develop Z?", "Give me a script to delete column X"
+               
+               - GENERAL: Other types of questions that don't fit the above categories.
             
             2. Key Entities - Extract ALL relevant entities:
                - Model names (e.g., "orders", "customers", "financial_metrics")
                - Column names (e.g., "order_id", "customer_name", "total_value")
                - Combined entities (e.g., "orders.order_id", "customers.email")
                - Any specific tables, schemas, or datasets mentioned
+               - File paths if mentioned (e.g., "models/marts/core/customers.sql")
             
             3. Search Terms - Key words to search for in code/docs:
                - Technical terms (e.g., "materialization", "incremental", "full refresh")
                - Business concepts (e.g., "revenue calculation", "user retention")
                - Any specific code patterns or logic mentioned
                - Column calculation terms (e.g., "gross_amount", "net_sales", "discount")
+               - For code changes, include terms like "add", "delete", "modify", "change", "alter"
             
             4. Primary Intent - The core goal of the question
+               - For development/enhancement questions, include the action intent (add/remove/modify)
             
             5. Rephrased Question - A clear, searchable version of the question
             
             Question: {last_message}
             
             {f"Detected Column Patterns: {', '.join(column_patterns)}" if column_patterns else ""}
+            
+            IMPORTANT CLASSIFICATION GUIDELINES:
+            - If the question asks how to delete, add, modify, or implement something, it's likely CODE_ENHANCEMENT or DEVELOPMENT, not MODEL_INFO
+            - If the question asks for a script, code changes, or implementation, it's likely DEVELOPMENT
+            - If the question asks to optimize or improve existing code, it's CODE_ENHANCEMENT
+            - If the question only asks what a model/column does, then it's MODEL_INFO
             
             Return ONLY a JSON object with these fields:
             {{
@@ -294,16 +353,14 @@ class DataArchitectAgent:
             response = self._safe_llm_call(prompt_messages)
             
             # Clean the response to ensure it's valid JSON
-            response = response.strip()
-            if response.startswith('```json'):
-                response = response[7:]
-            if response.endswith('```'):
-                response = response[:-3]
-            response = response.strip()
+            clean_response = response.strip()
+            
+            # Extract JSON from the response, handling various formats
+            json_str = self._extract_json_from_response(clean_response)
             
             try:
                 # Parse the response
-                analysis = QuestionAnalysis.parse_raw(response)
+                analysis = QuestionAnalysis.parse_raw(json_str)
                 
                 # Add any detected column patterns that might have been missed
                 if column_patterns:
@@ -316,6 +373,31 @@ class DataArchitectAgent:
                     for pattern in column_patterns:
                         if pattern not in existing_terms:
                             analysis.search_terms.append(pattern)
+                
+                # Log the question analysis for debugging
+                logger.info(f"Question classified as: {analysis.question_type}")
+                logger.info(f"Entities identified: {', '.join(analysis.entities)}")
+                logger.info(f"Search terms: {', '.join(analysis.search_terms)}")
+                logger.info(f"Intent: {analysis.intent}")
+                
+                # Apply fallback classification rules for common patterns
+                original_type = analysis.question_type
+                
+                # Keywords that strongly indicate specific question types
+                development_keywords = ["create", "implement", "delete", "add", "remove", "script", "write", "build"]
+                enhancement_keywords = ["change", "modify", "improve", "optimize", "update", "alter", "fix", "enhance"]
+                
+                # Check for development and code enhancement keywords in the original question
+                lowercase_question = last_message.lower()
+                
+                # Check for development patterns
+                if original_type not in ["DEVELOPMENT", "CODE_ENHANCEMENT"]:
+                    if any(keyword in lowercase_question for keyword in development_keywords):
+                        analysis.question_type = "DEVELOPMENT"
+                        logger.info(f"Reclassified question from {original_type} to DEVELOPMENT based on keywords")
+                    elif any(keyword in lowercase_question for keyword in enhancement_keywords):
+                        analysis.question_type = "CODE_ENHANCEMENT"
+                        logger.info(f"Reclassified question from {original_type} to CODE_ENHANCEMENT based on keywords")
                 
                 # Update state
                 state["question_analysis"] = analysis.dict()
@@ -330,11 +412,37 @@ class DataArchitectAgent:
                 return state
             except Exception as parsing_error:
                 logger.error(f"Error parsing LLM response as JSON: {parsing_error}")
-                logger.error(f"Raw response: {response}")
-                raise
+                logger.error(f"Raw response: {json_str}")
+                
+                # Attempt to extract basic info from non-JSON response by direct pattern matching
+                fallback_analysis = self._create_fallback_analysis(last_message, clean_response, column_patterns)
+                
+                logger.info(f"Using fallback analysis with question type: {fallback_analysis['question_type']}")
+                state["question_analysis"] = fallback_analysis
+                
+                # Initialize other state fields
+                state["dbt_results"] = {}
+                state["model_details"] = {}
+                state["column_details"] = {}
+                state["related_models"] = {}
+                state["content_search"] = {}
+                
+                return state
             
         except Exception as e:
             logger.error(f"Error parsing question: {str(e)}")
+            # Ensure we have a fallback message
+            last_message = "What are the main models in this project?"
+            if "messages" in state and isinstance(state["messages"], list) and state["messages"]:
+                try:
+                    last_msg = state["messages"][-1]
+                    if hasattr(last_msg, 'content'):
+                        last_message = last_msg.content
+                    elif isinstance(last_msg, dict) and 'content' in last_msg:
+                        last_message = last_msg['content']
+                except:
+                    pass
+            
             state["question_analysis"] = {
                 "question_type": "GENERAL",
                 "entities": [],
@@ -395,7 +503,20 @@ class DataArchitectAgent:
                     model_results = self.dbt_tools.search_model(entity)
                     if model_results:  # Check if the list has any results
                         logger.info(f"Found {len(model_results)} results for model '{entity}'")
-                        results[entity] = [result.__dict__ for result in model_results]
+                        # Convert SearchResult objects to dictionaries
+                        results[entity] = []
+                        for result in model_results:
+                            # Check if result is already a dict
+                            if isinstance(result, dict):
+                                results[entity].append(result)
+                            else:
+                                # Convert dataclass or object to dict
+                                try:
+                                    # Try dataclass __dict__ first
+                                    results[entity].append(result.__dict__)
+                                except AttributeError:
+                                    # Fall back to vars() for other objects
+                                    results[entity].append(vars(result))
                     else:
                         logger.info(f"No results found for model '{entity}'")
             else:
@@ -819,6 +940,7 @@ class DataArchitectAgent:
             3. Include column details, calculations, and data types when discussing fields
             4. Always mention dependencies between models
             5. If a column calculation is shown, explain it in detail
+            6. Always focus on dbt specific only, never generalize it with other frameworks.
 
             If the search returned no results or incomplete information, admit the limitations.
             Format your response with Markdown headings, code blocks, and structured sections.
@@ -868,23 +990,93 @@ class DataArchitectAgent:
             return state
     
     def _safe_llm_call(self, messages: List[BaseMessage], max_retries: int = 2) -> str:
-        """Make a safe call to the LLM with retry logic."""
+        """Safely call LLM with retry mechanism and error handling"""
         retries = 0
-        last_error = None
-        
         while retries <= max_retries:
             try:
-                response = self.llm(messages)
-                return response.content
+                response = self.llm.invoke(messages)
+                content = response.content
+
+                # Check if this is a code enhancement task with framework-specific content
+                is_code_enhancement = any(message.content and "enhance the following code" in message.content.lower() for message in messages)
+                
+                # Check if this is a lineage task
+                is_lineage_task = any(message.content and ("data lineage" in message.content.lower() or "model lineage" in message.content.lower()) for message in messages)
+                
+                # Framework mentions that don't belong in a DBT context
+                framework_mentions = ["Laravel", "Django", "Rails", "Java", "Node.js", "Express", "Spring Boot", "Flask"]
+                
+                # Generic lineage phrases that indicate a non-specific response
+                generic_lineage_phrases = [
+                    "lineage overview",
+                    "upstream dependencies",
+                    "downstream dependencies",
+                    "critical path analysis", 
+                    "the model of interest",
+                    "highlight the model in your visualization",
+                    "visualization",
+                    "ALWAYS INCLUDE"
+                ]
+                
+                # DBT model path patterns
+                dbt_model_path_pattern = re.compile(r'models/[a-zA-Z0-9_/]+\.sql')
+                
+                # Check for framework-specific content in code enhancements
+                if is_code_enhancement and any(framework in content for framework in framework_mentions):
+                    correction = """
+                    THE SOLUTION PROVIDED IS NOT APPROPRIATE FOR A DBT PROJECT.
+                    
+                    DBT (data build tool) is SQL-first and specifically designed for data transformation in the data warehouse.
+                    It does not use web frameworks like Laravel, Django, etc.
+                    
+                    CORRECT APPROACH:
+                    1. Make direct edits to the SQL file in the models directory 
+                    2. Focus on SQL transformations, not web application code
+                    3. Follow DBT best practices for model structure and reference
+                    
+                    Please revise your answer to only include DBT-specific SQL transformations.
+                    """
+                    content += "\n\n" + correction
+                
+                # Check for generic lineage responses
+                if is_lineage_task:
+                    # Extract file path mentions
+                    model_paths = dbt_model_path_pattern.findall(content)
+                    
+                    # Check for generic phrases or lacking sufficient concrete paths
+                    has_generic_phrases = any(phrase in content for phrase in generic_lineage_phrases)
+                    
+                    # If there are fewer than 2 model paths or generic phrases are present, flag as generic
+                    if len(model_paths) < 2 or has_generic_phrases:
+                        correction = """
+                        THE LINEAGE INFORMATION PROVIDED APPEARS TO BE GENERIC AND NOT SPECIFIC TO THE REPOSITORY.
+                        
+                        IMPORTANT CORRECTION:
+                        
+                        Your response should ONLY include actual lineage information extracted from the Git repository.
+                        Be specific about:
+                        1. The exact file paths found in the repository
+                        2. True upstream dependencies (models referenced with ref() or source())
+                        3. True downstream dependencies (models that reference this model)
+                        4. Column-level dependencies where possible
+                        
+                        Example of correct paths in this repository:
+                        - models/marts/intermediate/order_items.sql
+                        - models/staging/tpch/stg_tpch_orders.sql
+                        - models/marts/core/fct_order_items.sql
+                        
+                        If the information cannot be found in the repository, please state that clearly instead of providing generalized descriptions.
+                        """
+                        content += "\n\n" + correction
+                
+                return content
             except Exception as e:
-                last_error = e
                 retries += 1
-                logger.warning(f"LLM call failed (attempt {retries}): {str(e)}")
-                time.sleep(1)  # Short delay before retry
-        
-        # If we get here, all retries failed
-        logger.error(f"All LLM call attempts failed: {str(last_error)}")
-        return f"I'm sorry, I encountered an error while processing your request. Please try again later."
+                if retries > max_retries:
+                    # If all retries fail, return an error message
+                    return f"I apologize, but I encountered an error while processing your request. Please try again or rephrase your question. Error details: {str(e)}"
+                # Wait briefly before retrying
+                time.sleep(1)
 
     def _format_results_for_prompt(self, state: Dict[str, Any]) -> str:
         """Format search results to highlight file paths and content for the LLM prompt."""
@@ -1209,7 +1401,7 @@ class DataArchitectAgent:
         - Show the EXACT file path of the model from the search results - do not make this up
         - Explain the materialization type (view, table, incremental, etc.) based on the actual code or configuration
         - Break down complex SQL patterns or functions
-        - Identify data sources (FROM clauses, JOINs, CTEs)
+        - Identify data sources (FROM clauses, JOINs, CTEs,.YML schemas)
         
         3. CODE WALKTHROUGH
         - Provide ONLY the SQL code that appears in the search results - never fabricate code
@@ -1241,48 +1433,58 @@ class DataArchitectAgent:
         """
 
     def _get_lineage_instructions(self, query: str) -> str:
-        """Get instructions for lineage questions."""
+        """Get instructions for lineage queries"""
         return """
-        When explaining model lineage, provide a complete end-to-end view of the data flow:
-        
-        1. LINEAGE OVERVIEW
-        - Summarize the model's position in the data pipeline
-        - Identify its tier or layer (source, staging, intermediate, mart)
-        - Explain the general flow of data through this model
-        
-        2. UPSTREAM DEPENDENCIES
-        - List ALL upstream models with file paths (models/path/to/model.sql)
-        - For each upstream model, briefly explain:
-          * What data it provides
-          * How it's joined or referenced
-          * Its materialization type
-        - Show the direct SQL references (ref() functions)
-        - Include any source tables if used directly
-        
-        3. DOWNSTREAM DEPENDENCIES
-        - List ALL downstream models with file paths
-        - Explain how each downstream model uses this data
-        - Identify critical downstream consumers
-        - Note any exposure points (BI dashboards, APIs, etc.)
-        
-        4. CRITICAL PATH ANALYSIS
-        - Identify the critical path of dependencies
-        - Highlight any bottlenecks or performance concerns
-        - Show run order and execution dependencies
-        - Explain timing considerations for scheduling
-        
-        5. VISUALIZATION
-        - Create a text-based diagram of dependencies using markdown
-        - Use indentation or symbols to show hierarchy
-        - Use arrows (→) to indicate data flow direction
-        - Highlight the model of interest in the diagram
-        
-        ALWAYS INCLUDE:
-        - Complete file paths for every model mentioned
-        - Model types (staging, intermediate, mart, etc.)
-        - Materialization methods (view, table, incremental, etc.)
-        - Direct and indirect dependency relationships
-        """
+You need to analyze and visualize the data lineage for the requested model from the Git repository.
+
+1. MOST IMPORTANT: Provide ONLY ACTUAL lineage information extracted from the Git repository. 
+   DO NOT generate hypothetical lineage. If information is not found, say so explicitly.
+
+2. First identify the EXACT model file path in the Git repository. For example:
+   - models/marts/intermediate/order_items.sql
+   - models/staging/tpch/stg_tpch_orders.sql
+   
+3. Extract model information:
+   - The exact model definition (SQL code)
+   - All upstream dependencies using ref() or source() functions
+   - Downstream dependencies (models that reference this model)
+   - Column definitions and calculations
+
+4. Present the lineage in a clearly formatted section titled "LINEAGE" that includes:
+   - Full file paths (e.g., models/marts/intermediate/order_items.sql)
+   - Model types (staging, intermediate, core, mart) based on their paths
+   - Key transformations performed (joins, calculations, etc.)
+   - Exact column names and their transformations
+
+5. Create a visualization using text that clearly shows:
+   ```
+   Upstream Flow:
+   models/staging/tpch/stg_tpch_orders.sql → models/marts/intermediate/order_items.sql ← models/staging/tpch/stg_tpch_line_items.sql
+   
+   Detailed Model:
+   └── models/marts/intermediate/order_items.sql
+       ├── [order_key] (primary key, from stg_tpch_orders)
+       ├── [base_price] (calculated from extended_price/quantity)
+       └── [gross_item_sales_amount] (line_item.extended_price)
+       
+   Downstream Flow:
+   └── models/marts/core/fct_order_items.sql
+       └── models/marts/aggregates/agg_ship_modes_hardcoded_pivot.sql
+   └── models/marts/core/fct_orders.sql
+   ```
+
+6. For column-level lineage, identify:
+   - Source of each column (upstream model or calculation)
+   - Transformation logic (formula or reference)
+   - Downstream usage
+
+REMEMBER: 
+- ONLY reference models and sources that ACTUALLY EXIST in the Git repository
+- Use EXACT file paths from the repository structure
+- NEVER invent connections that don't appear in the code
+- For column calculations, quote the ACTUAL SQL from the model file
+- If you cannot find certain information, explicitly state what is missing
+"""
 
     def _get_dependency_instructions(self, query: str) -> str:
         """Get instructions for dependency questions."""
@@ -1333,59 +1535,57 @@ class DataArchitectAgent:
     def _get_code_enhancement_instructions(self, query: str) -> str:
         """Get instructions for code enhancement tasks."""
         return """
-        When providing code enhancement guidance, focus on practical, actionable improvements:
+        Provide CONCISE and ACTIONABLE code enhancement guidance focused on direct implementation:
         
-        1. CODE ANALYSIS
-        - Analyze the current implementation in detail
-          * Show the file path (models/path/to/model.sql)
-          * Identify the model's purpose and business context
-          * Break down the current SQL structure
-        - Identify specific issues:
-          * Performance bottlenecks (full table scans, inefficient joins)
-          * Maintainability concerns (complex logic, duplication)
-          * Readability issues (poor formatting, lack of comments)
-          * Design problems (inappropriate materialization, granularity issues)
+        1. BRIEF ANALYSIS
+        - Identify the specific file to modify with exact path (models/path/to/model.sql)
+        - Summarize the current implementation in 1-2 sentences
+        - Clearly state what needs to be changed (add/modify/delete)
         
-        2. TARGETED ENHANCEMENTS
-        - Suggest specific, actionable improvements:
-          * SQL optimizations with before/after examples
-          * Better indexing or partitioning strategies
-          * Refactoring complex expressions
-          * Improved commenting and documentation
-        - For each suggestion:
-          * Explain WHY it's an improvement
-          * Show HOW to implement it
-          * Describe the BENEFIT it provides
+        2. SHOW DIRECT CODE CHANGES
+        - For SQL modifications, show:
+          ```sql
+          -- Before: 
+          SELECT column1, column2
+          FROM table
+          
+          -- After:
+          SELECT column1, column2, new_column
+          FROM table
+          ```
         
-        3. IMPLEMENTATION PLAN
-        - Prioritize changes by:
-          * Impact (high/medium/low)
-          * Effort required (high/medium/low)
-          * Risk level (high/medium/low)
-        - Provide a step-by-step implementation approach
-          * What to change first
-          * How to test each change
-          * What downstream impacts to expect
+        3. IMPLEMENTATION STEPS
+        - Provide numbered steps for implementation:
+          1. Open file X
+          2. Locate code at line Y
+          3. Replace Z with the new code
+          4. Save file
         
-        4. CODE EXAMPLES
-        - For each recommendation, provide:
-          * Clear BEFORE and AFTER code samples
-          * Syntax highlighted SQL blocks
-          * Line-by-line explanations of changes
-          * Comments explaining the reasoning
+        4. VALIDATION
+        - Include simple validation checks:
+          * How to verify the change works
+          * Expected query results
+          * Potential errors to watch for
         
-        5. TESTING STRATEGY
-        - Suggest specific tests to validate changes:
-          * Row count validations
-          * Sum/total checks
-          * Data quality assertions
-          * Performance benchmarks
+        5. COMPLETE CODE
+        - Always end with the FULL updated code block after changes:
+          ```sql
+          -- File: models/path/to/model.sql
+          -- Complete code after changes
+          SELECT
+            column1,
+            column2,
+            new_column
+          FROM table
+          ```
         
-        ALWAYS INCLUDE:
-        - Specific file paths for all code examples
-        - Clear, implementable code suggestions
-        - Explanations of WHY each change helps
-        - Consideration of both performance AND maintainability
+        IMPORTANT:
+        - Be DIRECT and CONCISE - focus on the code, not theory
+        - Must be focus on Dbt specific, never generalize it or do not assume with other frameworks.
+        - Provide SPECIFIC line numbers and locations when possible
+        - Include the EXACT file paths from search results
+        - VERIFY code syntax and logic before providing final code
+        - For column deletion/addition, show the EXACT SQL needed
         """
 
     def _get_documentation_instructions(self, query: str) -> str:
@@ -1457,75 +1657,55 @@ class DataArchitectAgent:
     def _get_development_instructions(self, query: str) -> str:
         """Get instructions for development tasks."""
         return """
-        When providing development guidance, focus on practical implementation:
+        Provide CONCISE and PRACTICAL development guidance with a focus on CODE:
         
-        1. REQUIREMENTS ANALYSIS
-        - Break down the business requirements:
-          * Data sources needed
-          * Required transformations
-          * Expected output structure
-          * Business rules and logic
-        - Map requirements to technical implementation:
-          * Which models to create/modify
-          * Dependencies needed
-          * Tests to implement
+        1. REQUIREMENTS SUMMARY
+        - In 2-3 sentences, summarize what needs to be developed/modified
+        - Identify the exact file(s) to create or change
+        - Focus on WHAT to implement, not extensive background
         
-        2. IMPLEMENTATION ARCHITECTURE
-        - Suggest a clear implementation approach:
-          * Model structure and organization
-          * File paths and naming conventions
-          * Materialization strategies
-          * Dependency structure
-        - Provide a diagram or visualization:
-          * Source → Staging → Intermediate → Mart flow
-          * Dependencies between models
-          * Data flow direction
-        
-        3. CODE EXAMPLES
-        - Provide complete, executable code examples:
-          * Full SQL queries with proper formatting
-          * Schema YAML configurations
-          * dbt_project.yml settings
-          * Custom macros if needed
-        - For each code example:
-          * Explain each section's purpose
-          * Highlight key transformations
-          * Note performance considerations
-        
-        4. TESTING STRATEGY
-        - Define comprehensive testing:
-          * Standard tests (unique, not_null, etc.)
-          * Referential integrity tests
-          * Business logic validations
-          * Custom data quality checks
-        - Show test implementations in YAML:
-          ```yaml
-          version: 2
-          models:
-            - name: model_name
-              columns:
-                - name: column_name
-                  tests:
-                    - unique
-                    - not_null
+        2. DIRECT CODE IMPLEMENTATION
+        - Provide complete, ready-to-use code blocks:
+          ```sql
+          -- File: models/path/to/model.sql
+          -- Implement the feature
+          SELECT
+            field1,
+            field2,
+            calculated_field
+          FROM source_table
           ```
         
-        5. IMPLEMENTATION STEPS
-        - Provide a step-by-step implementation plan:
-          * Order of model creation
-          * Dependency management
-          * Testing procedure
-          * Validation approach
-        - Include commands to run:
-          * dbt run commands
-          * dbt test commands
-          * Custom script examples
+        3. CLEAR STEP-BY-STEP PROCESS
+        - Number the implementation steps precisely:
+          1. Create/open file at exact path
+          2. Add/modify the specific code
+          3. Save the file
+          4. Run specific commands to test
         
-        ALWAYS INCLUDE:
-        - Complete file paths for all models
-        - Full SQL code examples with comments
-        - YAML configuration examples
-        - Step-by-step implementation instructions
+        4. CODE VALIDATION
+        - Include brief validation checks:
+          * Syntax verification points
+          * Expected output examples
+          * Simple test queries to confirm correctness
+          * Common errors to avoid
+        
+        5. MINIMAL CONTEXT AND BACKGROUND
+        - Provide only essential context needed to understand the code
+        - Focus on IMPLEMENTATION, not theory
+        - Include dependencies only if directly required
+        
+        FOR COLUMN DELETION (if applicable):
+        - Show exact before/after SQL demonstrating the column removal
+        - Verify no dependencies on the removed column
+        - Check for any downstream impacts
+        
+        IMPORTANT:
+        - Use EXACT file paths from search results
+        - Must be focus on Dbt specific, never generalize it or do not assume with other frameworks.
+        - Provide COMPLETE code blocks, not fragments
+        - Validate logic and syntax before providing final code
+        - Be DIRECT and PRACTICAL - focus on implementation
         """
 
     def _get_general_instructions(self, query: str) -> str:
@@ -1574,6 +1754,101 @@ class DataArchitectAgent:
         - Be specific about file paths and model names
         - Focus on actionable advice
         """
+
+    def _extract_json_from_response(self, response: str) -> str:
+        """Extract a valid JSON string from a potentially noisy LLM response."""
+        # Handle usual JSON code blocks
+        if '```json' in response:
+            # Get content between ```json and ```
+            match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+            if match:
+                return match.group(1).strip()
+                
+        # Handle just code blocks without language specification
+        if '```' in response:
+            # Get content between ``` and ```
+            match = re.search(r'```\s*(.*?)\s*```', response, re.DOTALL)
+            if match:
+                candidate = match.group(1).strip()
+                # Check if it looks like JSON
+                if candidate.startswith('{') and candidate.endswith('}'):
+                    return candidate
+                
+        # If the response itself is a JSON object
+        if response.strip().startswith('{') and response.strip().endswith('}'):
+            return response.strip()
+            
+        # Handle malformed responses with a JSON object buried in them
+        match = re.search(r'(\{.*"question_type".*\})', response, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+            
+        # Handle thinking steps by removing them
+        if '<think>' in response.lower():
+            # Extract part after thinking
+            match = re.search(r'(?:>|think>)(.*?)(?:$|\{)', response, re.DOTALL | re.IGNORECASE)
+            if match and '{' in response:
+                # Find the json part
+                json_start = response.find('{', match.start())
+                json_end = response.rfind('}') + 1
+                if json_start < json_end:
+                    return response[json_start:json_end].strip()
+        
+        # Default - return the original response as is
+        return response
+    
+    def _create_fallback_analysis(self, question: str, llm_response: str, column_patterns: List[str]) -> Dict[str, Any]:
+        """Create a fallback question analysis when JSON parsing fails."""
+        # Default values
+        fallback = {
+            "question_type": "GENERAL",
+            "entities": [],
+            "search_terms": [],
+            "intent": "general inquiry",
+            "rephrased_question": question
+        }
+        
+        # Add any column patterns as entities
+        if column_patterns:
+            fallback["entities"].extend(column_patterns)
+        
+        # Extract file paths as entities
+        file_paths = re.findall(r'models/[a-zA-Z0-9_/]+\.sql', question)
+        if file_paths:
+            fallback["entities"].extend(file_paths)
+        
+        # Look for models mentioned in the question
+        model_matches = re.findall(r'\b([a-z][a-z0-9_]+)\.sql\b', question)
+        fallback["entities"].extend(model_matches)
+        
+        # Try to classify based on keywords in the question
+        lowercase_question = question.lower()
+        
+        # Check for development indicators
+        if any(keyword in lowercase_question for keyword in ["create", "implement", "delete", "add", "remove", "script", "write", "build"]):
+            fallback["question_type"] = "DEVELOPMENT"
+            fallback["intent"] = "development request"
+            
+        # Check for code enhancement indicators
+        elif any(keyword in lowercase_question for keyword in ["change", "modify", "improve", "optimize", "update", "alter", "fix", "enhance"]):
+            fallback["question_type"] = "CODE_ENHANCEMENT"
+            fallback["intent"] = "code enhancement request"
+            
+        # Check for model info indicators
+        elif any(keyword in lowercase_question for keyword in ["what is", "explain", "show me", "how does", "tell me about"]):
+            fallback["question_type"] = "MODEL_INFO"
+            fallback["intent"] = "information request"
+            
+        # Extract search terms
+        words = re.findall(r'\b[a-z][a-z0-9_]{3,}\b', lowercase_question)
+        fallback["search_terms"] = [w for w in words if w not in COMMON_STOP_WORDS]
+        
+        # Add the extracted entities to search terms if not already there
+        for entity in fallback["entities"]:
+            if entity not in fallback["search_terms"]:
+                fallback["search_terms"].append(entity)
+                
+        return fallback
 
 # Define common stop words to exclude from search terms
 COMMON_STOP_WORDS = {
