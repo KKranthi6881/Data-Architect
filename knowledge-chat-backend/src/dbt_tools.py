@@ -1,4 +1,4 @@
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Set
 import logging
 import os
 import tempfile
@@ -6,689 +6,891 @@ import subprocess
 from pathlib import Path
 import yaml
 import json
-from dataclasses import dataclass
-from datetime import datetime
 import re
+from dataclasses import dataclass, field
+from datetime import datetime
+import shutil
 from urllib.parse import urlparse
+import sqlite3
+import difflib
 
 logger = logging.getLogger(__name__)
 
+# Singleton to track repo state across agent calls
+class RepoSingleton:
+    _instance = None
+    _repos = {}  # Store multiple repos by URL
+    _lock = __import__('threading').Lock()
+    
+    @classmethod
+    def get_instance(cls):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+        return cls._instance
+    
+    def get_repo_path(self, repo_url: str) -> Optional[str]:
+        """Get repository path if already cloned"""
+        return self._repos.get(repo_url)
+        
+    def set_repo_path(self, repo_url: str, repo_path: str):
+        """Set repository path after cloning"""
+        self._repos[repo_url] = repo_path
+        
+    def cleanup_all(self):
+        """Clean up all temporary directories"""
+        for repo_path in self._repos.values():
+            if repo_path and os.path.exists(repo_path):
+                shutil.rmtree(repo_path)
+        self._repos = {}
+
+
+# Simple data structures
 @dataclass
 class DbtModel:
+    """Represents a DBT model"""
     name: str
     file_path: str
-    description: Optional[str] = None
-    materialization: str = "view"
-    columns: List[Dict[str, Any]] = None
-    tests: List[Dict[str, Any]] = None
-    dependencies: Dict[str, List[str]] = None
-    sources: List[Dict[str, Any]] = None
-    refs: List[str] = None
-    tags: List[str] = None
-    meta: Dict[str, Any] = None
+    content: str = ""
+    description: str = ""
+    model_type: str = "view"  # or "table", "incremental", etc.
+    columns: List[Dict[str, Any]] = field(default_factory=list)
+    sources: List[str] = field(default_factory=list)
+    references: List[str] = field(default_factory=list)
+    dependencies: List[str] = field(default_factory=list)
+    yaml_path: str = ""
+    yaml_content: Dict[str, Any] = field(default_factory=dict)
 
-class GitHubRepoFetcher:
-    def __init__(self, username: str = "", token: str = ""):
-        """Initialize GitHub repository fetcher with optional credentials."""
-        self.username = username
-        self.token = token
-        self.temp_dir = None
 
-    def _get_auth_url(self, repo_url: str) -> str:
-        """Get authenticated GitHub URL if credentials are provided."""
-        if self.username and self.token:
+@dataclass
+class SearchResult:
+    """Represents a search result"""
+    model_name: str = ""
+    file_path: str = ""
+    content: str = ""
+    match_type: str = ""  # "model", "column", "source", etc.
+    match_context: str = ""  # The matched context
+    description: str = ""
+    yaml_content: Dict[str, Any] = field(default_factory=dict)
+    related_files: List[str] = field(default_factory=list)
+    schema_info: Dict[str, Any] = field(default_factory=dict)
+    # Additional fields for column search
+    column_name: str = ""
+    calculation: str = ""
+    # Additional fields for content search
+    search_text: str = ""
+    match_contexts: List[str] = field(default_factory=list)
+    # Additional fields for file path search
+    file_name: str = ""
+    yaml_path: str = ""
+
+
+class GitHubRepoManager:
+    """Manages GitHub repository cloning and access with singleton pattern"""
+    
+    def __init__(self):
+        self.singleton = RepoSingleton.get_instance()
+    
+    def _get_auth_url(self, repo_url: str, username: str = "", token: str = "") -> str:
+        """Add authentication to GitHub URL if credentials are provided"""
+        if username and token:
             parsed = urlparse(repo_url)
-            return f"{parsed.scheme}://{self.username}:{self.token}@{parsed.netloc}{parsed.path}"
+            return f"{parsed.scheme}://{username}:{token}@{parsed.netloc}{parsed.path}"
         return repo_url
-
-    def clone_repository(self, repo_url: str) -> str:
-        """Clone a GitHub repository to a temporary directory."""
+    
+    def clone_repository(self, repo_url: str, username: str = "", token: str = "") -> str:
+        """Clone a GitHub repository only if not already cloned"""
+        # Check if already cloned
+        repo_path = self.singleton.get_repo_path(repo_url)
+        if repo_path and os.path.exists(repo_path):
+            logger.info(f"Using existing repository at {repo_path}")
+            
+            # Pull latest changes
+            try:
+                logger.info("Pulling latest changes...")
+                subprocess.run(["git", "-C", repo_path, "pull"], check=True, capture_output=True)
+                logger.info("Successfully pulled latest changes")
+            except Exception as e:
+                logger.warning(f"Warning: Could not pull latest changes: {str(e)}")
+                
+            return repo_path
+            
+        # Clone new repository
         try:
-            # Create temporary directory
-            self.temp_dir = tempfile.mkdtemp(prefix="dbt_repo_")
-            logger.info(f"Created temporary directory: {self.temp_dir}")
-
-            # Get authenticated URL if credentials provided
-            auth_url = self._get_auth_url(repo_url)
-
-            # Clone repository
-            subprocess.run(["git", "clone", auth_url, self.temp_dir], check=True)
-            logger.info(f"Successfully cloned repository to {self.temp_dir}")
-
-            return self.temp_dir
-
+            temp_dir = tempfile.mkdtemp(prefix="dbt_repo_")
+            logger.info(f"Cloning repository to {temp_dir}")
+            
+            auth_url = self._get_auth_url(repo_url, username, token)
+            
+            # Clone with depth 1 for faster cloning
+            subprocess.run(
+                ["git", "clone", "--depth", "1", auth_url, temp_dir], 
+                check=True, 
+                capture_output=True
+            )
+            
+            logger.info(f"Successfully cloned repository to {temp_dir}")
+            self.singleton.set_repo_path(repo_url, temp_dir)
+            return temp_dir
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Git process error: {e.stderr.decode() if e.stderr else str(e)}")
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            raise RuntimeError(f"Failed to clone repository: {e.stderr.decode() if e.stderr else str(e)}")
+            
         except Exception as e:
             logger.error(f"Error cloning repository: {str(e)}")
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
             raise
 
-    def cleanup(self):
-        """Clean up temporary directory."""
-        if self.temp_dir and os.path.exists(self.temp_dir):
-            import shutil
-            shutil.rmtree(self.temp_dir)
-            logger.info("Cleaned up temporary directory")
 
-class DbtManifestParser:
+class DbtFileScanner:
+    """Scans and indexes DBT project files"""
+    
     def __init__(self, repo_path: str):
-        """Initialize DBT manifest parser with repository path."""
         self.repo_path = repo_path
-        self.manifest_path = os.path.join(repo_path, "target", "manifest.json")
-        self.catalog_path = os.path.join(repo_path, "target", "catalog.json")
-        self.manifest = None
-        self.catalog = None
-
-    def load_manifest(self) -> Dict[str, Any]:
-        """Load and parse DBT manifest file."""
-        try:
-            if not os.path.exists(self.manifest_path):
-                logger.warning(f"Manifest file not found at {self.manifest_path}")
-                # Create a basic manifest
-                return self._create_basic_manifest()
-
-            with open(self.manifest_path, 'r') as f:
-                self.manifest = json.load(f)
-                logger.info("Successfully loaded DBT manifest")
-                return self.manifest
-
-        except Exception as e:
-            logger.error(f"Error loading manifest: {str(e)}")
-            # Create a basic manifest as fallback
-            return self._create_basic_manifest()
-
-    def _create_basic_manifest(self) -> Dict[str, Any]:
-        """Create a basic manifest with minimal information."""
-        try:
-            models_dir = os.path.join(self.repo_path, "models")
-            if not os.path.exists(models_dir):
-                logger.warning("Models directory not found")
-                return {}
-
-            basic_manifest = {
-                "nodes": {},
-                "sources": {},
-                "parent_map": {},
-                "child_map": {}
-            }
-
-            # Walk through models directory
-            for root, _, files in os.walk(models_dir):
-                for file in files:
-                    if file.endswith('.sql'):
-                        # Get relative path
-                        rel_path = os.path.relpath(os.path.join(root, file), self.repo_path)
-                        model_name = os.path.splitext(file)[0]
-
-                        # Create basic model info
-                        model_key = f"model.{model_name}"
-                        basic_manifest["nodes"][model_key] = {
-                            "name": model_name,
-                            "path": rel_path,
-                            "description": "",
-                            "config": {"materialized": "view"},
-                            "columns": [],
-                            "tests": [],
-                            "depends_on": {"nodes": []},
-                            "child_map": []
-                        }
-
-            # Save the basic manifest
-            os.makedirs(os.path.dirname(self.manifest_path), exist_ok=True)
-            with open(self.manifest_path, 'w') as f:
-                json.dump(basic_manifest, f, indent=2)
-
-            logger.info("Created basic manifest file")
-            return basic_manifest
-
-        except Exception as e:
-            logger.error(f"Error creating basic manifest: {str(e)}")
-            return {}
-
-    def load_catalog(self) -> Dict[str, Any]:
-        """Load and parse DBT catalog file."""
-        try:
-            if not os.path.exists(self.catalog_path):
-                logger.warning(f"Catalog file not found at {self.catalog_path}")
-                return {}
-
-            with open(self.catalog_path, 'r') as f:
-                self.catalog = json.load(f)
-                logger.info("Successfully loaded DBT catalog")
-                return self.catalog
-
-        except Exception as e:
-            logger.error(f"Error loading catalog: {str(e)}")
-            return {}
-
-    def get_model_info(self, model_name: str) -> Optional[DbtModel]:
-        """Get detailed information about a specific model."""
-        if not self.manifest:
-            self.load_manifest()
-
-        try:
-            # Find model in manifest
-            model_data = self.manifest.get('nodes', {}).get(f"model.{model_name}")
-            if not model_data:
-                logger.warning(f"Model {model_name} not found in manifest")
-                return None
-
-            # Create DbtModel instance
-            model = DbtModel(
-                name=model_name,
-                file_path=model_data.get('path', ''),
-                description=model_data.get('description', ''),
-                materialization=model_data.get('config', {}).get('materialized', 'view'),
-                columns=model_data.get('columns', []),
-                tests=model_data.get('tests', []),
-                dependencies={
-                    'parents': model_data.get('depends_on', {}).get('nodes', []),
-                    'children': model_data.get('child_map', [])
-                },
-                sources=model_data.get('sources', []),
-                refs=model_data.get('refs', []),
-                tags=model_data.get('tags', []),
-                meta=model_data.get('meta', {})
-            )
-
-            return model
-
-        except Exception as e:
-            logger.error(f"Error getting model info: {str(e)}")
-            return None
-
-class DbtModelEnhancer:
-    def __init__(self, repo_path: str):
-        """Initialize DBT model enhancer with repository path."""
-        self.repo_path = repo_path
-        self.manifest_parser = DbtManifestParser(repo_path)
-
-    def get_model_sql(self, model_path: str) -> str:
-        """Get SQL content of a model file."""
-        try:
-            full_path = os.path.join(self.repo_path, model_path)
-            with open(full_path, 'r') as f:
-                return f.read()
-        except Exception as e:
-            logger.error(f"Error reading model SQL: {str(e)}")
-            return ""
-
-    def get_model_schema(self, model_name: str) -> Dict[str, Any]:
-        """Get schema information for a model."""
-        try:
-            schema_path = os.path.join(self.repo_path, "models", "schema.yml")
-            if not os.path.exists(schema_path):
-                return {}
-
-            with open(schema_path, 'r') as f:
-                schema_data = yaml.safe_load(f)
-
-            # Find model in schema
-            for model in schema_data.get('models', []):
-                if model.get('name') == model_name:
-                    return model
-
-            return {}
-
-        except Exception as e:
-            logger.error(f"Error getting model schema: {str(e)}")
-            return {}
-
-    def enhance_model(self, model_name: str) -> Dict[str, Any]:
-        """Enhance a model with additional context and information."""
-        try:
-            # Get basic model info
-            model = self.manifest_parser.get_model_info(model_name)
-            if not model:
-                return {}
-
-            # Get SQL content
-            sql_content = self.get_model_sql(model.file_path)
-
-            # Get schema information
-            schema_info = self.get_model_schema(model_name)
-
-            # Get catalog information
-            catalog = self.manifest_parser.load_catalog()
-            catalog_info = catalog.get('nodes', {}).get(f"model.{model_name}", {})
-
-            # Build enhanced model information
-            enhanced_model = {
-                'name': model.name,
-                'file_path': model.file_path,
-                'description': model.description,
-                'materialization': model.materialization,
-                'columns': model.columns,
-                'tests': model.tests,
-                'dependencies': model.dependencies,
-                'sources': model.sources,
-                'refs': model.refs,
-                'tags': model.tags,
-                'meta': model.meta,
-                'sql_content': sql_content,
-                'schema_info': schema_info,
-                'catalog_info': catalog_info,
-                'last_modified': datetime.fromtimestamp(os.path.getmtime(os.path.join(self.repo_path, model.file_path))).isoformat()
-            }
-
-            return enhanced_model
-
-        except Exception as e:
-            logger.error(f"Error enhancing model: {str(e)}")
-            return {}
-
-class DbtDependencyTracer:
-    def __init__(self, repo_path: str):
-        """Initialize DBT dependency tracer with repository path."""
-        self.repo_path = repo_path
-        self.manifest_parser = DbtManifestParser(repo_path)
-
-    def get_upstream_models(self, model_name: str) -> List[Dict[str, Any]]:
-        """Get all upstream models for a given model."""
-        try:
-            model = self.manifest_parser.get_model_info(model_name)
-            if not model:
-                return []
-
-            upstream_models = []
-            for parent in model.dependencies.get('parents', []):
-                if parent.startswith('model.'):
-                    parent_name = parent.split('.')[-1]
-                    parent_model = self.manifest_parser.get_model_info(parent_name)
-                    if parent_model:
-                        upstream_models.append({
-                            'name': parent_name,
-                            'file_path': parent_model.file_path,
-                            'description': parent_model.description
-                        })
-
-            return upstream_models
-
-        except Exception as e:
-            logger.error(f"Error getting upstream models: {str(e)}")
-            return []
-
-    def get_downstream_models(self, model_name: str) -> List[Dict[str, Any]]:
-        """Get all downstream models for a given model."""
-        try:
-            model = self.manifest_parser.get_model_info(model_name)
-            if not model:
-                return []
-
-            downstream_models = []
-            for child in model.dependencies.get('children', []):
-                if child.startswith('model.'):
-                    child_name = child.split('.')[-1]
-                    child_model = self.manifest_parser.get_model_info(child_name)
-                    if child_model:
-                        downstream_models.append({
-                            'name': child_name,
-                            'file_path': child_model.file_path,
-                            'description': child_model.description
-                        })
-
-            return downstream_models
-
-        except Exception as e:
-            logger.error(f"Error getting downstream models: {str(e)}")
-            return []
-
-    def get_model_lineage(self, model_name: str) -> Dict[str, Any]:
-        """Get complete lineage information for a model."""
-        try:
-            upstream = self.get_upstream_models(model_name)
-            downstream = self.get_downstream_models(model_name)
-
+        self.models_dir = os.path.join(repo_path, "models")
+        self.model_files = {}  # Map of model name to file path
+        self.yaml_files = {}   # Map of YAML file path to content
+        self.schema_files = {} # Map of model name to schema file
+        self.indexed = False
+        
+    def index_project(self) -> Dict[str, Any]:
+        """Index all files in the DBT project"""
+        if self.indexed:
             return {
-                'model': model_name,
-                'upstream': upstream,
-                'downstream': downstream,
-                'total_upstream': len(upstream),
-                'total_downstream': len(downstream)
-            }
-
-        except Exception as e:
-            logger.error(f"Error getting model lineage: {str(e)}")
-            return {}
-
-class DbtSearchTools:
-    def __init__(self, repo_url: str, username: str = "", token: str = ""):
-        """Initialize DBT search tools with repository URL and optional credentials."""
-        self.repo_url = repo_url
-        self.repo_fetcher = GitHubRepoFetcher(username, token)
-        self.repo_path = None
-        self.model_enhancer = None
-        self.dependency_tracer = None
-
-    def initialize(self):
-        """Initialize the search tools by cloning the repository and generating manifest."""
-        try:
-            self.repo_path = self.repo_fetcher.clone_repository(self.repo_url)
-            
-            # Generate manifest if it doesn't exist
-            self._generate_manifest()
-            
-            self.model_enhancer = DbtModelEnhancer(self.repo_path)
-            self.dependency_tracer = DbtDependencyTracer(self.repo_path)
-            logger.info("Successfully initialized DBT search tools")
-        except Exception as e:
-            logger.error(f"Error initializing DBT search tools: {str(e)}")
-            raise
-
-    def _check_dbt_installation(self) -> bool:
-        """Check if dbt is installed and accessible."""
-        try:
-            result = subprocess.run(
-                ["dbt", "--version"],
-                capture_output=True,
-                text=True
-            )
-            return result.returncode == 0
-        except FileNotFoundError:
-            return False
-
-    def _create_basic_manifest(self):
-        """Create a basic manifest file with minimal information by parsing SQL files directly."""
-        try:
-            manifest_path = os.path.join(self.repo_path, "target", "manifest.json")
-            
-            # Find all SQL files in the models directory
-            models_dir = os.path.join(self.repo_path, "models")
-            if not os.path.exists(models_dir):
-                logger.warning("Models directory not found")
-                return
-                
-            basic_manifest = {
-                "nodes": {},
-                "sources": {},
-                "parent_map": {},
-                "child_map": {}
+                "model_files": self.model_files,
+                "yaml_files": self.yaml_files,
+                "schema_files": self.schema_files
             }
             
-            # Walk through models directory
-            for root, _, files in os.walk(models_dir):
-                for file in files:
-                    if file.endswith('.sql'):
-                        # Get relative path
-                        rel_path = os.path.relpath(os.path.join(root, file), self.repo_path)
-                        model_name = os.path.splitext(file)[0]
-                        
-                        # Read SQL content
-                        sql_content = ""
-                        try:
-                            with open(os.path.join(root, file), 'r') as f:
-                                sql_content = f.read()
-                        except Exception as e:
-                            logger.warning(f"Error reading SQL file {file}: {str(e)}")
-                        
-                        # Parse SQL to find dependencies
-                        dependencies = self._parse_sql_dependencies(sql_content)
-                        
-                        # Create basic model info
-                        model_key = f"model.{model_name}"
-                        basic_manifest["nodes"][model_key] = {
-                            "name": model_name,
-                            "path": rel_path,
-                            "description": self._extract_description(sql_content),
-                            "config": {"materialized": self._determine_materialization(sql_content)},
-                            "columns": self._extract_columns(sql_content),
-                            "tests": [],
-                            "depends_on": {"nodes": dependencies},
-                            "child_map": []
-                        }
-            
-            # Build child_map from dependencies
-            for model_key, model_info in basic_manifest["nodes"].items():
-                for dep in model_info["depends_on"]["nodes"]:
-                    if dep in basic_manifest["nodes"]:
-                        if "child_map" not in basic_manifest["nodes"][dep]:
-                            basic_manifest["nodes"][dep]["child_map"] = []
-                        basic_manifest["nodes"][dep]["child_map"].append(model_key)
-            
-            # Save the basic manifest
-            os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-            with open(manifest_path, 'w') as f:
-                json.dump(basic_manifest, f, indent=2)
-                
-            logger.info("Created basic manifest file")
-            return basic_manifest
-            
-        except Exception as e:
-            logger.error(f"Error creating basic manifest: {str(e)}")
+        logger.info(f"Indexing DBT project at {self.repo_path}")
+        
+        # Check if models directory exists
+        if not os.path.exists(self.models_dir):
+            logger.warning(f"Models directory not found at {self.models_dir}")
             return {}
-
-    def _parse_sql_dependencies(self, sql_content: str) -> List[str]:
-        """Parse SQL content to find model dependencies."""
-        dependencies = []
+            
+        # Index SQL files (models)
+        for root, _, files in os.walk(self.models_dir):
+            for file in files:
+                if file.endswith('.sql'):
+                    model_name = os.path.splitext(file)[0]
+                    file_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(file_path, self.repo_path)
+                    self.model_files[model_name] = rel_path
+                    
+                elif file.endswith(('.yml', '.yaml')):
+                    file_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(file_path, self.repo_path)
+                    
+                    # Load YAML content
+                    try:
+                        with open(file_path, 'r') as f:
+                            yaml_content = yaml.safe_load(f)
+                            self.yaml_files[rel_path] = yaml_content
+                            
+                            # Map models to their schema files
+                            if yaml_content and 'models' in yaml_content:
+                                for model in yaml_content['models']:
+                                    if 'name' in model:
+                                        self.schema_files[model['name']] = rel_path
+                    except Exception as e:
+                        logger.warning(f"Error loading YAML file {file_path}: {str(e)}")
         
-        # Look for ref() function calls
-        ref_pattern = r'ref\([\'"]([^\'"]+)[\'"]\)'
-        refs = re.findall(ref_pattern, sql_content, re.IGNORECASE)
-        for ref in refs:
-            dependencies.append(f"model.{ref}")
+        self.indexed = True
+        logger.info(f"Indexed {len(self.model_files)} models and {len(self.yaml_files)} YAML files")
         
-        # Look for direct table references
-        table_pattern = r'from\s+[\'"]([^\'"]+)[\'"]'
-        tables = re.findall(table_pattern, sql_content, re.IGNORECASE)
-        for table in tables:
-            if not table.startswith('model.'):
-                dependencies.append(f"model.{table}")
+        return {
+            "model_files": self.model_files,
+            "yaml_files": self.yaml_files,
+            "schema_files": self.schema_files
+        }
+    
+    def get_model_file_path(self, model_name: str) -> Optional[str]:
+        """Get file path for a model by name"""
+        if not self.indexed:
+            self.index_project()
+            
+        return self.model_files.get(model_name)
+    
+    def get_schema_for_model(self, model_name: str) -> Optional[Dict[str, Any]]:
+        """Get schema information for a model"""
+        if not self.indexed:
+            self.index_project()
+            
+        schema_file = self.schema_files.get(model_name)
+        if not schema_file:
+            return None
+            
+        yaml_content = self.yaml_files.get(schema_file)
+        if not yaml_content or 'models' not in yaml_content:
+            return None
+            
+        # Find the model in the schema file
+        for model in yaml_content['models']:
+            if model.get('name') == model_name:
+                return model
+                
+        return None
+
+
+class DbtModelParser:
+    """Parses DBT models from SQL files"""
+    
+    def __init__(self, repo_path: str):
+        self.repo_path = repo_path
+        self.file_scanner = DbtFileScanner(repo_path)
         
-        return list(set(dependencies))  # Remove duplicates
-
-    def _extract_description(self, sql_content: str) -> str:
-        """Extract description from SQL comments."""
-        # Look for description in comments
-        comment_pattern = r'--\s*description:\s*(.+?)(?:\n|$)'
-        match = re.search(comment_pattern, sql_content, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-        return ""
-
-    def _determine_materialization(self, sql_content: str) -> str:
-        """Determine materialization type from SQL content."""
-        # Look for materialization config in comments
-        materialization_pattern = r'--\s*materialized:\s*(.+?)(?:\n|$)'
-        match = re.search(materialization_pattern, sql_content, re.IGNORECASE)
-        if match:
-            return match.group(1).strip().lower()
-        return "view"  # Default to view
-
-    def _extract_columns(self, sql_content: str) -> List[Dict[str, Any]]:
-        """Extract column information from SQL content."""
+    def parse_model(self, model_name: str) -> Optional[DbtModel]:
+        """Parse a model by name"""
+        # Get file path
+        file_path = self.file_scanner.get_model_file_path(model_name)
+        if not file_path:
+            logger.warning(f"Model file not found for {model_name}")
+            return None
+            
+        full_path = os.path.join(self.repo_path, file_path)
+        if not os.path.exists(full_path):
+            logger.warning(f"Model file does not exist at {full_path}")
+            return None
+            
+        # Read file content
+        try:
+            with open(full_path, 'r') as f:
+                content = f.read()
+        except Exception as e:
+            logger.error(f"Error reading model file: {str(e)}")
+            return None
+            
+        # Parse the model
+        model = DbtModel(
+            name=model_name,
+            file_path=file_path,
+            content=content
+        )
+        
+        # Extract model type from content
+        model_type_match = re.search(r'{{[\s]*config\s*\(\s*materialized\s*=\s*[\'"](\w+)[\'"]', content)
+        if model_type_match:
+            model.model_type = model_type_match.group(1)
+        
+        # Extract references
+        refs = re.findall(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', content)
+        model.references = list(set(refs))  # Remove duplicates
+        
+        # Extract sources
+        sources = re.findall(r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}', content)
+        model.sources = [f"{source[0]}.{source[1]}" for source in sources]
+        
+        # Extract description from comments
+        desc_match = re.search(r'--\s*@description:?\s*(.+?)(?:\n|$)', content)
+        if desc_match:
+            model.description = desc_match.group(1).strip()
+            
+        # Get schema information
+        schema_info = self.file_scanner.get_schema_for_model(model_name)
+        if schema_info:
+            if 'description' in schema_info and schema_info['description']:
+                model.description = schema_info['description']
+                
+            if 'columns' in schema_info:
+                model.columns = schema_info['columns']
+                
+            model.yaml_path = self.file_scanner.schema_files.get(model_name, "")
+            model.yaml_content = schema_info
+            
+        # Extract dependencies (combined refs and sources)
+        model.dependencies = model.references + model.sources
+            
+        return model
+    
+    def extract_columns_from_sql(self, content: str) -> List[Dict[str, str]]:
+        """Extract column definitions from SQL content"""
         columns = []
         
-        # Look for column definitions in SELECT statements
-        select_pattern = r'select\s+(.+?)\s+from'
-        select_match = re.search(select_pattern, sql_content, re.IGNORECASE | re.DOTALL)
-        if select_match:
-            select_clause = select_match.group(1)
-            # Split into individual columns
-            column_defs = re.split(r',\s*(?=(?:[^()]*\([^()]*\))*[^()]*$)', select_clause)
+        # Look for select statements
+        select_match = re.search(r'select\s+(.+?)(?:from|$)', content, re.IGNORECASE | re.DOTALL)
+        if not select_match:
+            return columns
             
-            for col_def in column_defs:
-                # Clean up the column definition
-                col_def = col_def.strip()
-                if not col_def:
-                    continue
-                    
-                # Extract column name and alias
-                col_parts = re.split(r'\s+as\s+', col_def, maxsplit=1)
-                if len(col_parts) == 2:
-                    name = col_parts[1].strip()
-                    expression = col_parts[0].strip()
-                else:
-                    name = col_def.strip()
-                    expression = col_def.strip()
+        # Extract column definitions
+        select_clause = select_match.group(1).strip()
+        col_defs = re.split(r',\s*(?=(?:[^\']*\'[^\']*\')*[^\']*$)', select_clause)
+        
+        for col_def in col_defs:
+            col_def = col_def.strip()
+            if not col_def:
+                continue
                 
-                # Look for column description in comments
-                description = ""
-                desc_match = re.search(rf'--\s*{name}:\s*(.+?)(?:\n|$)', sql_content, re.IGNORECASE)
-                if desc_match:
-                    description = desc_match.group(1).strip()
+            # Check for alias (as keyword)
+            alias_match = re.search(r'(?:^|\s)as\s+([^\s,]+)(?:\s*(?:--|$))?', col_def, re.IGNORECASE)
+            if alias_match:
+                name = alias_match.group(1).strip('"\'')
+                expr = col_def[:alias_match.start()].strip()
                 
-                # Look for calculation details in comments
-                calculation = ""
-                calc_match = re.search(rf'--\s*{name}_calculation:\s*(.+?)(?:\n|$)', sql_content, re.IGNORECASE)
-                if calc_match:
-                    calculation = calc_match.group(1).strip()
+                # Clean up name if it has quotes
+                name = re.sub(r'^["\']|["\']$', '', name)
                 
                 columns.append({
                     "name": name,
-                    "description": description,
-                    "expression": expression,
-                    "calculation": calculation
+                    "expression": expr
                 })
-        
+                
         return columns
 
-    def _generate_manifest(self):
-        """Generate DBT manifest file if it doesn't exist."""
-        try:
-            manifest_path = os.path.join(self.repo_path, "target", "manifest.json")
+
+class DbtSearcher:
+    """Search tools for DBT models"""
+    
+    def __init__(self, repo_path: str):
+        self.repo_path = repo_path
+        self.file_scanner = DbtFileScanner(repo_path)
+        self.model_parser = DbtModelParser(repo_path)
+        
+    def search_by_model_name(self, model_name: str) -> List[SearchResult]:
+        """Search for models by name (exact or partial match)"""
+        results = []
+        self.file_scanner.index_project()
+        
+        # Try exact match first
+        if model_name in self.file_scanner.model_files:
+            model = self.model_parser.parse_model(model_name)
+            if model:
+                result = SearchResult(
+                    model_name=model.name,
+                    file_path=model.file_path,
+                    content=model.content,
+                    match_type="model",
+                    match_context="exact match",
+                    description=model.description,
+                    yaml_content=model.yaml_content,
+                    schema_info={
+                        "columns": model.columns,
+                        "sources": model.sources,
+                        "references": model.references
+                    }
+                )
+                results.append(result)
+                return results
+        
+        # Try partial matches
+        partial_matches = []
+        for name in self.file_scanner.model_files:
+            if model_name.lower() in name.lower():
+                partial_matches.append(name)
+        
+        # Sort by closest match (most similar names first)
+        partial_matches.sort(key=lambda x: difflib.SequenceMatcher(None, x.lower(), model_name.lower()).ratio(), reverse=True)
+        
+        # Get top 5 partial matches
+        for name in partial_matches[:5]:
+            model = self.model_parser.parse_model(name)
+            if model:
+                result = SearchResult(
+                    model_name=model.name,
+                    file_path=model.file_path,
+                    content=model.content,
+                    match_type="model",
+                    match_context=f"partial match ({model_name})",
+                    description=model.description,
+                    yaml_content=model.yaml_content,
+                    schema_info={
+                        "columns": model.columns,
+                        "sources": model.sources,
+                        "references": model.references
+                    }
+                )
+                results.append(result)
+        
+        return results
+    
+    def search_by_column_name(self, column_name: str) -> List[SearchResult]:
+        """Search for models containing a specific column"""
+        results = []
+        self.file_scanner.index_project()
+        
+        # Check if the column name includes a table/model prefix (e.g., "order_items.amount")
+        if "." in column_name:
+            parts = column_name.split(".")
+            if len(parts) == 2:
+                model_name, col_name = parts
+                # Look for this specific column in this specific model
+                file_path = self.file_scanner.get_model_file_path(model_name)
+                if file_path:
+                    self._add_column_search_result(results, model_name, col_name, file_path)
+                return results
+        
+        # Look through all available models
+        for model_name, file_path in self.file_scanner.model_files.items():
+            self._add_column_search_result(results, model_name, column_name, file_path)
             
-            if not os.path.exists(manifest_path):
-                logger.info("Manifest file not found, generating it...")
+        # Also search in schema YAML files for column definitions
+        for yaml_path in self.file_scanner.yaml_files:
+            full_yaml_path = os.path.join(self.repo_path, yaml_path)
+            if not os.path.exists(full_yaml_path):
+                continue
                 
-                # Create target directory if it doesn't exist
-                target_dir = os.path.join(self.repo_path, "target")
-                os.makedirs(target_dir, exist_ok=True)
-                
-                # Always create basic manifest without dbt
-                self._create_basic_manifest()
-            else:
-                logger.info("Manifest file already exists")
-                
-        except Exception as e:
-            logger.error(f"Error generating manifest: {str(e)}")
-            self._create_basic_manifest()
-
-    def cleanup(self):
-        """Clean up temporary files."""
-        if self.repo_fetcher:
-            self.repo_fetcher.cleanup()
-
-    def search_model(self, model_name: str) -> Dict[str, Any]:
-        """Search for a specific DBT model and get enhanced information."""
-        try:
-            if not self.repo_path:
-                self.initialize()
-
-            # First try exact model name match
-            model_info = self.model_enhancer.enhance_model(model_name)
-            if model_info:
-                return {
-                    "status": "success",
-                    "model_info": model_info,
-                    "lineage": self.dependency_tracer.get_model_lineage(model_name)
-                }
-
-            # If not found, search through all models for the column
-            models_dir = os.path.join(self.repo_path, "models")
-            if not os.path.exists(models_dir):
-                return {
-                    "status": "error",
-                    "message": "Models directory not found"
-                }
-
-            # Search through all SQL files
-            for root, _, files in os.walk(models_dir):
-                for file in files:
-                    if file.endswith('.sql'):
-                        try:
-                            with open(os.path.join(root, file), 'r') as f:
-                                sql_content = f.read()
-                                
-                                # Look for the column in the SQL
-                                if model_name.lower() in sql_content.lower():
-                                    # Found a potential match
-                                    model_name = os.path.splitext(file)[0]
-                                    model_info = self.model_enhancer.enhance_model(model_name)
-                                    if model_info:
-                                        return {
-                                            "status": "success",
-                                            "model_info": model_info,
-                                            "lineage": self.dependency_tracer.get_model_lineage(model_name),
-                                            "search_type": "column"
-                                        }
-                        except Exception as e:
-                            logger.warning(f"Error reading SQL file {file}: {str(e)}")
-                            continue
-
-            return {
-                "status": "error",
-                "message": f"Model or column {model_name} not found"
-            }
-
-        except Exception as e:
-            logger.error(f"Error searching model: {str(e)}")
-            return {
-                "status": "error",
-                "error": str(e)
-            }
-
-    def search_by_pattern(self, pattern: str) -> List[Dict[str, Any]]:
-        """Search for DBT models matching a pattern."""
-        try:
-            if not self.repo_path:
-                self.initialize()
-
-            # Get all model files
-            model_files = []
-            for root, _, files in os.walk(os.path.join(self.repo_path, "models")):
-                for file in files:
-                    if file.endswith('.sql'):
-                        model_files.append(os.path.join(root, file))
-
-            # Filter models matching pattern
-            matching_models = []
-            for file_path in model_files:
+            with open(full_yaml_path, 'r') as f:
                 try:
-                    with open(file_path, 'r') as f:
-                        sql_content = f.read()
+                    yaml_content = yaml.safe_load(f)
+                    if not yaml_content or 'models' not in yaml_content:
+                        continue
                         
-                        # Check if pattern exists in SQL content
-                        if re.search(pattern, sql_content, re.IGNORECASE):
-                            model_name = os.path.splitext(os.path.basename(file_path))[0]
-                            model_info = self.model_enhancer.enhance_model(model_name)
-                            if model_info:
-                                matching_models.append({
-                                    "model_info": model_info,
-                                    "sql_content": sql_content,
-                                    "file_path": file_path
-                                })
+                    for model in yaml_content['models']:
+                        if 'columns' not in model:
+                            continue
+                            
+                        for column in model.get('columns', []):
+                            if column.get('name', '').lower() == column_name.lower():
+                                model_name = model.get('name', '')
+                                file_path = self.file_scanner.get_model_file_path(model_name)
+                                
+                                if not file_path:
+                                    continue
+                                    
+                                result = SearchResult(
+                                    model_name=model_name,
+                                    file_path=file_path,
+                                    match_type="column",
+                                    match_context=f"column definition in schema",
+                                    column_name=column_name,
+                                    description=column.get('description', ''),
+                                    yaml_path=yaml_path,
+                                    yaml_content={
+                                        "column": column,
+                                        "model": model
+                                    }
+                                )
+                                results.append(result)
                 except Exception as e:
-                    logger.warning(f"Error reading SQL file {file_path}: {str(e)}")
-                    continue
-
-            return matching_models
-
-        except Exception as e:
-            logger.error(f"Error searching by pattern: {str(e)}")
-            return []
-
-    def get_model_dependencies(self, model_name: str) -> Dict[str, Any]:
-        """Get complete dependency information for a model."""
+                    logger.error(f"Error parsing YAML file {yaml_path}: {str(e)}")
+                    
+        return results
+    
+    def _add_column_search_result(self, results: List[SearchResult], model_name: str, column_name: str, file_path: str):
+        """Helper method to search for a column in a model and add results if found"""
+        full_path = os.path.join(self.repo_path, file_path)
+        if not os.path.exists(full_path):
+            return
+            
+        # Read file content
         try:
-            if not self.repo_path:
-                self.initialize()
-
-            # Get upstream and downstream models
-            upstream = self.dependency_tracer.get_upstream_models(model_name)
-            downstream = self.dependency_tracer.get_downstream_models(model_name)
-
-            # Get model info
-            model_info = self.model_enhancer.enhance_model(model_name)
-
-            return {
-                "status": "success",
-                "model": model_name,
-                "model_info": model_info,
-                "upstream": upstream,
-                "downstream": downstream
-            }
-
+            with open(full_path, 'r') as f:
+                content = f.read()
+                
+            # Check for column name in content (considering typical SQL patterns)
+            # This handles various cases like "select col_name", "col_name as", "as col_name", etc.
+            # Case-insensitive search
+            patterns = [
+                # Column in SELECT statements
+                rf'\b{re.escape(column_name)}\b',  
+                # Column in AS statements
+                rf'as\s+[\'"]?{re.escape(column_name)}[\'"]?', 
+                # Column assignments
+                rf'[\'"]?{re.escape(column_name)}[\'"]?\s*=',
+                rf'=\s*[\'"]?{re.escape(column_name)}[\'"]?'
+            ]
+            
+            found = False
+            calculation_context = None
+            
+            for pattern in patterns:
+                matches = list(re.finditer(pattern, content, re.IGNORECASE))
+                
+                if matches:
+                    found = True
+                    # Find the calculation context for this column (if it exists)
+                    for match in matches:
+                        # Extract a reasonable context window around the match
+                        start_pos = match.start()
+                        # Try to find the start of the logical expression
+                        # Go backward to find SELECT, CASE, WITH, or comma
+                        context_start = max(0, start_pos - 200)
+                        context_end = min(len(content), match.end() + 200)
+                        
+                        # Try to extract the full SQL calculation
+                        if match.re.pattern.startswith(r'as\s+'):
+                            # This is an "as column_name" pattern, look for the calculation before it
+                            calc_text = self._extract_calculation_before_alias(content, start_pos)
+                            if calc_text:
+                                calculation_context = calc_text
+                                break
+                        elif "=" in match.re.pattern:
+                            # This is a column assignment, extract the full expression
+                            calc_text = self._extract_calculation_from_assignment(content, start_pos, match.end())
+                            if calc_text:
+                                calculation_context = calc_text
+                                break
+                        else:
+                            # For other matches, get surrounding context
+                            context_text = content[context_start:context_end]
+                            if "select" in context_text.lower() or "as" in context_text.lower():
+                                calculation_context = context_text
+                                break
+            
+            if found:
+                result = SearchResult(
+                    model_name=model_name,
+                    file_path=file_path,
+                    content=content,
+                    match_type="column",
+                    match_context=f"column usage in model",
+                    column_name=column_name,
+                    calculation=calculation_context
+                )
+                results.append(result)
+                
         except Exception as e:
-            logger.error(f"Error getting model dependencies: {str(e)}")
-            return {
-                "status": "error",
-                "error": str(e)
-            } 
+            logger.error(f"Error searching for column {column_name} in file {file_path}: {str(e)}")
+    
+    def _extract_calculation_before_alias(self, content: str, alias_pos: int) -> Optional[str]:
+        """Extract the calculation expression that comes before 'as column_name'"""
+        # Find the relevant portion of the content before this position
+        preceding_content = content[:alias_pos].strip()
+        
+        # Try to find the start of this expression by looking for commas, SELECT, or other clauses
+        last_comma = preceding_content.rfind(',')
+        last_select = preceding_content.lower().rfind('select')
+        last_from = preceding_content.lower().rfind('from')
+        last_join = preceding_content.lower().rfind('join')
+        last_where = preceding_content.lower().rfind('where')
+        
+        # Find the most recent relevant SQL keyword or separator
+        start_points = [p for p in [last_comma, last_select, last_from, last_join, last_where] if p >= 0]
+        if not start_points:
+            return None
+            
+        start_pos = max(start_points)
+        
+        # Extract the calculation part (from the last clause start to the alias position)
+        calculation = preceding_content[start_pos:].strip()
+        
+        # Remove trailing comma if any
+        if calculation.startswith(','):
+            calculation = calculation[1:].strip()
+            
+        return calculation
+    
+    def _extract_calculation_from_assignment(self, content: str, start_pos: int, end_pos: int) -> Optional[str]:
+        """Extract a calculation from an assignment expression like 'column_name = expression'"""
+        # Find the most reasonable context around this assignment
+        preceding_content = content[:start_pos].strip()
+        following_content = content[end_pos:].strip()
+        
+        # Find the end of the assignment (typically a comma or line end)
+        next_comma = following_content.find(',')
+        next_newline = following_content.find('\n')
+        
+        end_points = [p for p in [next_comma, next_newline] if p >= 0]
+        if not end_points:
+            end_of_expr = len(following_content)
+        else:
+            end_of_expr = min(end_points)
+            
+        # Get the right-hand side of the expression (after the = sign)
+        expression = following_content[:end_of_expr].strip()
+        
+        # Include the column name and equals sign for context
+        column_part = content[start_pos:end_pos].strip()
+        
+        return f"{column_part} {expression}"
+    
+    def search_by_content(self, search_text: str, file_ext: str = ".sql") -> List[SearchResult]:
+        """Search for text in model content"""
+        results = []
+        
+        for root, _, files in os.walk(self.repo_path):
+            for file in files:
+                if file.endswith(file_ext):
+                    file_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(file_path, self.repo_path)
+                    
+                    try:
+                        with open(file_path, 'r') as f:
+                            content = f.read()
+                            
+                        if search_text.lower() in content.lower():
+                            # Find all occurrences of the search text
+                            content_lower = content.lower()
+                            search_lower = search_text.lower()
+                            match_indices = []
+                            start_idx = 0
+                            
+                            while True:
+                                idx = content_lower.find(search_lower, start_idx)
+                                if idx == -1:
+                                    break
+                                match_indices.append(idx)
+                                start_idx = idx + len(search_lower)
+                            
+                            # For each match, extract context
+                            contexts = []
+                            for idx in match_indices:
+                                # Get context before and after
+                                context_start = max(0, idx - 100)
+                                context_end = min(len(content), idx + len(search_text) + 100)
+                                context = content[context_start:context_end]
+                                contexts.append(context)
+                            
+                            # Get model name from file path
+                            model_name = os.path.basename(file).replace('.sql', '')
+                            
+                            # Check if this is a model file
+                            is_model = False
+                            if 'models/' in rel_path:
+                                is_model = True
+                            
+                            result = SearchResult(
+                                model_name=model_name if is_model else "",
+                                file_path=rel_path,
+                                content=content,
+                                match_type="content",
+                                match_context=f"search term found in {'model' if is_model else 'file'}",
+                                search_text=search_text,
+                                match_contexts=contexts
+                            )
+                            results.append(result)
+                    except Exception as e:
+                        logger.error(f"Error searching content in file {file_path}: {str(e)}")
+        
+        return results
+    
+    def search_by_file_path(self, path_pattern: str) -> List[SearchResult]:
+        """Search for files by path pattern"""
+        results = []
+        
+        for root, _, files in os.walk(self.repo_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                rel_path = os.path.relpath(file_path, self.repo_path)
+                
+                # Check if the path contains the pattern
+                if path_pattern.lower() in rel_path.lower():
+                    try:
+                        # Only read content for certain file types
+                        content = ""
+                        if file.endswith(('.sql', '.yml', '.yaml', '.md')):
+                            with open(file_path, 'r') as f:
+                                content = f.read()
+                        
+                        # Get model name if this is a model file
+                        model_name = ""
+                        if file.endswith('.sql') and 'models/' in rel_path:
+                            model_name = os.path.basename(file).replace('.sql', '')
+                        
+                        result = SearchResult(
+                            model_name=model_name,
+                            file_path=rel_path,
+                            content=content,
+                            match_type="file_path",
+                            match_context=f"path contains '{path_pattern}'",
+                            file_name=file
+                        )
+                        results.append(result)
+                    except Exception as e:
+                        logger.error(f"Error processing file {file_path}: {str(e)}")
+        
+        return results
+    
+    def find_related_models(self, model_name: str) -> Dict[str, List[str]]:
+        """Find upstream and downstream dependencies for a model"""
+        model = self.model_parser.parse_model(model_name)
+        if not model:
+            return {"upstream": [], "downstream": []}
+            
+        # Upstream dependencies are direct references from this model
+        upstream = model.references
+        
+        # Downstream dependencies are models that reference this model
+        downstream = []
+        
+        # Scan all models to find those that reference this one
+        for other_model_name in self.file_scanner.model_files:
+            if other_model_name == model_name:
+                continue
+                
+            other_model = self.model_parser.parse_model(other_model_name)
+            if other_model and model_name in other_model.references:
+                downstream.append(other_model_name)
+        
+        return {
+            "upstream": upstream,
+            "downstream": downstream
+        }
+    
+    def extract_column_calculations(self, model_name: str) -> Dict[str, str]:
+        """Extract calculations for all columns in a model"""
+        model = self.model_parser.parse_model(model_name)
+        if not model:
+            return {}
+            
+        # Extract column calculations from the SQL content
+        content = model.content
+        
+        # Find all column definitions in the format "calculation as column_name"
+        as_pattern = re.compile(r'(.*?)\s+as\s+[\'"]?([a-zA-Z0-9_]+)[\'"]?', re.IGNORECASE)
+        matches = as_pattern.finditer(content)
+        
+        calculations = {}
+        
+        for match in matches:
+            calculation = match.group(1).strip()
+            column_name = match.group(2).strip()
+            calculations[column_name] = calculation
+        
+        return calculations
+
+
+class DbtToolsFactory:
+    """Factory class for DBT tools with repo caching"""
+    
+    @staticmethod
+    def get_tools_from_db() -> Tuple[str, str, str]:
+        """Get repository info from settings database"""
+        try:
+            # Connect to the database
+            conn = sqlite3.connect('knowledge.db')
+            cursor = conn.cursor()
+            
+            # Get the latest GitHub configuration
+            cursor.execute("""
+                SELECT value FROM settings 
+                WHERE key = 'github_connectors' 
+                ORDER BY created_at DESC 
+                LIMIT 1
+            """)
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                configs = json.loads(result[0])
+                if configs:
+                    # Use the most recent configuration
+                    latest_config = configs[-1]
+                    repo_url = latest_config.get('repoUrl', '')
+                    username = latest_config.get('username', '')
+                    token = latest_config.get('token', '')
+                    return repo_url, username, token
+            
+            return "", "", ""
+            
+        except Exception as e:
+            logger.error(f"Error getting GitHub configuration from database: {str(e)}")
+            return "", "", ""
+    
+    @staticmethod
+    def create_dbt_tools(repo_url: str = "", username: str = "", token: str = "") -> "DbtTools":
+        """Create DBT tools instance with repository"""
+        # If no repo_url provided, try to get from database
+        if not repo_url:
+            repo_url, username, token = DbtToolsFactory.get_tools_from_db()
+            
+        if not repo_url:
+            logger.warning("No repository URL provided or found in database")
+            return None
+            
+        return DbtTools(repo_url, username, token)
+        
+
+class DbtTools:
+    """Main class for DBT tools"""
+    
+    def __init__(self, repo_url: str, username: str = "", token: str = ""):
+        self.repo_url = repo_url
+        self.username = username
+        self.token = token
+        self.repo_manager = GitHubRepoManager()
+        self.repo_path = None
+        self.searcher = None
+        self.parser = None
+        self.file_scanner = None
+        
+    def initialize(self):
+        """Initialize tools by cloning repository"""
+        if self.repo_path:
+            return self.repo_path
+            
+        try:
+            self.repo_path = self.repo_manager.clone_repository(
+                self.repo_url, 
+                self.username, 
+                self.token
+            )
+            
+            self.searcher = DbtSearcher(self.repo_path)
+            self.parser = DbtModelParser(self.repo_path)
+            self.file_scanner = DbtFileScanner(self.repo_path)
+            
+            # Index the project
+            self.file_scanner.index_project()
+            
+            return self.repo_path
+            
+        except Exception as e:
+            logger.error(f"Error initializing DBT tools: {str(e)}")
+            raise
+    
+    def search_model(self, model_name: str) -> List[SearchResult]:
+        """Search for a model by name"""
+        self.initialize()
+        return self.searcher.search_by_model_name(model_name)
+    
+    def search_column(self, column_name: str) -> List[SearchResult]:
+        """Search for a column by name"""
+        self.initialize()
+        return self.searcher.search_by_column_name(column_name)
+    
+    def search_content(self, search_text: str, file_ext: str = ".sql") -> List[SearchResult]:
+        """Search for text in model content"""
+        self.initialize()
+        return self.searcher.search_by_content(search_text, file_ext)
+    
+    def search_file_path(self, path_pattern: str) -> List[SearchResult]:
+        """Search for files by path pattern"""
+        self.initialize()
+        return self.searcher.search_by_file_path(path_pattern)
+    
+    def find_related_models(self, model_name: str) -> Dict[str, List[str]]:
+        """Find upstream and downstream dependencies for a model"""
+        self.initialize()
+        return self.searcher.find_related_models(model_name)
+    
+    def extract_column_calculations(self, model_name: str) -> Dict[str, str]:
+        """Extract calculations for all columns in a model"""
+        self.initialize()
+        return self.searcher.extract_column_calculations(model_name)
+    
+    def extract_specific_calculation(self, model_name: str, column_name: str) -> Optional[str]:
+        """Extract the calculation for a specific column in a model"""
+        calculations = self.extract_column_calculations(model_name)
+        return calculations.get(column_name)
+    
+    def get_all_models(self) -> List[str]:
+        """Get a list of all model names in the repository"""
+        self.initialize()
+        return list(self.file_scanner.model_files.keys())
+    
+    def get_all_columns(self, model_name: str = "") -> List[Dict[str, str]]:
+        """Get all columns in a model or across all models"""
+        self.initialize()
+        
+        if model_name:
+            # Get columns for a specific model
+            model = self.parser.parse_model(model_name)
+            if not model:
+                return []
+            return model.columns
+        else:
+            # Get columns across all models
+            all_columns = []
+            for model_name in self.file_scanner.model_files:
+                model = self.parser.parse_model(model_name)
+                if model and model.columns:
+                    for column in model.columns:
+                        column_info = column.copy()
+                        column_info["model"] = model_name
+                        all_columns.append(column_info)
+            return all_columns 
