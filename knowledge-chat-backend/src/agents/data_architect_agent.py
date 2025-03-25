@@ -21,6 +21,7 @@ from src.db.database import ChatDatabase
 from src.utils import ChromaDBManager
 from src.dbt_tools import DbtTools, DbtToolsFactory
 import re
+from urllib.parse import urlparse
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -72,12 +73,24 @@ class DataArchitectAgent:
         self.dbt_tools = None
         if repo_url and isinstance(repo_url, str) and repo_url.strip():
             try:
-                # Validate GitHub URL format
-                if not repo_url.startswith(('https://github.com/', 'git@github.com:')):
-                    raise ValueError("Invalid GitHub repository URL format")
+                # Validate GitHub URL format - support both standard and enterprise GitHub URLs
+                parsed_url = urlparse(repo_url)
                 
-                # Check if required credentials are provided for private repos
-                if repo_url.startswith('https://github.com/') and not (username and token):
+                # Check if it has a valid scheme and contains at least domain and path components
+                if parsed_url.scheme not in ('https', 'http', 'git') or not parsed_url.netloc or not parsed_url.path:
+                    raise ValueError("Invalid repository URL format")
+
+                # Extract path parts to verify it follows owner/repo pattern
+                path = parsed_url.path
+                if path.endswith('.git'):
+                    path = path[:-4]  # Remove .git extension
+                
+                path_parts = path.strip('/').split('/')
+                if len(path_parts) < 2 or not path_parts[0] or not path_parts[1]:
+                    raise ValueError("Repository URL must have at least owner/repository format")
+                
+                # Check if credentials are needed for private repos
+                if not (username and token):
                     logger.warning("GitHub credentials not provided. Access to private repositories may be limited.")
                 
                 # Use the factory to create DBT tools
