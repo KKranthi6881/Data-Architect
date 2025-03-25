@@ -63,7 +63,7 @@ class DataArchitectAgent:
     
     def __init__(self, repo_url: str = "", username: str = "", token: str = ""):
         """Initialize the data architect agent."""
-        self.llm = ChatOllama(model="deepseek-r1:8b")
+        self.llm = ChatOllama(model="gemma3:latest")
         self.repo_url = repo_url
         self.username = username
         self.token = token
@@ -192,6 +192,9 @@ class DataArchitectAgent:
             
             logger.info(f"Routing based on question type: {question_type}")
             
+            # Check for file paths in entities
+            file_paths = [entity for entity in entities if "/" in entity or ".sql" in entity]
+            
             # Model information questions
             if question_type == "MODEL_INFO" and entities:
                 logger.info("Routing to search_models for MODEL_INFO question")
@@ -202,11 +205,15 @@ class DataArchitectAgent:
                 logger.info("Routing to get_model_details for LINEAGE/DEPENDENCIES question")
                 return "get_model_details"
             
+            # Code Enhancement questions with file paths should ALWAYS go to get_model_details first
+            elif question_type == "CODE_ENHANCEMENT" and file_paths:
+                logger.info(f"Routing to get_model_details for CODE_ENHANCEMENT with file paths: {file_paths}")
+                return "get_model_details"
+            
             # Development and code enhancement questions typically need both model and column details
             elif question_type in ["DEVELOPMENT", "CODE_ENHANCEMENT"] and entities:
                 # Look for column-specific entities for column operations
                 column_entities = [entity for entity in entities if "_" in entity or "." in entity]
-                file_paths = [entity for entity in entities if "/" in entity or ".sql" in entity]
                 
                 if column_entities:
                     logger.info(f"Routing to search_columns for {question_type} question with column entities")
@@ -745,16 +752,78 @@ class DataArchitectAgent:
         try:
             analysis = state["question_analysis"]
             entities = analysis.get("entities", [])
+            question_type = analysis.get("question_type", "GENERAL")
             
             results = {}
             related_models = {}
             
             # Only proceed with DBT search if we have DBT tools initialized
             if self.dbt_tools:
-                # Get details for each model entity
-                for entity in entities:
-                    # Ignore entities with dots (column references)
-                    if '.' in entity:
+                # Identify file paths and model names in entities
+                file_paths = [entity for entity in entities if "/" in entity]
+                model_names = [entity for entity in entities if not "/" in entity and not "." in entity]
+                
+                # For code enhancement requests, prioritize file paths
+                if question_type == "CODE_ENHANCEMENT" and file_paths:
+                    logger.info(f"Processing CODE_ENHANCEMENT request for file paths: {file_paths}")
+                    
+                    for file_path in file_paths:
+                        # Extract model name from path - it's usually the last part without .sql
+                        path_parts = file_path.split('/')
+                        model_name = path_parts[-1].replace('.sql', '') if path_parts else file_path
+                        
+                        # Search for the model
+                        model_results = self.dbt_tools.search_model(model_name)
+                        
+                        # If no results by model name, try searching by path
+                        if not model_results:
+                            logger.info(f"No results for '{model_name}', searching by path: {file_path}")
+                            path_results = self.dbt_tools.search_file_path(file_path)
+                            
+                            if path_results:
+                                # Get the first result's model name
+                                first_result = path_results[0]
+                                if hasattr(first_result, 'model_name') and first_result.model_name:
+                                    model_name = first_result.model_name
+                                    # Now search by this model name
+                                    model_results = self.dbt_tools.search_model(model_name)
+                        
+                        if model_results:
+                            logger.info(f"Found model details for '{model_name}' from path '{file_path}'")
+                            model_info = model_results[0].__dict__  # Use the first result
+                            
+                            # Ensure we have the full content for code enhancement
+                            if 'content' not in model_info or not model_info['content']:
+                                if hasattr(model_results[0], 'file_path') and model_results[0].file_path:
+                                    content = self.dbt_tools.get_file_content(model_results[0].file_path)
+                                    if content:
+                                        model_info['content'] = content
+                                        logger.info(f"Added full content for model '{model_name}'")
+                            
+                            # Add dependency information
+                            dependencies = self.dbt_tools.find_related_models(model_name)
+                            model_info["dependencies"] = dependencies
+                            
+                            # Use the file path as the key to maintain the user's reference
+                            results[file_path] = model_info
+                            
+                            # Also add related models
+                            related_models[model_name] = dependencies
+                        else:
+                            logger.warning(f"Could not find model for path: {file_path}")
+                            # Still create an entry to maintain structure
+                            results[file_path] = {
+                                "file_path": file_path,
+                                "model_name": model_name,
+                                "status": "not_found",
+                                "message": f"Could not find model for path: {file_path}"
+                            }
+                
+                # Process any remaining model names (or all models if no file paths)
+                remaining_models = model_names if file_paths else entities
+                for entity in remaining_models:
+                    # Skip entities already processed or with dots (column references)
+                    if entity in results or '.' in entity:
                         continue
                         
                     # Get detailed model information
@@ -762,6 +831,15 @@ class DataArchitectAgent:
                     if model_results:  # Check if the list has any results
                         logger.info(f"Found detailed information for model '{entity}'")
                         model_info = model_results[0].__dict__  # Use the first result
+                        
+                        # For code enhancement, ensure we have full content
+                        if question_type == "CODE_ENHANCEMENT":
+                            if 'content' not in model_info or not model_info['content']:
+                                if hasattr(model_results[0], 'file_path') and model_results[0].file_path:
+                                    content = self.dbt_tools.get_file_content(model_results[0].file_path)
+                                    if content:
+                                        model_info['content'] = content
+                                        logger.info(f"Added full content for model '{entity}'")
                         
                         # Add dependency information
                         dependencies = self.dbt_tools.find_related_models(entity)
@@ -918,12 +996,56 @@ class DataArchitectAgent:
             # Get instructions based on question type
             instructions = self._get_instructions_for_type(question_type, question)
             
+            # Add special handling for CODE_ENHANCEMENT requests
+            additional_instructions = ""
+            if question_type == "CODE_ENHANCEMENT":
+                # Check if we have model details with content
+                has_model_content = False
+                model_code = ""
+                model_path = ""
+                
+                # Extract the actual model code for CODE_ENHANCEMENT
+                if "model_details" in state and state["model_details"]:
+                    for path, model_data in state["model_details"].items():
+                        if isinstance(model_data, dict) and "content" in model_data and model_data["content"]:
+                            has_model_content = True
+                            model_code = model_data["content"]
+                            model_path = path if path else model_data.get("file_path", "Unknown path")
+                            break
+                
+                if has_model_content:
+                    # Add specific instructions for the actual model code
+                    additional_instructions = f"""
+                    
+                    SPECIAL CODE ENHANCEMENT INSTRUCTIONS:
+                    
+                    You are enhancing the FOLLOWING EXACT SQL model:
+                    ```sql
+                    -- File: {model_path}
+                    {model_code}
+                    ```
+                    
+                    IMPORTANT CODE ENHANCEMENT RULES:
+                    1. ONLY modify this EXACT code - do not invent a new model
+                    2. Maintain the EXACT CTE structure and format
+                    3. Use the EXACT column names from the original code
+                    4. Format your response as follows:
+                       - EXACT MODEL OVERVIEW (file path, purpose, structure)
+                       - ENHANCEMENT ANALYSIS (what changes are needed)
+                       - PRECISE CODE CHANGES (show before/after code blocks)
+                       - COMPLETE ENHANCED MODEL (full model with changes)
+                       - VALIDATION APPROACH (queries to test the changes)
+                    """
+                    
+                    logger.info(f"Added specific code enhancement instructions for model: {model_path}")
+            
             # Compose the system prompt
             system_prompt = f"""
             You are a Data Architect expert who provides comprehensive answers about DBT models, SQL, and data architecture.
             Focus on providing detailed, accurate information with complete file paths and model lineage.
             
             {instructions}
+            {additional_instructions}
             
             Here's information about the user's question:
             - Question Type: {question_type}
@@ -979,6 +1101,11 @@ class DataArchitectAgent:
             # Generate the response
             response = self._safe_llm_call(messages)
             
+            # For CODE_ENHANCEMENT requests, validate and potentially rewrite the response
+            if question_type == "CODE_ENHANCEMENT" and has_model_content:
+                response = self._validate_code_enhancement_response(response, model_code, model_path, question)
+                logger.info("Applied code enhancement validation and correction")
+            
             # Update state
             state["final_response"] = response
             
@@ -988,6 +1115,96 @@ class DataArchitectAgent:
             logger.error(f"Error generating response: {str(e)}")
             state["final_response"] = f"I encountered an error while generating a response: {str(e)}"
             return state
+    
+    def _validate_code_enhancement_response(self, response: str, original_code: str, model_path: str, question: str) -> str:
+        """Validate and correct code enhancement responses to ensure they follow the required format."""
+        try:
+            # Check if the model path appears in the response
+            if model_path not in response:
+                logger.warning("Code enhancement response does not include the correct model path")
+                response = f"Model path: {model_path}\n\n" + response
+            
+            # Check if the response contains generic-looking code (doesn't match the original structure)
+            # We can check for specific patterns in the original code that should be preserved
+            
+            # 1. Check for CTE patterns
+            cte_pattern = re.compile(r'with\s+\w+\s+as\s+\(', re.IGNORECASE)
+            original_has_cte = bool(cte_pattern.search(original_code))
+            response_has_cte = bool(cte_pattern.search(response))
+            
+            # 2. Check for config blocks
+            config_pattern = re.compile(r'\{\{\s*config\(.*?\)\s*\}\}', re.DOTALL)
+            original_has_config = bool(config_pattern.search(original_code))
+            response_has_config = bool(config_pattern.search(response))
+            
+            # 3. Check for ref patterns
+            ref_pattern = re.compile(r'\{\{\s*ref\([\'"].*?[\'"]\)\s*\}\}')
+            original_refs = ref_pattern.findall(original_code)
+            
+            # Detect issues with the response
+            issues = []
+            
+            if original_has_cte and not response_has_cte:
+                issues.append("missing CTE structure")
+            
+            if original_has_config and not response_has_config:
+                issues.append("missing config block")
+                
+            # Extract complete code blocks from the response
+            code_blocks = re.findall(r'```sql\s*(.*?)\s*```', response, re.DOTALL)
+            complete_model_blocks = [block for block in code_blocks if len(block.split('\n')) > 10 and '{{' in block]
+            
+            # If we found issues and have a complete model block, add a correction
+            if issues and not complete_model_blocks:
+                logger.warning(f"Code enhancement issues detected: {', '.join(issues)}")
+                
+                # Create messages for the correction LLM call
+                correction_messages = [
+                    SystemMessage(content=f"""
+                    You are a Senior DBT SQL Developer. A previous response to enhance a model was not properly formatted.
+                    
+                    The ORIGINAL model code is:
+                    ```sql
+                    {original_code}
+                    ```
+                    
+                    The enhancement request was: {question}
+                    
+                    The previous response had these issues: {', '.join(issues)}
+                    
+                    Please create a CORRECTLY FORMATTED response that:
+                    1. Provides a proper analysis of the model structure
+                    2. Clearly shows what changes are being made
+                    3. PRESERVES the EXACT structure of the original model (CTEs, config blocks, etc.)
+                    4. ONLY makes the specific changes requested in the enhancement
+                    5. Includes the FULL modified code that can be directly used
+                    
+                    IMPORTANT: Do NOT create a generic model. ONLY modify the exact code provided.
+                    """),
+                    HumanMessage(content=f"Previous response: {response}")
+                ]
+                
+                # Get corrected response
+                corrected_response = self._safe_llm_call(correction_messages)
+                
+                # Add a note about the correction
+                final_response = f"""
+                I detected issues with my previous response that didn't properly preserve the original model structure.
+                
+                Here's a corrected enhancement:
+                
+                {corrected_response}
+                """
+                
+                return final_response
+            
+            # If we have a complete model that looks reasonable, keep the response as is
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error validating code enhancement: {str(e)}")
+            # Return the original response if validation fails
+            return response
     
     def _safe_llm_call(self, messages: List[BaseMessage], max_retries: int = 2) -> str:
         """Safely call LLM with retry mechanism and error handling"""
@@ -1535,57 +1752,86 @@ REMEMBER:
     def _get_code_enhancement_instructions(self, query: str) -> str:
         """Get instructions for code enhancement tasks."""
         return """
-        Provide CONCISE and ACTIONABLE code enhancement guidance focused on direct implementation:
+        You are a SENIOR DBT SQL DEVELOPER EXPERT who provides highly specific, contextual model enhancements - exactly like how you provide model information.
         
-        1. BRIEF ANALYSIS
-        - Identify the specific file to modify with exact path (models/path/to/model.sql)
-        - Summarize the current implementation in 1-2 sentences
-        - Clearly state what needs to be changed (add/modify/delete)
+        <CRITICAL PRINCIPLE>
+        When enhancing DBT models, you should ONLY modify the EXACT code provided by the user, just as you would explain that EXACT code when giving model information. 
+        NEVER invent new models, columns, or structures that don't appear in the provided SQL.
+        </CRITICAL PRINCIPLE>
         
-        2. SHOW DIRECT CODE CHANGES
-        - For SQL modifications, show:
-          ```sql
-          -- Before: 
-          SELECT column1, column2
-          FROM table
-          
-          -- After:
-          SELECT column1, column2, new_column
-          FROM table
-          ```
+        <THINKING PROCESS>
+        First, analyze the provided DBT model in detail:
+        1. UNDERSTAND THE EXACT MODEL STRUCTURE
+           - Identify materialization type from the config() block
+           - Map the exact CTE structure (with, final, etc.) and purpose of each CTE
+           - Note exact column names, data types, and calculations
+           - Identify exact referenced models ({{ ref() }}) and sources ({{ source() }})
+           - Document join conditions and filtering logic
         
-        3. IMPLEMENTATION STEPS
-        - Provide numbered steps for implementation:
-          1. Open file X
-          2. Locate code at line Y
-          3. Replace Z with the new code
-          4. Save file
+        2. PRECISELY UNDERSTAND ENHANCEMENT REQUEST
+           - Determine exactly what enhancement is needed for THIS SPECIFIC model
+           - Locate exactly which CTE or section needs modification
+           - Consider if this affects other parts of the model
         
-        4. VALIDATION
-        - Include simple validation checks:
-          * How to verify the change works
-          * Expected query results
-          * Potential errors to watch for
+        3. PLAN PRECISE MODIFICATIONS TO THE EXISTING CODE
+           - Identify the minimum changes needed to implement the request
+           - Ensure changes align with the existing code style and patterns
+           - Preserve all existing functionality while adding the new features
+        </THINKING PROCESS>
         
-        5. COMPLETE CODE
-        - Always end with the FULL updated code block after changes:
-          ```sql
-          -- File: models/path/to/model.sql
-          -- Complete code after changes
-          SELECT
-            column1,
-            column2,
-            new_column
-          FROM table
-          ```
+        Now, respond with the same level of specificity as when you provide model information:
         
-        IMPORTANT:
-        - Be DIRECT and CONCISE - focus on the code, not theory
-        - Must be focus on Dbt specific, never generalize it or do not assume with other frameworks.
-        - Provide SPECIFIC line numbers and locations when possible
-        - Include the EXACT file paths from search results
-        - VERIFY code syntax and logic before providing final code
-        - For column deletion/addition, show the EXACT SQL needed
+        1. EXACT MODEL OVERVIEW
+           - Identify the exact file path: models/path/to/model.sql
+           - Summarize the current model's purpose and structure
+           - Note the exact model materializations and configurations
+           - List the exact upstream dependencies
+        
+        2. ENHANCEMENT ANALYSIS
+           - Clearly state what specific enhancement is being implemented
+           - Identify exactly which part of the model needs to change
+           - Explain why the change is being made this way
+        
+        3. PRECISE CODE CHANGES
+           - Show the exact SQL block being modified:
+             ```sql
+             -- CURRENT CODE IN THE EXACT MODEL:
+             select
+               order_key,
+               sum(gross_item_sales_amount) as gross_item_sales_amount
+             from order_item
+             group by 1
+             
+             -- MODIFIED CODE WITH ENHANCEMENTS:
+             select
+               order_key,
+               sum(gross_item_sales_amount) as gross_item_sales_amount,
+               avg(gross_item_sales_amount) as avg_gross_item_sales_amount  -- Added calculation
+             from order_item
+             group by 1
+             ```
+        
+        4. COMPLETE ENHANCED MODEL
+           - Provide the complete model SQL with changes integrated
+           - Use exact jinja syntax as in the original
+           - Include all original CTEs and SQL logic
+           - Add helpful comments for any new or modified code
+        
+        5. VALIDATION APPROACH
+           - Provide a validation query specifically for this model
+           - Suggest specific dbt tests for the modified/added columns
+           - Highlight any potential edge cases
+        
+        IMPORTANT REQUIREMENTS:
+        - NEVER GENERALIZE - only modify the exact code provided
+        - Use the EXACT file path from the model
+        - Use the EXACT CTE structure from the model
+        - Use ONLY column names that exist in the model
+        - Reference ONLY models that are in the original code
+        - Maintain the EXACT same SQL structure and formatting
+        - Ensure your solution addresses the specific enhancement request
+        - VERIFY your solution by comparing it against the original code
+        - If a column calculation is shown, explain it exactly as it appears
         """
 
     def _get_documentation_instructions(self, query: str) -> str:

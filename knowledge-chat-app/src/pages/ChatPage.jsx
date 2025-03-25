@@ -1349,16 +1349,21 @@ const CodeBlock = ({ code, language }) => {
       borderRadius="md"
       overflow="hidden"
       fontSize="sm"
-      boxShadow="md"
+      boxShadow="lg"
       className="code-block"
+      bg="#282c34"
+      border="1px solid"
+      borderColor="gray.700"
     >
       <HStack
-        bg="gray.900"
-        color="white"
+        bg="#21252b"
+        color="gray.100"
         p={2}
         justify="space-between"
         align="center"
         className="code-header"
+        borderBottom="1px solid"
+        borderColor="gray.700"
       >
         <Badge colorScheme="blue" variant="solid">
           {language || 'code'}
@@ -1368,6 +1373,8 @@ const CodeBlock = ({ code, language }) => {
             icon={copied ? <IoCheckmarkDone /> : <IoCopy />}
             size="sm"
             variant="ghost"
+            color="gray.300"
+            _hover={{ bg: 'gray.700' }}
             colorScheme={copied ? "green" : "gray"}
             onClick={handleCopy}
             aria-label="Copy code"
@@ -1377,6 +1384,8 @@ const CodeBlock = ({ code, language }) => {
             icon={<IoDownload />}
             size="sm"
             variant="ghost"
+            color="gray.300"
+            _hover={{ bg: 'gray.700' }}
             onClick={handleDownload}
             aria-label="Download code"
             title="Download code"
@@ -1393,6 +1402,7 @@ const CodeBlock = ({ code, language }) => {
             maxHeight: '400px',
             overflow: 'auto',
             backgroundColor: '#282c34',
+            color: '#abb2bf',
             fontSize: '0.9em',
             border: 'none',
             borderRadius: 0
@@ -1562,17 +1572,20 @@ const confluenceStyles = {
     backgroundColor: '#282c34',
     position: 'relative',
     zIndex: '1',
+    color: '#abb2bf'
   },
   '.code-content pre': {
-    margin: '0',
+    margin: 0,
     backgroundColor: '#282c34',
+    color: '#abb2bf'
   },
   '.code-content code': {
     backgroundColor: 'transparent',
-    color: '#abb2bf',
+    color: '#abb2bf'
   },
   '.code-content .prism-code': {
     background: '#282c34 !important',
+    color: '#abb2bf !important'
   },
   '.confluence-styled-content strong': {
     fontWeight: '600',
@@ -1591,16 +1604,16 @@ const confluenceStyles = {
     color: '#abb2bf !important',
     border: 'none !important',
     borderRadius: '4px',
-    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
+    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)'
   },
   // Style inline backtick code
   'code:not(.prism-code)': {
-    backgroundColor: '#F4F5F7',
-    color: '#172B4D',
+    backgroundColor: '#282c34',
+    color: '#abb2bf',
     borderRadius: '3px',
     padding: '2px 4px',
     fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace',
-    fontSize: '90%',
+    fontSize: '90%'
   },
   // Improve table styling
   'table': {
@@ -1658,18 +1671,18 @@ const confluenceStyles = {
   },
   '.code-block': {
     fontFamily: '"SFMono-Medium", "SF Mono", "Segoe UI Mono", "Roboto Mono", "Ubuntu Mono", Menlo, Consolas, Courier, monospace',
-    backgroundColor: '#1e1e1e',
-    color: '#f8f8f2',
+    backgroundColor: '#282c34',
+    color: '#abb2bf',
     borderRadius: '4px',
-    border: '1px solid #333',
+    border: '1px solid #3e4451',
     marginBottom: '16px',
     overflow: 'hidden'
   },
   '.code-header': {
-    backgroundColor: '#2d2d2d',
+    backgroundColor: '#21252b',
     padding: '6px 12px',
-    color: '#e0e0e0',
-    borderBottom: '1px solid #444',
+    color: '#abb2bf',
+    borderBottom: '1px solid #3e4451',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',

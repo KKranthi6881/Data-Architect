@@ -53,7 +53,7 @@ const AppHeader = () => {
             >
               Chat
             </Button>
-            <Button
+           {/* <Button
               as={Link}
               to="/upload"
               leftIcon={<IoCloudUpload />}
@@ -61,7 +61,7 @@ const AppHeader = () => {
               colorScheme="orange"
             >
               Upload
-            </Button>
+            </Button> */}
             <Button
               as={Link}
               to="/connectors"

@@ -40,11 +40,11 @@ function App() {
                 <ChatPage />
               </MainLayout>
             } />
-            <Route path="/upload" element={
+           {/* <Route path="/upload" element={
               <MainLayout>
                 <FileUploadPage />
               </MainLayout>
-            } />
+            } /> */}
             <Route path="/history" element={
               <MainLayout>
                 <ChatHistoryPage />

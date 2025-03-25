@@ -73,13 +73,13 @@ const ConnectorsPage = () => {
           </Box>
 
           <SimpleGrid columns={{ base: 1, md: 2, lg: 3 }} spacing={6}>
-            <ConnectorCard
+            {/* <ConnectorCard
               icon={FaSnowflake}
               title="Snowflake"
               description="Connect to your Snowflake data warehouse to analyze schemas, tables, and views."
               status="active"
               to="/connectors/snowflake"
-            />
+            /> */}
             <ConnectorCard
               icon={FaGithub}
               title="GitHub"
@@ -87,13 +87,13 @@ const ConnectorsPage = () => {
               status="active"
               to="/connectors/github"
             />
-            <ConnectorCard
+            {/* <ConnectorCard
               icon={FaDatabase}
               title="Database"
               description="Connect to any SQL database to analyze its schema and relationships."
               status="inactive"
               to="/connectors/database"
-            />
+            /> */ }
           </SimpleGrid>
         </VStack>
       </Container>
