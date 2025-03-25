@@ -61,9 +61,19 @@ class ChatDatabase:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # Create settings table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
             conn.commit()
-            self.logger.info("Database initialized with conversations table")
+            self.logger.info("Database initialized with conversations, checkpoints, and settings tables")
     
     def save_conversation(self, conversation_data):
         """

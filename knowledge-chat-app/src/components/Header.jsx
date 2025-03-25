@@ -71,7 +71,7 @@ const Header = () => {
             History
           </Button>
           
-          <Button
+          {/* <Button
             as={Link}
             to="/upload"
             variant={isActive('/upload') ? "solid" : "ghost"}
@@ -80,7 +80,7 @@ const Header = () => {
             size="md"
           >
             Upload
-          </Button>
+          </Button> */}
         </HStack>
       </Flex>
     </Box>
