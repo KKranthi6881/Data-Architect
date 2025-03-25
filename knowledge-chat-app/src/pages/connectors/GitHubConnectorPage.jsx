@@ -122,19 +122,29 @@ const GitHubConnectorPage = () => {
       };
 
       // Format the repository URL correctly for the backend
-      // Ensure the URL format is preserved exactly as entered by the user
-      // This is especially important for enterprise URLs with .git extension
-      if (!newConfig.repoUrl.endsWith('.git') && isEnterprise) {
-        console.log('Adding .git extension for consistency with enterprise format');
-        newConfig.repoUrl = `${newConfig.repoUrl}${newConfig.repoUrl.endsWith('/') ? '' : ''}`;
-        if (!newConfig.repoUrl.endsWith('.git')) {
-          newConfig.repoUrl = `${newConfig.repoUrl}.git`;
-        }
+      let formattedUrl = newConfig.repoUrl.trim();
+      
+      // Ensure URL starts with https://
+      if (!formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
+        formattedUrl = `https://${formattedUrl}`;
       }
+      
+      // Remove any trailing slashes
+      formattedUrl = formattedUrl.replace(/\/+$/, '');
+      
+      // Add .git extension for enterprise URLs if missing
+      if (isEnterprise && !formattedUrl.endsWith('.git')) {
+        formattedUrl = `${formattedUrl}.git`;
+      }
+      
+      // Update the config with formatted URL
+      newConfig.repoUrl = formattedUrl;
 
-      console.log('Sending configuration to backend:', newConfig);
-      console.log('Full request payload:', [...savedConfigs, newConfig]);
-
+      console.log('Sending configuration to backend:', {
+        ...newConfig,
+        token: '[HIDDEN]' // Hide token in logs
+      });
+      
       // Save to backend database
       const response = await fetch('/api/settings/github_connectors', {
         method: 'POST',
@@ -144,12 +154,8 @@ const GitHubConnectorPage = () => {
         body: JSON.stringify([...savedConfigs, newConfig]),
       });
 
-      console.log('Response status:', response.status);
-      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
-
       if (!response.ok) {
         const errorData = await response.json();
-        console.error('Error response:', errorData);
         throw new Error(errorData.detail || 'Failed to save configuration');
       }
 
@@ -159,6 +165,15 @@ const GitHubConnectorPage = () => {
       // Update local state
       setSavedConfigs([...savedConfigs, newConfig]);
 
+      // Show success message
+      toast({
+        title: 'Success',
+        description: 'GitHub connection configured successfully',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+
       // Clear form
       setConfig({
         username: '',
@@ -166,19 +181,11 @@ const GitHubConnectorPage = () => {
         repoUrl: '',
         isPublic: false,
       });
-
-      toast({
-        title: 'Success',
-        description: 'GitHub connector configuration saved',
-        status: 'success',
-        duration: 3000,
-        isClosable: true,
-      });
     } catch (error) {
       console.error('Error saving configuration:', error);
       toast({
         title: 'Error',
-        description: `Failed to save configuration: ${error.message}`,
+        description: error.message || 'Failed to save configuration',
         status: 'error',
         duration: 5000,
         isClosable: true,

@@ -13,6 +13,7 @@ import shutil
 from urllib.parse import urlparse
 import sqlite3
 import difflib
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -135,8 +136,33 @@ class GitHubRepoManager:
     def _get_auth_url(self, repo_url: str, username: str = "", token: str = "") -> str:
         """Add authentication to GitHub URL if credentials are provided"""
         if username and token:
-            parsed = urlparse(repo_url)
-            return f"{parsed.scheme}://{username}:{token}@{parsed.netloc}{parsed.path}"
+            try:
+                parsed = urlparse(repo_url)
+                
+                # Ensure we have a proper scheme
+                if not parsed.scheme:
+                    logger.warning(f"URL missing scheme, adding https://: {repo_url}")
+                    repo_url = f"https://{repo_url}"
+                    parsed = urlparse(repo_url)
+                
+                # For enterprise GitHub, we need to handle the auth differently
+                # Format should be: https://username:token@hostname/path
+                netloc = parsed.netloc.split('@')[-1]  # Remove any existing auth
+                path = parsed.path.rstrip('/')  # Remove trailing slash
+                
+                # Add .git extension if not present
+                if not path.endswith('.git'):
+                    path = f"{path}.git"
+                
+                # Construct the authenticated URL with proper escaping of username and token
+                safe_username = quote(username)
+                safe_token = quote(token)
+                auth_url = f"{parsed.scheme}://{safe_username}:{safe_token}@{netloc}{path}"
+                logger.info(f"Created authenticated URL for repository (token hidden)")
+                return auth_url
+            except Exception as e:
+                logger.error(f"Error formatting authentication URL: {str(e)}")
+                return repo_url
         return repo_url
     
     def _get_repo_hash(self, repo_url: str) -> str:
