@@ -29,7 +29,6 @@ import { FaGithub, FaBuilding, FaGlobe } from 'react-icons/fa';
 const GitHubConnectorPage = () => {
   const [isEnterprise, setIsEnterprise] = useState(false);
   const [config, setConfig] = useState({
-    enterpriseUrl: '',
     username: '',
     token: '',
     repoUrl: '',
@@ -90,10 +89,10 @@ const GitHubConnectorPage = () => {
       return;
     }
 
-    if (isEnterprise && !config.enterpriseUrl) {
+    if (!config.isPublic && (!config.username || !config.token)) {
       toast({
         title: 'Error',
-        description: 'Enterprise URL is required',
+        description: 'Username and token are required for private repositories',
         status: 'error',
         duration: 3000,
         isClosable: true,
@@ -101,10 +100,11 @@ const GitHubConnectorPage = () => {
       return;
     }
 
-    if (!config.isPublic && (!config.username || !config.token)) {
+    // Check if the repository URL is valid
+    if (!isValidGitHubUrl(config.repoUrl)) {
       toast({
         title: 'Error',
-        description: 'Username and token are required for private repositories',
+        description: 'Invalid repository URL format. Please enter a valid GitHub repository URL.',
         status: 'error',
         duration: 3000,
         isClosable: true,
@@ -120,6 +120,17 @@ const GitHubConnectorPage = () => {
         isEnterprise,
         createdAt: new Date().toISOString(),
       };
+
+      // Format the repository URL correctly for the backend
+      // Ensure the URL format is preserved exactly as entered by the user
+      // This is especially important for enterprise URLs with .git extension
+      if (!newConfig.repoUrl.endsWith('.git') && isEnterprise) {
+        console.log('Adding .git extension for consistency with enterprise format');
+        newConfig.repoUrl = `${newConfig.repoUrl}${newConfig.repoUrl.endsWith('/') ? '' : ''}`;
+        if (!newConfig.repoUrl.endsWith('.git')) {
+          newConfig.repoUrl = `${newConfig.repoUrl}.git`;
+        }
+      }
 
       console.log('Sending configuration to backend:', newConfig);
       console.log('Full request payload:', [...savedConfigs, newConfig]);
@@ -150,7 +161,6 @@ const GitHubConnectorPage = () => {
 
       // Clear form
       setConfig({
-        enterpriseUrl: '',
         username: '',
         token: '',
         repoUrl: '',
@@ -212,6 +222,31 @@ const GitHubConnectorPage = () => {
     }
   };
 
+  const isValidGitHubUrl = (url) => {
+    try {
+      // Parse the URL
+      const parsedUrl = new URL(url);
+      
+      // Check if it's using http or https protocol
+      if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') return false;
+      
+      // Remove .git extension if present for validation
+      let path = parsedUrl.pathname;
+      if (path.endsWith('.git')) {
+        path = path.slice(0, -4); // Remove .git extension
+      }
+      
+      // Get path parts after removing leading/trailing slashes
+      const pathParts = path.replace(/^\/|\/$/g, '').split('/');
+      
+      // Must have at least owner/repo format
+      return pathParts.length >= 2 && pathParts[0].length > 0 && pathParts[1].length > 0;
+    } catch (e) {
+      // Invalid URL format
+      return false;
+    }
+  };
+
   return (
     <Box py={8}>
       <Container maxW="container.xl">
@@ -242,28 +277,22 @@ const GitHubConnectorPage = () => {
                     />
                   </FormControl>
 
-                  {isEnterprise && (
-                    <FormControl>
-                      <FormLabel>Enterprise URL</FormLabel>
-                      <Input
-                        name="enterpriseUrl"
-                        value={config.enterpriseUrl}
-                        onChange={handleInputChange}
-                        placeholder="https://github.your-company.com"
-                        type="url"
-                      />
-                    </FormControl>
-                  )}
-
                   <FormControl>
                     <FormLabel>Repository URL</FormLabel>
                     <Input
                       name="repoUrl"
                       value={config.repoUrl}
                       onChange={handleInputChange}
-                      placeholder="https://github.com/username/repo"
+                      placeholder={isEnterprise ? 
+                        "https://source.datanerd.us/dataos/dbt_core_model.git" : 
+                        "https://github.com/username/repo"}
                       type="url"
                     />
+                    <Text fontSize="xs" color="gray.500" mt={1}>
+                      {isEnterprise ? 
+                        "Enter the complete enterprise repository URL including domain and .git extension" : 
+                        "Standard GitHub repository URL"}
+                    </Text>
                   </FormControl>
 
                   <FormControl display="flex" alignItems="center">
@@ -286,6 +315,9 @@ const GitHubConnectorPage = () => {
                           onChange={handleInputChange}
                           placeholder="GitHub username"
                         />
+                        <Text fontSize="xs" color="gray.500" mt={1}>
+                          Your GitHub username for authentication
+                        </Text>
                       </FormControl>
 
                       <FormControl>
@@ -297,9 +329,22 @@ const GitHubConnectorPage = () => {
                           type="password"
                           placeholder="GitHub personal access token"
                         />
+                        <Text fontSize="xs" color="gray.500" mt={1}>
+                          Token with read access to the repository
+                        </Text>
                       </FormControl>
                     </>
                   )}
+                  
+                  <Alert status="info" borderRadius="md">
+                    <AlertIcon />
+                    <Box fontSize="sm">
+                      <Text fontWeight="medium">For Enterprise GitHub URLs:</Text>
+                      <Text>• Enter the complete URL (e.g., https://source.datanerd.us/dataos/dbt_core_model.git)</Text>
+                      <Text>• Include username and access token for authentication</Text>
+                      <Text>• Make sure to use the .git extension if required by your enterprise GitHub</Text>
+                    </Box>
+                  </Alert>
 
                   <Button
                     type="submit"
@@ -333,12 +378,6 @@ const GitHubConnectorPage = () => {
                             {savedConfig.isPublic ? 'Public' : 'Private'}
                           </Badge>
                         </HStack>
-                        
-                        {savedConfig.isEnterprise && (
-                          <Text fontSize="sm" color={textColor}>
-                            Enterprise URL: {savedConfig.enterpriseUrl}
-                          </Text>
-                        )}
                         
                         {!savedConfig.isPublic && (
                           <Text fontSize="sm" color={textColor}>

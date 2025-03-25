@@ -76,7 +76,12 @@ import {
   IoCheckmarkDone,
   IoDownload,
   IoCode,
-  IoChevronUp
+  IoChevronUp,
+  IoInformation,
+  IoGitBranch,
+  IoArrowRedo,
+  IoConstruct,
+  IoCheckmarkCircle
 } from 'react-icons/io5'
 import { useParams, useNavigate } from 'react-router-dom'
 import { CodeDisplay } from '../components/CodeDisplay'
@@ -2913,11 +2918,11 @@ const ChatPage = () => {
               color={textColor}
               lineHeight="1.2"
             >
-              Data Architect Assistant
+              dbt Data Architect Assistant
             </Heading>
 
             <Text fontSize="lg" color="gray.600" maxW="600px">
-              Ask questions about your database schemas, data models, or get recommendations for SQL optimization
+              Ask questions about your dbt models, explore dependencies, enhance SQL code, or get guidance on development
             </Text>
 
             <SimpleGrid columns={{ base: 1, md: 3 }} spacing={6} pt={8} w="full">
@@ -2929,10 +2934,57 @@ const ChatPage = () => {
                 border="1px"
                 borderColor={borderColor}
               >
-                <Icon as={IoServer} boxSize={6} color={primaryColor} />
-                <Text fontWeight="bold">Schema Design</Text>
+                <Icon as={IoInformation} boxSize={6} color={primaryColor} />
+                <Text fontWeight="bold">Model Information</Text>
                 <Text fontSize="sm" color="gray.600">
-                  "Help me optimize my database schema"
+                  "Can you explain the fct_orders model and how it works?"
+                </Text>
+              </VStack>
+              
+              <VStack 
+                bg={useColorModeValue('gray.50', 'gray.800')} 
+                p={6}
+                borderRadius="lg"
+                spacing={3}
+                border="1px"
+                borderColor={borderColor}
+              >
+                <Icon as={IoGitBranch} boxSize={6} color={primaryColor} />
+                <Text fontWeight="bold">Data Lineage</Text>
+                <Text fontSize="sm" color="gray.600">
+                  "What models depend on stg_orders?"
+                </Text>
+              </VStack>
+              
+              <VStack 
+                bg={useColorModeValue('gray.50', 'gray.800')} 
+                p={6}
+                borderRadius="lg"
+                spacing={3}
+                border="1px"
+                borderColor={borderColor}
+              >
+                <Icon as={IoArrowRedo} boxSize={6} color={primaryColor} />
+                <Text fontWeight="bold">Code Enhancement</Text>
+                <Text fontSize="sm" color="gray.600">
+                  "Enhance models/marts/core/fct_orders.sql to add avg_gross_item_sales_amount"
+                </Text>
+              </VStack>
+            </SimpleGrid>
+            
+            <SimpleGrid columns={{ base: 1, md: 3 }} spacing={6} pt={4} w="full">
+              <VStack 
+                bg={useColorModeValue('gray.50', 'gray.800')} 
+                p={6}
+                borderRadius="lg"
+                spacing={3}
+                border="1px"
+                borderColor={borderColor}
+              >
+                <Icon as={IoConstruct} boxSize={6} color={primaryColor} />
+                <Text fontWeight="bold">Development Guidance</Text>
+                <Text fontSize="sm" color="gray.600">
+                  "Create a new incremental model for daily customer metrics"
                 </Text>
               </VStack>
               
@@ -2945,9 +2997,9 @@ const ChatPage = () => {
                 borderColor={borderColor}
               >
                 <Icon as={IoCodeSlash} boxSize={6} color={primaryColor} />
-                <Text fontWeight="bold">dbt Models</Text>
+                <Text fontWeight="bold">dbt Optimization</Text>
                 <Text fontSize="sm" color="gray.600">
-                  "Review my dbt model structure"
+                  "Help me improve the performance of my fact table"
                 </Text>
               </VStack>
               
@@ -2959,10 +3011,10 @@ const ChatPage = () => {
                 border="1px"
                 borderColor={borderColor}
               >
-                <Icon as={IoAnalytics} boxSize={6} color={primaryColor} />
-                <Text fontWeight="bold">Query Analysis</Text>
+                <Icon as={IoCheckmarkCircle} boxSize={6} color={primaryColor} />
+                <Text fontWeight="bold">Documentation Help</Text>
                 <Text fontSize="sm" color="gray.600">
-                  "Optimize this SQL query"
+                  "Generate documentation for my customer dimension model"
                 </Text>
               </VStack>
             </SimpleGrid>
