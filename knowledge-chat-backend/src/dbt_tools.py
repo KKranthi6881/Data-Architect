@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import sqlite3
 import difflib
 from urllib.parse import quote
+import glob
 
 logger = logging.getLogger(__name__)
 
@@ -1341,7 +1342,21 @@ class DbtSearcher:
         return results
     
     def search_by_file_path(self, path_pattern: str) -> List[SearchResult]:
-        """Search for files by path pattern with intelligent path normalization"""
+        """
+        Search for files by path pattern with intelligent path normalization
+        
+        This method is optimized for enterprise repositories with:
+        - Complex folder structures
+        - Deep nesting
+        - Many files (1000+)
+        - Varied naming conventions
+        
+        Args:
+            path_pattern: The path pattern to search for
+            
+        Returns:
+            List of SearchResult objects matching the pattern
+        """
         results = []
         
         # Normalize the path pattern to handle common variations
@@ -1350,20 +1365,152 @@ class DbtSearcher:
         # Track files we've already found to avoid duplicates
         found_files = set()
         
+        # First, try to use glob pattern matching which is faster for large repositories
         for pattern in normalized_patterns:
+            # Skip empty patterns
+            if not pattern.strip():
+                continue
+                
+            try:
+                # Check if this is a glob pattern
+                if '*' in pattern or '?' in pattern:
+                    # Use glob for more efficient pattern matching
+                    glob_pattern = os.path.join(self.repo_path, pattern)
+                    matching_files = glob.glob(glob_pattern, recursive=True)
+                    
+                    for file_path in matching_files:
+                        rel_path = os.path.relpath(file_path, self.repo_path)
+                        
+                        # Skip if we've already processed this file
+                        if rel_path in found_files:
+                            continue
+                            
+                        # Only process certain file types
+                        if not file_path.endswith(('.sql', '.yml', '.yaml', '.md')):
+                            continue
+                            
+                        try:
+                            # Read file content
+                            with open(file_path, 'r') as f:
+                                content = f.read()
+                            
+                            # Get model name if this is a model file
+                            model_name = ""
+                            if file_path.endswith('.sql'):
+                                model_name = os.path.splitext(os.path.basename(file_path))[0]
+                            
+                            result = SearchResult(
+                                model_name=model_name,
+                                file_path=rel_path,
+                                content=content,
+                                match_type="file_path",
+                                match_context=f"path matches glob pattern '{pattern}'",
+                                file_name=os.path.basename(file_path)
+                            )
+                            results.append(result)
+                            found_files.add(rel_path)
+                        except Exception as e:
+                            logger.error(f"Error processing glob match {file_path}: {str(e)}")
+            except Exception as e:
+                logger.error(f"Error in glob pattern matching for '{pattern}': {str(e)}")
+        
+        # If we have results from glob matching, return them
+        if results:
+            return results
+            
+        # Fall back to manual directory traversal if glob doesn't yield results
+        for pattern in normalized_patterns:
+            # Skip empty patterns
+            if not pattern.strip():
+                continue
+                
+            pattern_lower = pattern.lower()
+            
+            # For SQL files, check known model directories first to speed up search
+            if pattern.endswith('.sql') or '.sql' not in pattern:
+                known_dirs = [
+                    os.path.join(self.repo_path, 'models'),
+                    os.path.join(self.repo_path, 'analyses'),
+                    os.path.join(self.repo_path, 'macros')
+                ]
+                
+                # Add other potential model directories in enterprise repositories
+                for root_dir in ['models', 'marts', 'core_models', 'staging', 'consumption_metrics']:
+                    potential_dir = os.path.join(self.repo_path, root_dir)
+                    if os.path.exists(potential_dir) and os.path.isdir(potential_dir) and potential_dir not in known_dirs:
+                        known_dirs.append(potential_dir)
+                
+                # Limit the scan to these known directories first
+                for model_dir in known_dirs:
+                    if os.path.exists(model_dir) and os.path.isdir(model_dir):
+                        for root, _, files in os.walk(model_dir):
+                            for file in files:
+                                file_path = os.path.join(root, file)
+                                rel_path = os.path.relpath(file_path, self.repo_path)
+                                rel_path_lower = rel_path.lower()
+                                
+                                # Skip if we've already processed this file
+                                if rel_path in found_files:
+                                    continue
+                                    
+                                # Implement different matching strategies
+                                is_match = False
+                                
+                                # 1. Simple substring match
+                                if pattern_lower in rel_path_lower:
+                                    is_match = True
+                                # 2. Filename match
+                                elif os.path.basename(file).lower() == os.path.basename(pattern_lower):
+                                    is_match = True
+                                # 3. Match on filename without extension
+                                elif os.path.splitext(file)[0].lower() == os.path.splitext(os.path.basename(pattern_lower))[0]:
+                                    is_match = True
+                                # 4. Check for partial directory match
+                                elif any(part.lower() == os.path.basename(pattern_lower) for part in rel_path.split(os.sep)):
+                                    is_match = True
+                                
+                                if is_match:
+                                    try:
+                                        # Only read content for certain file types
+                                        content = ""
+                                        if file.endswith(('.sql', '.yml', '.yaml', '.md')):
+                                            with open(file_path, 'r') as f:
+                                                content = f.read()
+                                    
+                                        # Get model name if this is a model file
+                                        model_name = ""
+                                        if file.endswith('.sql'):
+                                            model_name = os.path.splitext(file)[0]
+                                    
+                                        result = SearchResult(
+                                            model_name=model_name,
+                                            file_path=rel_path,
+                                            content=content,
+                                            match_type="file_path",
+                                            match_context=f"known directory path contains '{pattern}'",
+                                            file_name=file
+                                        )
+                                        results.append(result)
+                                        found_files.add(rel_path)
+                                    except Exception as e:
+                                        logger.error(f"Error processing file {file_path}: {str(e)}")
+                
+                # If we found results in known directories, return early
+                if results:
+                    return results
+            
+            # Fall back to full repository scan as a last resort
             for root, _, files in os.walk(self.repo_path):
                 for file in files:
                     file_path = os.path.join(root, file)
                     rel_path = os.path.relpath(file_path, self.repo_path)
+                    rel_path_lower = rel_path.lower()
                     
                     # Skip if we've already processed this file
                     if rel_path in found_files:
                         continue
                     
                     # Check if the path contains the pattern (case insensitive)
-                    pattern_lower = pattern.lower()
-                    rel_path_lower = rel_path.lower()
-                    
                     if pattern_lower in rel_path_lower:
                         try:
                             # Only read content for certain file types
@@ -1374,7 +1521,7 @@ class DbtSearcher:
                         
                             # Get model name if this is a model file
                             model_name = ""
-                            if file.endswith('.sql') and 'models/' in rel_path.lower():
+                            if file.endswith('.sql'):
                                 model_name = os.path.splitext(file)[0]
                         
                             result = SearchResult(
@@ -1755,6 +1902,16 @@ class DbtTools:
         2. Path normalization and matching
         3. Path component matching
         4. Smart file search
+        5. Enterprise-specific folder structures
+        
+        Optimized for large enterprise repositories with complex structures.
+        
+        Args:
+            file_path: The file path to resolve to a model
+            search_mode: Mode for search results ("output" for precise, "parse" for broader)
+            
+        Returns:
+            List of SearchResult objects matching the path
         """
         self.initialize()
         
@@ -1770,101 +1927,171 @@ class DbtTools:
             normalized_path = f"{normalized_path}.sql"
         
         # Step 1: Try exact path match
-        if os.path.exists(os.path.join(self.repo_path, normalized_path)):
+        exact_path = os.path.join(self.repo_path, normalized_path)
+        if os.path.exists(exact_path) and os.path.isfile(exact_path):
             # Get model name from path
             model_name = os.path.basename(path_without_ext)
-            model = self.parser.parse_model(model_name)
-            if model:
+            try:
+                with open(exact_path, 'r') as f:
+                    content = f.read()
+                
                 result = SearchResult(
-                    model_name=model.name,
+                    model_name=model_name,
                     file_path=normalized_path,
-                    content=model.content,
+                    content=content,
                     match_type="model",
                     match_context="exact path match",
-                    description=model.description,
-                    yaml_content=model.yaml_content
+                    description="Exact file path match"
                 )
                 results.append(result)
                 
                 # For output mode, return just this result
                 if search_mode == "output":
                     return results
+            except Exception as e:
+                logger.error(f"Error reading exact file {exact_path}: {str(e)}")
         
         # Step 2: Try model lookup directly using path components
         path_parts = path_without_ext.strip('/').split('/')
-        model_name = path_parts[-1]  # Last component is likely the model name
+        model_name = path_parts[-1]
         
-        # Look for exact model name match
-        if model_name in self.file_scanner.model_files:
-            model = self.parser.parse_model(model_name)
-            if model:
-                result = SearchResult(
-                    model_name=model.name,
-                    file_path=model.file_path,
-                    content=model.content,
-                    match_type="model",
-                    match_context="model name match from path",
-                    description=model.description,
-                    yaml_content=model.yaml_content
-                )
-                results.append(result)
-        
-        # Step 3: Use the file scanner's path pattern search
-        if not results or search_mode != "output":
-            path_results = self.file_scanner.search_models_by_path_pattern(normalized_path)
+        # Check if this is a full path or just a model name
+        if len(path_parts) > 1:
+            # This is a full or partial path
+            # Try path variations for better matching in enterprise repos
+            path_variations = []
             
-            for model_name, path in path_results:
-                model = self.parser.parse_model(model_name)
-                if model:
-                    similarity = difflib.SequenceMatcher(None, path, normalized_path).ratio()
-                    result = SearchResult(
-                        model_name=model.name,
-                        file_path=model.file_path,
-                        content=model.content,
-                        match_type="model",
-                        match_context=f"path pattern match (similarity: {similarity:.2f})",
-                        description=model.description,
-                        yaml_content=model.yaml_content
-                    )
-                    results.append(result)
-            
-            # Sort results by path similarity
-            if results:
-                results.sort(
-                    key=lambda r: difflib.SequenceMatcher(None, r.file_path, normalized_path).ratio(),
-                    reverse=True
-                )
+            # Add variations based on path parts
+            if len(path_parts) >= 3:
+                # Full paths like models/marts/core/model_name
+                path_variations.append('/'.join(path_parts[-3:]))
                 
-                # For output mode, just return the best match
-                if search_mode == "output" and results:
-                    return [results[0]]
-        
-        # Step 4: If still no results, do an aggressive file search
-        if not results:
-            file_results = self.searcher.search_by_file_path(normalized_path)
+                # Handle variable depth repository structures
+                for i in range(1, min(4, len(path_parts))):
+                    path_variations.append('/'.join(path_parts[-i:]))
             
-            # Convert file results to model results where possible
-            for file_result in file_results:
-                if file_result.file_path.endswith('.sql'):
-                    model_name = os.path.splitext(os.path.basename(file_result.file_path))[0]
-                    model = self.parser.parse_model(model_name)
-                    if model:
+            # Add enterprise-specific path patterns
+            for base_dir in ['models', 'marts', 'staging', 'intermediate', 'consumption_metrics']:
+                path_variations.append(f"{base_dir}/{model_name}")
+                
+                # Handle enterprise-specific nested structures
+                if len(path_parts) > 2:
+                    mid_dir = path_parts[-2]
+                    path_variations.append(f"{base_dir}/{mid_dir}/{model_name}")
+                    
+                    if len(path_parts) > 3:
+                        parent_dir = path_parts[-3]
+                        path_variations.append(f"{base_dir}/{parent_dir}/{mid_dir}/{model_name}")
+            
+            # Try each variation
+            for path_var in path_variations:
+                try:
+                    var_path = os.path.join(self.repo_path, f"{path_var}.sql")
+                    if os.path.exists(var_path) and os.path.isfile(var_path):
+                        with open(var_path, 'r') as f:
+                            content = f.read()
+                        
                         result = SearchResult(
-                            model_name=model.name,
-                            file_path=model.file_path,
-                            content=model.content,
+                            model_name=model_name,
+                            file_path=f"{path_var}.sql",
+                            content=content,
                             match_type="model",
-                            match_context="file path search match",
-                            description=model.description,
-                            yaml_content=model.yaml_content
+                            match_context=f"path variation match: {path_var}",
+                            description="Path variation match"
                         )
                         results.append(result)
-                    else:
-                        # Use the file result directly
-                        file_result.model_name = model_name
-                        file_result.match_type = "file"
-                        results.append(file_result)
+                        
+                        # For output mode, return this result if found
+                        if search_mode == "output":
+                            return results
+                except Exception as e:
+                    logger.error(f"Error checking path variation {path_var}: {str(e)}")
         
+        # Step 3: Try model search by name
+        try:
+            model_results = self.searcher.search_by_model_name(model_name, search_mode)
+            if model_results:
+                # Look for exact matches in model name first
+                exact_matches = [r for r in model_results if r.model_name.lower() == model_name.lower()]
+                if exact_matches:
+                    for match in exact_matches:
+                        if match not in results:
+                            results.append(match)
+                else:
+                    # Include all matches if no exact match
+                    for match in model_results:
+                        if match not in results:
+                            results.append(match)
+        except Exception as e:
+            logger.error(f"Error in model name search: {str(e)}")
+        
+        # Step 4: Try fuzzy file path matching for enterprise repos
+        try:
+            # Generate common path patterns for enterprise repos
+            fuzzy_patterns = [
+                f"**/{model_name}.sql",                   # Any directory, exact model name
+                f"**/*{model_name}*.sql",                 # Any directory, model name as substring
+                f"**/models/**/{model_name}.sql",         # Any models directory structure
+                f"**/marts/**/{model_name}.sql",          # Any marts directory structure
+                f"**/consumption_metrics/**/{model_name}.sql"  # Specific to consumption metrics
+            ]
+            
+            # Add patterns based on path components if we have them
+            if len(path_parts) > 1:
+                for i in range(1, min(4, len(path_parts))):
+                    component = path_parts[-i]
+                    if component != model_name:  # Avoid duplicates
+                        fuzzy_patterns.append(f"**/{component}/**/{model_name}.sql")
+            
+            # Try each pattern
+            for pattern in fuzzy_patterns:
+                try:
+                    glob_pattern = os.path.join(self.repo_path, pattern)
+                    matching_files = glob.glob(glob_pattern, recursive=True)
+                    
+                    for match_path in matching_files:
+                        rel_path = os.path.relpath(match_path, self.repo_path)
+                        
+                        # Skip if we already have this result
+                        if any(r.file_path == rel_path for r in results):
+                            continue
+                        
+                        try:
+                            with open(match_path, 'r') as f:
+                                content = f.read()
+                            
+                            result = SearchResult(
+                                model_name=model_name,
+                                file_path=rel_path,
+                                content=content,
+                                match_type="model",
+                                match_context=f"glob pattern match: {pattern}",
+                                description="Glob pattern match"
+                            )
+                            results.append(result)
+                        except Exception as e:
+                            logger.error(f"Error reading glob match {match_path}: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Error in glob pattern matching for '{pattern}': {str(e)}")
+        except Exception as e:
+            logger.error(f"Error in fuzzy file path matching: {str(e)}")
+        
+        # Step 5: Last resort - try file search
+        if not results:
+            file_results = self.searcher.search_by_file_path(model_name)
+            for file_result in file_results:
+                if file_result not in results:
+                    results.append(file_result)
+        
+        # Filter to most relevant results based on search mode
+        if results and search_mode == "output":
+            # For output mode, prefer exact matches
+            exact_matches = [r for r in results if r.model_name.lower() == model_name.lower()]
+            if exact_matches:
+                return [exact_matches[0]]  # Return first exact match
+            else:
+                return [results[0]]  # Return first result
+                
         return results
     
     def search_column(self, column_name: str) -> List[SearchResult]:
@@ -2255,3 +2482,125 @@ class DbtTools:
                     variations.append(f"{camel_case}.sql")
         
         return variations
+
+    def _generate_path_variations(self, path_pattern: str) -> List[str]:
+        """
+        Generate variations of a path pattern for more robust searching
+        
+        This handles common path variations like:
+        - singular/plural directory names (model/models)
+        - different file extensions (.sql, no extension)
+        - partial paths (just filename vs directory/filename)
+        - common directory patterns (marts/core, models/marts/core, etc.)
+        - enterprise patterns with deeper nesting
+        
+        Args:
+            path_pattern: The original path pattern to generate variations for
+            
+        Returns:
+            List of path pattern variations to try
+        """
+        variations = [path_pattern]  # Always include the original
+        
+        # Remove .sql extension if present
+        if path_pattern.endswith('.sql'):
+            variations.append(path_pattern[:-4])
+        else:
+            variations.append(f"{path_pattern}.sql")
+        
+        # Normalize slashes
+        normalized = path_pattern.replace('\\', '/')
+        if normalized not in variations:
+            variations.append(normalized)
+        
+        # Extract filename and try that
+        if '/' in normalized:
+            filename = normalized.split('/')[-1]
+            variations.append(filename)
+            
+            # Add filename without extension
+            if filename.endswith('.sql'):
+                variations.append(filename[:-4])
+            
+            # For deep nested paths, try parts of the path
+            path_parts = normalized.split('/')
+            if len(path_parts) > 2:
+                # Try the last 2-3 parts of the path
+                if len(path_parts) >= 3:
+                    variations.append('/'.join(path_parts[-3:]))
+                variations.append('/'.join(path_parts[-2:]))
+                
+                # Try with different path separators (for glob patterns)
+                variations.append('*/'.join(path_parts[-3:]))
+                variations.append('*/'.join(path_parts[-2:]))
+                
+                # Try just the model name with various common parent directories
+                model_name = path_parts[-1]
+                if model_name.endswith('.sql'):
+                    model_name = model_name[:-4]
+                
+                # Enterprise-level path variations - cover more directory patterns
+                for prefix in ['models', 'marts', 'staging', 'intermediate', 'consumption', 'reporting', 'core_models']:
+                    variations.append(f"{prefix}/{model_name}")
+                    variations.append(f"{prefix}/**/{model_name}")
+                    variations.append(f"**/{prefix}/{model_name}")
+                    variations.append(f"**/{model_name}")
+        
+        # Try with and without leading/trailing slashes
+        if normalized.startswith('/'):
+            variations.append(normalized[1:])
+        else:
+            variations.append('/' + normalized)
+            
+        if normalized.endswith('/'):
+            variations.append(normalized[:-1])
+        
+        # Handle singular/plural variations of common directories
+        common_dirs = [
+            ('model/', 'models/'),
+            ('mart/', 'marts/'),
+            ('source/', 'sources/'),
+            ('staging/', 'stage/'),
+            ('transform/', 'transforms/'),
+            ('core/', 'cores/'),
+            ('consumption_metric', 'consumption_metrics'),
+            ('metrics/', 'metric/'),
+            ('advanced/', 'adv/'),
+            ('forecast/', 'forecasts/'),
+            ('calc/', 'calculation/')
+        ]
+        
+        # Add enterprise-specific directory patterns
+        for pattern in variations.copy():
+            for sing, plural in common_dirs:
+                if sing in pattern:
+                    variations.append(pattern.replace(sing, plural))
+                elif plural in pattern:
+                    variations.append(pattern.replace(plural, sing))
+        
+        # For glob pattern searching - add wildcards for enterprise repositories
+        if not path_pattern.startswith('*') and not path_pattern.endswith('*'):
+            # Add wildcard variants for filename search
+            if '/' in normalized:
+                filename = normalized.split('/')[-1]
+                variations.append(f"**/{filename}")
+                variations.append(f"*{filename}")
+                variations.append(f"*{filename}*")
+                if filename.endswith('.sql'):
+                    basename = filename[:-4]
+                    variations.append(f"**/{basename}.sql")
+                    variations.append(f"*{basename}.sql")
+                    variations.append(f"*{basename}*")
+            else:
+                variations.append(f"**/{normalized}")
+                variations.append(f"*{normalized}")
+                variations.append(f"*{normalized}*")
+        
+        # Remove duplicates while preserving order
+        unique_variations = []
+        for var in variations:
+            if var not in unique_variations:
+                unique_variations.append(var)
+                
+        logger.info(f"Generated {len(unique_variations)} path variations for '{path_pattern}'")
+        return unique_variations

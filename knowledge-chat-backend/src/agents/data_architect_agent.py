@@ -36,6 +36,7 @@ from utils import ChromaDBManager
 from dbt_tools import DbtTools, DbtToolsFactory
 import re
 from urllib.parse import urlparse
+import glob
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -258,35 +259,27 @@ class DataArchitectAgent:
         
         # Define routing logic based on question type
         def route_by_question_type(state: AgentState) -> str:
+            """Route to the appropriate flow based on question type."""
             question_analysis = state.get("question_analysis", {})
-            question_type = question_analysis.get("question_type", "GENERAL")
-            entities = question_analysis.get("entities", [])
+            question_type = question_analysis.get("question_type", "MODEL_INFO") if question_analysis else "MODEL_INFO"
             
-            logger.info(f"Routing based on question type: {question_type}")
+            logging.info(f"Routing based on question type: {question_type}")
             
-            # If we have specific model entities, start with model search
-            if entities and question_type in ["MODEL_INFO", "DOCUMENTATION", "CODE_ENHANCEMENT", "DEPENDENCIES", "LINEAGE", "DEVELOPMENT"]:
-                logger.info(f"Routing to search_models for {question_type} question")
+            # Simplify to just five question types
+            if question_type == "MODEL_INFO":
                 return "search_models"
-            
-            # If we have specific column entities, use column search
-            column_patterns = []
-            if "messages" in state and state["messages"]:
-                last_message = state["messages"][-1].content
-                column_patterns = self._extract_column_patterns(last_message)
-            
-            if column_patterns and question_type in ["COLUMN_INFO"]:
-                logger.info("Routing to search_columns for column-specific question")
-                return "search_columns"
-            
-            # For other types with entities, start with model search
-            if entities:
-                logger.info("Routing to search_models as fallback")
+            elif question_type == "LINEAGE":
+                return "search_models"  # Lineage is handled in get_model_details
+            elif question_type == "DEPENDENCIES":
+                return "search_models"  # Dependencies need model search and details
+            elif question_type == "CODE_ENHANCEMENT":
+                return "search_models"  # Code enhancement needs model content
+            elif question_type == "DEVELOPMENT":
+                return "search_models"  # Development needs model content and context
+            else:
+                # Default to MODEL_INFO for any other type
+                logging.info(f"Unknown question type: {question_type}. Defaulting to MODEL_INFO.")
                 return "search_models"
-            
-            # Default to content search for general questions
-            logger.info("Routing to search_content as fallback")
-            return "search_content"
         
         # Define edges based on routing logic
         workflow.add_conditional_edges(
@@ -363,13 +356,9 @@ class DataArchitectAgent:
                
                - DEPENDENCIES: Questions about what models depend on others or impact analysis. Examples: "What depends on model X?", "What would break if I change Y?", "What are the dependencies of Z?"
                
-               - CODE_ENHANCEMENT: Questions about improving, modifying, or optimizing existing code. Examples: "How can I make this query faster?", "How do I modify X to include Y?", "How can I delete/add/change column Z?"
+               - CODE_ENHANCEMENT: Questions about improving, modifying, or optimizing existing code. Examples: "How can I make this query faster?", "How do I modify X to include Y?", "How can I add/change column Z to an existing model?"
                
-               - DOCUMENTATION: Questions about documenting models or generating documentation. Examples: "How should I document X?", "Can you create documentation for Y?", "What should be in the docs for Z?"
-               
-               - DEVELOPMENT: Questions about implementing new features or models. Examples: "How do I create a new model for X?", "How do I implement Y?", "Can you help me develop Z?", "Give me a script to delete column X"
-               
-               - GENERAL: Other types of questions that don't fit the above categories.
+               - DEVELOPMENT: Questions about implementing entirely new features or models. Examples: "How do I create a new model for X?", "How do I implement Y?", "Can you help me develop Z from scratch?"
             
             2. Key Entities - Extract ALL relevant entities:
                - Model names (e.g., "orders", "customers", "financial_metrics")
@@ -395,10 +384,11 @@ class DataArchitectAgent:
             {f"Detected Column Patterns: {', '.join(column_patterns)}" if column_patterns else ""}
             
             IMPORTANT CLASSIFICATION GUIDELINES:
-            - If the question asks how to delete, add, modify, or implement something, it's likely CODE_ENHANCEMENT or DEVELOPMENT, not MODEL_INFO
-            - If the question asks for a script, code changes, or implementation, it's likely DEVELOPMENT
-            - If the question asks to optimize or improve existing code, it's CODE_ENHANCEMENT
-            - If the question only asks what a model/column does, then it's MODEL_INFO
+            - DEVELOPMENT is for creating entirely new models or implementing brand new functionality
+            - CODE_ENHANCEMENT is for modifying existing models or adding features to them
+            - LINEAGE is specifically about how data flows between models (upstream/downstream)
+            - DEPENDENCIES is about understanding what specific models depend on each other
+            - MODEL_INFO is for understanding what an existing model does
             
             Return ONLY a JSON object with these fields:
             {{
@@ -553,92 +543,141 @@ class DataArchitectAgent:
         
         return columns
 
-    def _search_models(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """Search for DBT models based on the question."""
-        results = {}
-        entities = []
-        search_terms = []
+    def _search_models(self, state):
+        """
+        Search for model information related to the question.
         
+        Args:
+            state (dict): The current state of the conversation.
+            
+        Returns:
+            dict: A dictionary containing search results and entities.
+        """
         try:
-            question_analysis = state.get("question_analysis", {})
-            entities = question_analysis.get("entities", [])
-            search_terms = question_analysis.get("search_terms", [])
-            original_question = ""
+            entities = state.get("question_analysis", {}).get("entities", [])
+            search_terms = state.get("question_analysis", {}).get("search_terms", [])
             
-            if "messages" in state and state["messages"]:
-                last_msg = state["messages"][-1]
-                original_question = last_msg.content if hasattr(last_msg, 'content') else last_msg.get('content', '')
+            # Initialize search results and model details
+            search_results = {}
+            # Initialize model_details as a list, not a dict
+            state["model_details"] = []
             
-            # Early check for fct_orders in entities or question
-            fct_orders_requested = any(entity.lower() in ["fct_orders", "fct_order"] for entity in entities)
-            if not fct_orders_requested and original_question:
-                fct_orders_requested = "fct_order" in original_question.lower()
+            # Use direct file paths first if they exist
+            direct_file_paths = [entity for entity in entities if entity.endswith('.sql') or 'models/' in entity]
             
-            if fct_orders_requested:
-                logger.info("fct_orders model specifically requested")
-                # Try to get fct_orders content directly
-                found, file_path, content = self._find_model_content("models/marts/core/fct_orders.sql")
-                if found and content:
-                    logger.info(f"Found fct_orders model at {file_path}")
-                    # Create manually constructed result
-                    fct_orders_result = {
-                        "model_name": "fct_orders",
-                        "file_path": file_path,
-                        "content": content,
-                        "match_type": "exact_match",
-                        "description": "This model contains order-related metrics and data."
-                    }
-                    results["fct_orders"] = [fct_orders_result]
-                    
-                    # Also get any related files to fct_orders for more context
-                    fct_orders_dbt_dir = os.path.dirname(file_path)
-                    logger.info(f"Searching for schema files in directory: {fct_orders_dbt_dir}")
-                    try:
-                        schema_content = self.dbt_tools.get_file_content(os.path.join(fct_orders_dbt_dir, "schema.yml"))
-                        if schema_content:
-                            schema_result = {
-                                "model_name": "schema.yml",
-                                "file_path": os.path.join(fct_orders_dbt_dir, "schema.yml"),
-                                "content": schema_content,
-                                "match_type": "related_file",
-                                "description": "Schema file containing metadata about the fct_orders model."
+            if direct_file_paths:
+                logging.info(f"Direct file paths found: {direct_file_paths}")
+                for file_path in direct_file_paths:
+                    model_content = self._find_model_content(file_path)
+                    if model_content and isinstance(model_content, tuple) and len(model_content) >= 3:
+                        found, path, content = model_content
+                        if found and content:
+                            # Extract model name from path
+                            model_name = path.split('/')[-1].replace('.sql', '')
+                            logging.info(f"Found direct model content for: {model_name} at {path}")
+                            
+                            # Check for dependencies if DEPENDENCIES question
+                            if state.get("question_analysis", {}).get("question_type") == "DEPENDENCIES":
+                                dependencies = self._get_model_dependencies(model_name, path)
+                                if dependencies:
+                                    logging.info(f"Found dependencies for {model_name}: {dependencies}")
+                                    
+                            # Create model detail
+                            model_detail = {
+                                "model_name": model_name,
+                                "file_path": path,
+                                "content": content,
+                                "model_type": "model",  # Assuming it's a model
                             }
-                            if "schema" not in results:
-                                results["schema"] = []
-                            results["schema"].append(schema_result)
-                    except Exception as e:
-                        logger.error(f"Error getting schema file: {str(e)}")
+                            
+                            # Add dependencies if they exist
+                            if 'dependencies' in locals() and dependencies:
+                                model_detail["dependencies"] = dependencies
+                            
+                            # Add to model details
+                            state["model_details"].append(model_detail)
+                            
+                            # Add to search results
+                            search_results[model_name] = {
+                                "content": content,
+                                "file_path": path
+                            }
             
-            # Proceed with normal search logic for all entities
-            if entities:
-                logger.info(f"Searching for models based on entities: {entities}")
+            # Continue with regular search if no direct paths or additional info needed
+            if not direct_file_paths or not search_results:
                 for entity in entities:
                     if self.dbt_tools:
                         try:
-                            entity_results = self._search_by_keyword(entity)
-                            if entity_results:
-                                results[entity] = entity_results
+                            results = self.dbt_tools.search_model(entity)
+                            if results:
+                                for result in results:
+                                    if isinstance(result, dict):
+                                        model_name = result.get("model_name", "")
+                                        if model_name:
+                                            search_results[model_name] = result
                         except Exception as e:
-                            logger.error(f"Error searching for entity {entity}: {str(e)}")
+                            logging.error(f"Error searching for entity {entity}: {str(e)}")
+                
+                if not search_results and search_terms:
+                    for term in search_terms:
+                        if self.dbt_tools:
+                            try:
+                                results = self.dbt_tools.search_model(term)
+                                if results:
+                                    for result in results:
+                                        if isinstance(result, dict):
+                                            model_name = result.get("model_name", "")
+                                            if model_name:
+                                                search_results[model_name] = result
+                            except Exception as e:
+                                logging.error(f"Error searching for term {term}: {str(e)}")
             
-            # Execute content searches if specified
-            if search_terms:
-                logger.info(f"Searching for content with terms: {search_terms}")
-                for term in search_terms:
-                    if self.dbt_tools:
-                        try:
-                            term_results = self._search_by_keyword(term)
-                            if term_results:
-                                results[term] = term_results
-                        except Exception as e:
-                            logger.error(f"Error searching for term {term}: {str(e)}")
+            # Log search results
+            if search_results:
+                logging.info(f"Found search results: {list(search_results.keys())}")
+                
+                # Process model details if they don't already exist
+                if not state["model_details"]:
+                    for model_name, model_info in search_results.items():
+                        file_path = model_info.get("file_path", "")
+                        
+                        # Check for dependencies if DEPENDENCIES question
+                        dependencies = None
+                        if state.get("question_analysis", {}).get("question_type") == "DEPENDENCIES":
+                            dependencies = self._get_model_dependencies(model_name, file_path)
+                            if dependencies:
+                                logging.info(f"Found dependencies for {model_name}: {dependencies}")
+                        
+                        # Create model detail
+                        model_detail = {
+                            "model_name": model_name,
+                            "file_path": file_path,
+                            "content": model_info.get("content", ""),
+                            "model_type": model_info.get("model_type", "model"),
+                        }
+                        
+                        # Add dependencies if they exist
+                        if dependencies:
+                            model_detail["dependencies"] = dependencies
+                        
+                        # Add to model details
+                        state["model_details"].append(model_detail)
+            else:
+                logging.warning("No search results found for entities or search terms.")
             
-            logger.info(f"Search results: {len(results)} entities with matches")
-        except Exception as e:
-            logger.error(f"Error in _search_models: {str(e)}")
-            return {"error": str(e), "message": "Failed to search models"}
+            # Save search results and entities to state
+            state["search_results"] = search_results
+            state["entities"] = entities
+            
+            return {"search_results": search_results, "entities": entities}
         
-        return {"results": results, "entities": entities}
+        except Exception as e:
+            logging.error(f"Error in _search_models: {str(e)}")
+            logging.error(traceback.format_exc())
+            state["search_results"] = {}
+            state["entities"] = entities
+            state["model_details"] = []
+            return {"search_results": {}, "entities": entities}
     
     def _search_columns(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Search for columns in DBT models."""
@@ -1255,518 +1294,146 @@ class DataArchitectAgent:
         }
 
     def _generate_response(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Generate a response based on the question analysis and search results.
-        
-        Args:
-            state: The current agent state
-            
-        Returns:
-            Updated state with the generated response
-        """
+        """Generate a response based on the analysis and model details."""
         try:
-            # Extract relevant information from state
+            # Get key information from state
+            search_results = state.get("search_results", {})
+            model_details = state.get("model_details", [])
+            original_question = state["messages"][-1].content
             question_analysis = state.get("question_analysis", {})
-            question_type = question_analysis.get("question_type", "GENERAL")
+            question_type = question_analysis.get("question_type", "MODEL_INFO")
             entities = question_analysis.get("entities", [])
             
-            # Extract the original question
-            messages = state.get("messages", [])
-            question = messages[-1].content if messages else ""
-            
-            # Log the question type and entity count for debugging
-            logger.info(f"Generating response for {question_type} question with {len(entities)} entities")
-            
-            # Get instructions based on question type
-            instructions = self._get_instructions_for_type(question_type, question)
-            logger.info(f"Using instruction type: {question_type}")
-            
-            # Build context with relevant information from search results
-            formatted_prompt = self._format_results_for_prompt(state)
-            
-            if formatted_prompt and len(formatted_prompt) > 0:
-                logger.info(f"Found model information to include in prompt. Content length: {len(formatted_prompt)}")
-            else:
-                logger.warning("No model information found for any search method! Response may be generic.")
+            # Special handling for DEPENDENCIES questions with direct file paths
+            if question_type == "DEPENDENCIES" and entities and not model_details:
+                direct_file_paths = [entity for entity in entities if '/' in entity and (entity.endswith('.sql') or 'models/' in entity)]
                 
-            # Debug the content of the search results for fct_orders specifically
-            if "fct_orders" in question.lower() or "fct_order" in question.lower():
-                fct_orders_found = False
-                if "search_results" in state and state["search_results"]:
-                    for result in state["search_results"]:
-                        if result.get("model_name", "").lower() == "fct_orders":
-                            fct_orders_found = True
-                            logger.info(f"Found fct_orders model in search results: {result.get('file_path', '')}")
-                if "model_details" in state and state["model_details"]:
-                    if isinstance(state["model_details"], list):
-                        for model in state["model_details"]:
-                            if model.get("model_name", "").lower() == "fct_orders":
-                                fct_orders_found = True
-                                logger.info(f"Found fct_orders model in model_details: {model.get('file_path', '')}")
-                    elif isinstance(state["model_details"], dict):
-                        if state["model_details"].get("model_name", "").lower() == "fct_orders":
-                            fct_orders_found = True
-                            logger.info(f"Found fct_orders model in model_details (dict): {state['model_details'].get('file_path', '')}")
-                
-                if not fct_orders_found:
-                    logger.warning("Did not find fct_orders in any search results or model details!")
-                    # Try direct file access as a last resort
-                    model_path = "models/marts/core/fct_orders.sql"
-                    found, file_path, content = self._find_model_content(model_path)
-                    if found and content:
-                        logger.info(f"Found fct_orders directly at path: {file_path}")
-                        # Add it to the formatted prompt
-                        formatted_prompt += f"\n\n## Direct File Access\n\n### Model: fct_orders\n### Path: {file_path}\n```sql\n{content}\n```\n"
-                
-            # Combine instructions with information from search results
-            system_message = f"""
-            You are a SQL and data modeling expert, specializing in dbt analytics engineering.
-            
-            QUESTION: {question}
-            
-            INSTRUCTIONS FOR THIS SPECIFIC QUESTION:
-            {instructions}
-            
-            RELEVANT INFORMATION FROM DBT PROJECT:
-            {formatted_prompt}
-            """
-                
-            messages = [
-                SystemMessage(content=system_message),
-                HumanMessage(content=question)
-            ]
-            
-            # Log the prompt size for debugging
-            logger.info(f"Formatted prompt contains {len(system_message)} characters")
-            
-            # For debugging content
-            if "fct_orders" in question.lower() or "fct_order" in question.lower():
-                logger.info("Prompt includes exact model code for analysis.")
-                
-            # Call the language model to generate a response
-            response = self._safe_llm_call(messages)
-            
-            # For code enhancement responses, validate the output
-            if question_type == "CODE_ENHANCEMENT":
-                # Find model content from search results
-                if "model_details" in state and state["model_details"]:
-                    if isinstance(state["model_details"], list) and len(state["model_details"]) > 0:
-                        # Use the first model's content
-                        model_details = state["model_details"][0]
-                        file_path = model_details.get("file_path", "")
-                        content = model_details.get("content", "")
-                    else:
-                        file_path = state["model_details"].get("file_path", "")
-                        content = state["model_details"].get("content", "")
+                if direct_file_paths:
+                    for file_path in direct_file_paths:
+                        found, path, content = self._find_model_content(file_path)
                         
-                    if file_path and content:
-                        # Validate and potentially fix the response
-                        response = self._validate_code_enhancement_response(response, content, file_path, question)
-                elif "search_results" in state and state["search_results"]:
-                    # Find the first result with content
-                    for result in state["search_results"]:
-                        file_path = result.get("file_path", "")
-                        content = result.get("content", "")
-                        if file_path and content:
-                            # Validate and potentially fix the response
-                            response = self._validate_code_enhancement_response(response, content, file_path, question)
+                        if found:
+                            # Extract model name from the path
+                            model_name = os.path.splitext(os.path.basename(path))[0]
+                            
+                            # Get dependencies directly
+                            dependencies = self._get_model_dependencies(model_name, path)
+                            
+                            # Create model detail with dependencies
+                            model_detail = {
+                                "model_name": model_name,
+                                "file_path": path,
+                                "content": content,
+                                "model_type": self._extract_model_type(content),
+                                "dependencies": dependencies
+                            }
+                            
+                            # Add to model_details
+                            if not model_details:
+                                model_details = []
+                            model_details.append(model_detail)
+                            state["model_details"] = model_details
+                            
+                            logging.info(f"Added dependencies for {model_name} in _generate_response")
                             break
             
-            # Update state with the generated response
-            state["final_response"] = response
-                        
-            return state
-        except Exception as e:
-            logger.error(f"Error generating response: {str(e)}")
-            state["final_response"] = f"I encountered an error while generating a response: {str(e)}"
-            return state
-
-    def _get_code_enhancement_instructions(self, query: str) -> str:
-        """Get instructions for code enhancement questions."""
-        return """
-        # DBT Code Enhancement Instructions
-
-        ## DEVELOPER ROLE
-        Act as an experienced DBT developer who focuses on implementing EXACTLY what the user has requested.
-        Your primary goal is to modify the EXISTING DBT MODEL CODE rather than writing SQL DDL statements.
-        
-        ## IMPORTANT: DBT-SPECIFIC REQUIREMENTS
-        - NEVER generate `ALTER TABLE` or `UPDATE` statements - these are not valid in DBT models
-        - ALWAYS modify the existing DBT model SQL code itself
-        - Preserve all DBT references ({{ ref('model_name') }}), macros, and Jinja syntax
-        - Maintain the existing config blocks and materialization settings
-        - For calculated columns, add the calculation directly in the SELECT statement
-        - Respect the project's existing coding style and patterns
-
-        ## Analysis Approach
-        1. Identify EXACTLY what changes the user is requesting (new column, calculation, etc.)
-        2. Examine the EXISTING CTEs, SELECT statements, and column definitions
-        3. Determine the best place to add the new column or calculation within the model's structure
-        4. Implement the change by modifying the appropriate SELECT statement(s)
-        5. Ensure the change works with DBT incremental models if applicable
-
-        ## Response Format
-        Structure your response as follows:
-
-        ### 1. Implementation Summary
-        - Brief description of the EXACT change implemented
-        - Explanation of where and how the change was added to the model
-
-        ### 2. Complete Modified DBT Model
-        - Show the COMPLETE modified SQL code with your changes
-        - Include a comment (-- ADDED or -- MODIFIED) next to any lines you've changed
-        - Present the FULL code, not just the altered section
-
-        ### 3. Technical Explanation
-        - Explain how your implementation works within the DBT model
-        - Note any considerations for testing or validation
-
-        ## CRITICAL REQUIREMENTS
-        - Focus on MODIFYING THE EXISTING MODEL CODE, not creating DDL statements
-        - NEVER write `ALTER TABLE` or `UPDATE` statements - these don't work in DBT
-        - PRESERVE all DBT-specific syntax like {{ ref() }}, {{ config() }}, and Jinja blocks
-        - Respect the model's existing materialization strategy and configuration
-        - Ensure any added calculations respect the model's grain and existing logic
-        - For new columns, add them directly in the appropriate SELECT statement
-        - The implementation must be executable as-is in a DBT project
-        """
-
-    def _get_documentation_instructions(self, query: str) -> str:
-        """Get instructions for documentation questions."""
-        return """
-        # Technical Documentation Instructions
-        
-        ## Documentation Approach
-        Create comprehensive, technical documentation that is concise and focused on actual implementation.
-        Prioritize code examples, relationship diagrams, and technical specifications over general descriptions.
-        
-        ## Documentation Structure
-        
-        ### 1. Technical Overview
-        - Purpose and function of the component being documented
-        - Key technical characteristics (no marketing language)
-        - Critical dependencies and relationships
-        
-        ### 2. Implementation Details
-        - ACTUAL CODE examples from the codebase
-        - SQL structure, CTEs, and key transformations
-        - Configuration details and materialization settings
-        - Performance considerations with technical rationale
-        
-        ### 3. Schema Documentation
-        - Column definitions with data types
-        - Primary/foreign key relationships
-        - Detailed calculation logic for derived fields
-        - Constraints and validations
-        
-        ### 4. Technical Relationships
-        - Detailed dependency chain (upstream/downstream)
-        - Interface specifications
-        - Integration points with other systems/models
-        
-        ## Critical Requirements
-        - BE TECHNICAL: Focus on implementation details, not general concepts
-        - BE CONCISE: Prioritize facts and code over lengthy explanations
-        - BE ACCURATE: All documentation must match the actual code implementation
-        - SHOW CODE: Include actual code snippets for all important components
-        - PRIORITIZE RELATIONSHIPS: Clearly document how components interact
-        
-        ## Style Guidelines
-        - Use proper technical terminology consistently
-        - Format all code blocks properly
-        - Use bullet points for lists of specifications
-        - Keep paragraphs short and focused on a single concept
-        - Organize information hierarchically from most to least important
-        """
-
-    def _safe_llm_call(self, messages: List[BaseMessage], max_retries: int = 2) -> str:
-        """Safely call LLM with retry mechanism and error handling"""
-        retries = 0
-        while retries <= max_retries:
+            # Format search results for prompt
+            formatted_results = self._format_results_for_prompt(state)
+            
+            # Check if we have meaningful results
+            has_model_details = model_details and len(model_details) > 0
+            has_search_results = search_results and (isinstance(search_results, dict) and any(search_results.values()) or 
+                                                     isinstance(search_results, list) and len(search_results) > 0)
+            
+            if not has_model_details and not has_search_results:
+                logging.warning("No model information found for any search method! Response may be generic.")
+            
+            # Get type-specific instructions
+            instruction_prompt = self._get_instructions_for_type(question_type, original_question)
+            
+            # Create variable to store visualization data for the frontend
+            lineage_data = None
+            
+            # Special formatting for different question types
+            # For DEPENDENCIES questions
+            if question_type == "DEPENDENCIES" and has_model_details:
+                formatted_results = self._format_dependencies_for_prompt(state, model_details, formatted_results)
+                lineage_data = self._create_lineage_visualization(model_details)
+            
+            # For LINEAGE questions
+            elif question_type == "LINEAGE" and has_model_details:
+                formatted_results = self._format_lineage_for_prompt(state, model_details, formatted_results)
+                lineage_data = self._create_lineage_visualization(model_details)
+                
+            # For CODE_ENHANCEMENT questions
+            elif question_type == "CODE_ENHANCEMENT" and has_model_details:
+                formatted_results = self._format_code_enhancement_for_prompt(state, model_details, formatted_results)
+                
+            # For DEVELOPMENT questions
+            elif question_type == "DEVELOPMENT" and has_model_details:
+                formatted_results = self._format_development_for_prompt(state, model_details, formatted_results)
+                
+            # For MODEL_INFO questions
+            elif question_type == "MODEL_INFO" and has_model_details:
+                formatted_results = self._format_model_info_for_prompt(state, model_details, formatted_results)
+            
+            # Create the prompt for the language model
+            prompt_messages = [
+                SystemMessage(content=instruction_prompt),
+                HumanMessage(content=f"""
+                QUESTION: {original_question}
+                
+                SEARCH RESULTS:
+                {formatted_results}
+                
+                Please provide a comprehensive response to the question based on the search results above.
+                """)
+            ]
+            
+            # Call the LLM and handle errors
             try:
-                response = self.llm.invoke(messages)
-                content = response.content
-
-                # Check if this is a code enhancement task with framework-specific content
-                is_code_enhancement = any(message.content and "enhance the following code" in message.content.lower() for message in messages)
+                response = self._safe_llm_call(prompt_messages)
                 
-                # Check if this is a lineage task
-                is_lineage_task = any(message.content and ("data lineage" in message.content.lower() or "model lineage" in message.content.lower()) for message in messages)
-                
-                # Framework mentions that don't belong in a DBT context
-                framework_mentions = ["Laravel", "Django", "Rails", "Java", "Node.js", "Express", "Spring Boot", "Flask"]
-                
-                # Generic lineage phrases that indicate a non-specific response
-                generic_lineage_phrases = [
-                    "lineage overview",
-                    "upstream dependencies",
-                    "downstream dependencies",
-                    "critical path analysis", 
-                    "the model of interest",
-                    "highlight the model in your visualization",
-                    "visualization",
-                    "ALWAYS INCLUDE"
-                ]
-                
-                # DBT model path patterns
-                dbt_model_path_pattern = re.compile(r'models/[a-zA-Z0-9_/]+\.sql')
-                
-                # Check for framework-specific content in code enhancements
-                if is_code_enhancement and any(framework in content for framework in framework_mentions):
-                    correction = """
-                    THE SOLUTION PROVIDED IS NOT APPROPRIATE FOR A DBT PROJECT.
+                # Enhance the response with specialized formatting based on question type
+                if question_type == "CODE_ENHANCEMENT":
+                    response = self._validate_code_enhancement_response(response, state)
                     
-                    DBT (data build tool) is SQL-first and specifically designed for data transformation in the data warehouse.
-                    It does not use web frameworks like Laravel, Django, etc.
+                elif question_type == "MODEL_INFO":
+                    response = self._validate_documentation_response(response, question_type)
                     
-                    CORRECT APPROACH:
-                    1. Make direct edits to the SQL file in the models directory 
-                    2. Focus on SQL transformations, not web application code
-                    3. Follow DBT best practices for model structure and reference
+                elif question_type == "DEPENDENCIES" and has_model_details:
+                    # Add dependency visualization if not already present
+                    response = self._validate_dependency_response(response, model_details)
                     
-                    Please revise your answer to only include DBT-specific SQL transformations.
-                    """
-                    content += "\n\n" + correction
+                elif question_type == "LINEAGE" and has_model_details:
+                    # Add lineage visualization if not already present
+                    response = self._validate_lineage_response(response, model_details)
+                    
+                elif question_type == "DEVELOPMENT":
+                    # Ensure development response has code blocks
+                    response = self._validate_development_response(response)
                 
-                # Check for generic lineage responses
-                if is_lineage_task:
-                    # Extract file path mentions
-                    model_paths = dbt_model_path_pattern.findall(content)
+                # Append visualization data for frontend rendering if applicable
+                if lineage_data and (question_type == "DEPENDENCIES" or question_type == "LINEAGE"):
+                    # Use a special tag that the frontend can detect and extract for visualization
+                    visualization_json = f"\n\n# LINEAGE_VISUALIZATION\n```json\n{json.dumps(lineage_data, indent=2)}\n```"
+                    response = response + visualization_json
                     
-                    # Check for generic phrases or lacking sufficient concrete paths
-                    has_generic_phrases = any(phrase in content for phrase in generic_lineage_phrases)
-                    
-                    # If there are fewer than 2 model paths or generic phrases are present, flag as generic
-                    if len(model_paths) < 2 or has_generic_phrases:
-                        correction = """
-                        THE LINEAGE INFORMATION PROVIDED APPEARS TO BE GENERIC AND NOT SPECIFIC TO THE REPOSITORY.
-                        
-                        IMPORTANT CORRECTION:
-                        
-                        Your response should ONLY include actual lineage information extracted from the Git repository.
-                        Be specific about:
-                        1. The exact file paths found in the repository
-                        2. True upstream dependencies (models referenced with ref() or source())
-                        3. True downstream dependencies (models that reference this model)
-                        4. Column-level dependencies where possible
-                        
-                        Example of correct paths in this repository:
-                        - models/marts/intermediate/order_items.sql
-                        - models/staging/tpch/stg_tpch_orders.sql
-                        - models/marts/core/fct_order_items.sql
-                        
-                        If the information cannot be found in the repository, please state that clearly instead of providing generalized descriptions.
-                        """
-                        content += "\n\n" + correction
+                    # Also log the visualization data for debugging
+                    logging.info(f"Added lineage visualization data with {len(lineage_data.get('models', []))} models and {len(lineage_data.get('edges', []))} edges")
                 
-                return content
+                # Set the final response in the state
+                state["final_response"] = response
+                
+                return state
             except Exception as e:
-                retries += 1
-                if retries > max_retries:
-                    # If all retries fail, return an error message
-                    return f"I apologize, but I encountered an error while processing your request. Please try again or rephrase your question. Error details: {str(e)}"
-                # Wait briefly before retrying
-                time.sleep(1)
-
-    def _format_results_for_prompt(self, state: Dict[str, Any]) -> str:
-        """Format search results for inclusion in the prompt."""
-        try:
-            formatted_results = []
-            
-            # Format model search results
-            if 'search_results' in state and state['search_results']:
-                results = state['search_results']
-                
-                formatted_results.append(f"## DBT Model Search Results")
-                
-                if isinstance(results, list):
-                    for i, result in enumerate(results):
-                        if not result:
-                            continue
-                            
-                        model_name = result.get('model_name', '')
-                        file_path = result.get('file_path', '')
-                        content = result.get('content', '')
-                        
-                        if file_path and content:
-                            formatted_results.append(f"\n### Model: {model_name}")
-                            formatted_results.append(f"### Path: {file_path}")
-                            formatted_results.append(f"```sql\n{content}\n```\n")
-                            
-                            # Include schema info if available
-                            schema_info = result.get('schema_info', {})
-                            if schema_info:
-                                formatted_results.append("#### Schema Information:")
-                                for key, value in schema_info.items():
-                                    formatted_results.append(f"- **{key}**: {value}")
-                                formatted_results.append("")
-                
-                elif isinstance(results, dict):
-                    for key, value in results.items():
-                        if isinstance(value, list):
-                            for result in value:
-                                if not result:
-                                    continue
-                                    
-                                model_name = result.get('model_name', '')
-                                file_path = result.get('file_path', '')
-                                content = result.get('content', '')
-                                
-                                if file_path and content:
-                                    formatted_results.append(f"\n### Model: {model_name}")
-                                    formatted_results.append(f"### Path: {file_path}")
-                                    formatted_results.append(f"```sql\n{content}\n```\n")
-                                    
-                                    # Include schema info if available
-                                    schema_info = result.get('schema_info', {})
-                                    if schema_info:
-                                        formatted_results.append("#### Schema Information:")
-                                        for schema_key, schema_value in schema_info.items():
-                                            formatted_results.append(f"- **{schema_key}**: {schema_value}")
-                                        formatted_results.append("")
-            
-            # Format model details
-            if 'model_details' in state and state['model_details']:
-                model_details = state['model_details']
-                
-                if isinstance(model_details, list):
-                    model_details_section = []
-                    model_details_section.append(f"\n## Model Details")
-                    
-                    for model in model_details:
-                        model_name = model.get('model_name', '')
-                        file_path = model.get('file_path', '')
-                        content = model.get('content', '')
-                        
-                        if model_name and file_path:
-                            model_details_section.append(f"\n### TARGET MODEL: {model_name}")
-                            model_details_section.append(f"### MODEL PATH: {file_path}")
-                            
-                            if content:
-                                model_details_section.append(f"```sql\n{content}\n```\n")
-                            
-                            # Include dependencies
-                            deps = model.get('dependencies', {})
-                            if deps:
-                                model_details_section.append("#### Dependencies:")
-                                for dep_type, dep_list in deps.items():
-                                    model_details_section.append(f"- **{dep_type}**: {', '.join(dep_list)}")
-                                model_details_section.append("")
-                    
-                    formatted_results.extend(model_details_section)
-                
-                elif isinstance(model_details, dict):
-                    model_details_section = []
-                    model_details_section.append(f"\n## Model Details")
-                    
-                    model_name = model_details.get('model_name', '')
-                    file_path = model_details.get('file_path', '')
-                    content = model_details.get('content', '')
-                    
-                    if model_name and file_path:
-                        model_details_section.append(f"\n### TARGET MODEL: {model_name}")
-                        model_details_section.append(f"### MODEL PATH: {file_path}")
-                        
-                        if content:
-                            model_details_section.append(f"```sql\n{content}\n```\n")
-                        
-                        # Include dependencies
-                        deps = model_details.get('dependencies', {})
-                        if deps:
-                            model_details_section.append("#### Dependencies:")
-                            for dep_type, dep_list in deps.items():
-                                model_details_section.append(f"- **{dep_type}**: {', '.join(dep_list)}")
-                            model_details_section.append("")
-                    
-                    formatted_results.extend(model_details_section)
-            
-            # Format column details
-            if 'column_details' in state and state['column_details']:
-                column_details = state['column_details']
-                
-                if isinstance(column_details, list) and column_details:
-                    formatted_results.append(f"\n## Column Search Results")
-                    
-                    for result in column_details:
-                        model_name = result.get('model_name', '')
-                        column_name = result.get('column_name', '')
-                        calculation = result.get('calculation', '')
-                        
-                        if model_name and column_name:
-                            formatted_results.append(f"\n### Column: {column_name} in {model_name}")
-                            
-                            if calculation:
-                                formatted_results.append(f"#### Calculation:")
-                                formatted_results.append(f"```sql\n{calculation}\n```\n")
-                
-                elif isinstance(column_details, dict) and column_details:
-                    formatted_results.append(f"\n## Column Search Results")
-                    
-                    for key, results in column_details.items():
-                        if isinstance(results, list):
-                            for result in results:
-                                model_name = result.get('model_name', '')
-                                column_name = result.get('column_name', '')
-                                calculation = result.get('calculation', '')
-                                
-                                if model_name and column_name:
-                                    formatted_results.append(f"\n### Column: {column_name} in {model_name}")
-                                    
-                                    if calculation:
-                                        formatted_results.append(f"#### Calculation:")
-                                        formatted_results.append(f"```sql\n{calculation}\n```\n")
-            
-            # Format content search results
-            if 'content_search' in state and state['content_search']:
-                content_search = state['content_search']
-                
-                if isinstance(content_search, list) and content_search:
-                    formatted_results.append(f"\n## Content Search Results")
-                    
-                    for result in content_search:
-                        model_name = result.get('model_name', '')
-                        file_path = result.get('file_path', '')
-                        match_contexts = result.get('match_contexts', [])
-                        
-                        if model_name and file_path and match_contexts:
-                            formatted_results.append(f"\n### Matches in {model_name} ({file_path})")
-                            
-                            for context in match_contexts:
-                                formatted_results.append(f"```\n{context}\n```\n")
-                
-                elif isinstance(content_search, dict) and content_search:
-                    formatted_results.append(f"\n## Content Search Results")
-                    
-                    for key, results in content_search.items():
-                        if isinstance(results, list):
-                            for result in results:
-                                model_name = result.get('model_name', '')
-                                file_path = result.get('file_path', '')
-                                match_contexts = result.get('match_contexts', [])
-                                
-                                if model_name and file_path and match_contexts:
-                                    formatted_results.append(f"\n### Matches in {model_name} ({file_path})")
-                                    
-                                    for context in match_contexts:
-                                        formatted_results.append(f"```\n{context}\n```\n")
-            
-            return "\n".join(formatted_results)
+                logging.error(f"Error generating response: {str(e)}")
+                state["final_response"] = f"I apologize, but I encountered an error while generating a response. Error details: {str(e)}"
+                return state
         except Exception as e:
-            logger.error(f"Error formatting results for prompt: {str(e)}")
-            return "Error formatting search results."
-    
-    def _get_example_path_from_results(self, results: Dict[str, Any]) -> str:
-        """Extract an example file path from results to show in the prompt."""
-        # Try to find a file path in the model search results
-        if "model_search" in results:
-            model_results = results["model_search"]
-            if "results" in model_results and model_results["results"]:
-                first_result = model_results["results"][0]
-                if isinstance(first_result, dict) and "file_path" in first_result:
-                    return first_result["file_path"]
-        
-        # If no file path found, return a generic example
-        return "models/path/to/model.sql"
+            logging.error(f"Error in _generate_response: {str(e)}")
+            state["final_response"] = f"I apologize, but I encountered an error while processing your request. Error details: {str(e)}"
+            return state
 
     def _get_instructions_for_type(self, question_type: str, question: str) -> str:
         """Get specific instructions based on question type."""
@@ -1776,16 +1443,19 @@ class DataArchitectAgent:
             "LINEAGE": self._get_lineage_instructions,
             "DEPENDENCIES": self._get_dependency_instructions,
             "CODE_ENHANCEMENT": self._get_code_enhancement_instructions,
-            "DOCUMENTATION": self._get_documentation_instructions,
-            "DEVELOPMENT": self._get_development_instructions,
-            "GENERAL": self._get_general_instructions
+            "DEVELOPMENT": self._get_development_instructions
         }
         
         # Log which instruction type we're using
-        logger.info(f"Using instruction type: {question_type}")
+        logging.info(f"Using instruction type: {question_type}")
+        
+        # Default to MODEL_INFO for any unmapped question types
+        if question_type not in instructions_map:
+            logging.warning(f"Unknown question type: {question_type}. Defaulting to MODEL_INFO.")
+            question_type = "MODEL_INFO"
         
         # Get the instruction function for this question type
-        instruction_fn = instructions_map.get(question_type, self._get_general_instructions)
+        instruction_fn = instructions_map.get(question_type)
         
         # Generate and return the instructions
         instructions = instruction_fn(question)
@@ -1795,25 +1465,38 @@ class DataArchitectAgent:
             instructions = """
             # YOU ARE ACTING AS A DEVELOPER, NOT AN EXPLAINER
             Your task is to provide COMPLETE, WORKING code with specific enhancements, not just explain.
+            Focus on providing clear, step-by-step code blocks that show the changes needed.
+            Include explanations of WHY you're making each change.
             
             """ + instructions
         elif question_type == "DEVELOPMENT":
             instructions = """
             # YOU ARE ACTING AS A DEVELOPER, NOT AN EXPLAINER
             Your task is to implement a complete, working solution with full code, not just explain concepts.
-            
-            """ + instructions
-        elif question_type == "DOCUMENTATION":
-            instructions = """
-            # YOU ARE CREATING COMPLETE TECHNICAL DOCUMENTATION
-            Your task is to create comprehensive documentation that would be suitable for inclusion in a DBT docs site,
-            focusing on both technical details AND business context.
+            Break down your implementation into clear, logical steps.
+            Provide complete code blocks that can be executed directly.
             
             """ + instructions
         elif question_type == "MODEL_INFO":
             instructions = """
             # YOU ARE EXPLAINING THE MODEL'S PURPOSE AND STRUCTURE
             Your task is to explain what this model does, how it works, and why it exists - focus on clarity and explanation.
+            Use code blocks to illustrate important SQL patterns and transformations.
+            
+            """ + instructions
+        elif question_type == "LINEAGE":
+            instructions = """
+            # YOU ARE CREATING A VISUAL REPRESENTATION OF DATA FLOW
+            Your task is to show how data flows through models, with clear visualizations of upstream and downstream dependencies.
+            Use text-based diagrams to illustrate these relationships clearly.
+            
+            """ + instructions
+        elif question_type == "DEPENDENCIES":
+            instructions = """
+            # YOU ARE ANALYZING MODEL DEPENDENCIES
+            Your task is to identify and explain all dependencies of the specified model, both upstream and downstream.
+            Use a structured, hierarchical format to show these relationships clearly.
+            Include visualizations where helpful.
             
             """ + instructions
         
@@ -1822,274 +1505,201 @@ class DataArchitectAgent:
     def _get_model_explanation_instructions(self, query: str) -> str:
         """Get instructions for model explanation questions."""
         return """
-        # Model Explanation Instructions
-
-        ## Your Role
-        You are acting as a data architect who explains DBT models clearly and concisely for both technical and business users. 
-        Focus on providing essential information without unnecessary examples or verbose explanations.
-
-        ## Explanation Structure
-        Create a crisp, well-structured explanation with these sections:
-
-        ### 1. Model Overview (2-3 sentences)
-        - Model type (fact/dimension/etc.)
-        - Core purpose of the model
-        - Key business use cases
+        You are a DBT expert explaining a data model.
         
-        ### 2. Technical Implementation (focus on code)
-        - Core SQL structure with actual code snippets
-        - Important CTEs and their purpose
-        - Key joins and filters
-        - Critical transformations
+        # TASK
+        You must analyze and explain a DBT model, its purpose, structure, and key transformations.
         
-        ### 3. Data Relationships
-        - Upstream dependencies (source tables, staging models)
-        - Downstream consumers
-        - Primary/foreign key relationships
-        - Important column lineage
+        # APPROACH
+        1. Identify the model in question from the context
+        2. Analyze its structure and SQL logic
+        3. Determine its purpose within the data warehouse
+        4. Explain key transformations and business logic
         
-        ### 4. Key Metrics & Business Logic (when applicable)
-        - Critical business metrics with their calculation logic
-        - Business rules implemented in the model
-        - Data validations and quality checks
-
-        ## Critical Requirements
-        - BE CONCISE: Prioritize code and technical details over lengthy explanations
-        - NO GENERIC EXAMPLES: Don't include example queries unless specifically requested
-        - SHOW ACTUAL CODE: Include real SQL snippets from the model when explaining logic
-        - TECHNICAL ACCURACY: Ensure all explanations match the actual model implementation
-        - FOCUS ON RELATIONSHIPS: Emphasize how the model connects to other tables
+        # REQUIREMENTS
+        - Clearly explain the model's overall purpose
+        - Describe the key business entities it represents
+        - Explain important SQL transformations
+        - Identify source data and dependencies
+        - Note any important calculations or business rules
         
-        ## Response Style
-        - Use technical terms correctly but explain them when necessary
-        - Be direct and to-the-point
-        - Use bullet points for lists
-        - Include relevant code blocks with proper formatting
-        - Focus on what makes this model unique and important
+        # EXAMPLE RESPONSE FORMAT
+        ## Model Overview: [model_name]
+        [Brief explanation of the model's purpose and role]
+        
+        ## Key Transformations
+        [Explanation of main SQL transformations]
+        
+        ## Business Logic
+        [Explanation of key business rules and calculations]
+        
+        ## Data Sources
+        [Description of where the data comes from]
+        
+        ## Sample SQL
+        ```sql
+        -- Key portions of SQL with explanations
+        ```
         """
 
     def _get_lineage_instructions(self, query: str) -> str:
-        """Get instructions for lineage queries"""
+        """Get instructions for lineage questions"""
         return """
-You need to analyze and visualize the data lineage for the requested model from the Git repository.
-
-1. MOST IMPORTANT: Provide ONLY ACTUAL lineage information extracted from the Git repository. 
-   DO NOT generate hypothetical lineage. If information is not found, say so explicitly.
-
-2. First identify the EXACT model file path in the Git repository. For example:
-   - models/marts/intermediate/order_items.sql
-   - models/staging/tpch/stg_tpch_orders.sql
-   
-3. Extract model information:
-   - The exact model definition (SQL code)
-   - All upstream dependencies using ref() or source() functions
-   - Downstream dependencies (models that reference this model)
-   - Column definitions and calculations
-
-4. Present the lineage in a clearly formatted section titled "LINEAGE" that includes:
-   - Full file paths (e.g., models/marts/intermediate/order_items.sql)
-   - Model types (staging, intermediate, core, mart) based on their paths
-   - Key transformations performed (joins, calculations, etc.)
-   - Exact column names and their transformations
-
-5. Create a visualization using text that clearly shows:
-   ```
-   Upstream Flow:
-   models/staging/tpch/stg_tpch_orders.sql → models/marts/intermediate/order_items.sql ← models/staging/tpch/stg_tpch_line_items.sql
-   
-   Detailed Model:
-   └── models/marts/intermediate/order_items.sql
-       ├── [order_key] (primary key, from stg_tpch_orders)
-       ├── [base_price] (calculated from extended_price/quantity)
-       └── [gross_item_sales_amount] (line_item.extended_price)
-       
-   Downstream Flow:
-   └── models/marts/core/fct_order_items.sql
-       └── models/marts/aggregates/agg_ship_modes_hardcoded_pivot.sql
-   └── models/marts/core/fct_orders.sql
-   ```
-
-6. For column-level lineage, identify:
-   - Source of each column (upstream model or calculation)
-   - Transformation logic (formula or reference)
-   - Downstream usage
-
-REMEMBER: 
-- ONLY reference models and sources that ACTUALLY EXIST in the Git repository
-- Use EXACT file paths from the repository structure
-- NEVER invent connections that don't appear in the code
-- For column calculations, quote the ACTUAL SQL from the model file
-- If you cannot find certain information, explicitly state what is missing
-"""
+    You are a DBT expert explaining model lineage.
+    
+    # TASK
+    You must analyze and visualize the lineage of a DBT model, showing upstream and downstream dependencies.
+    
+    # APPROACH
+    1. Identify the model in question from the context
+    2. Analyze its direct upstream dependencies (models it references)
+    3. Analyze its direct downstream dependencies (models that reference it)
+    4. Create a visualization of these relationships
+    
+    # REQUIREMENTS
+    - Clearly identify the central model in question
+    - Show all direct upstream dependencies
+    - Show all direct downstream dependencies
+    - Provide a visual representation of the lineage
+    - Explain key dependency relationships and their purpose
+    
+    # EXAMPLE RESPONSE FORMAT
+    ## Model Lineage: [model_name]
+    
+    [Visual representation of lineage relationships]
+    
+    ## Upstream Dependencies
+    [List and explanation of upstream models]
+    
+    ## Downstream Dependencies
+    [List and explanation of downstream models]
+    
+    ## Key Relationships
+    [Explanation of the most important dependency relationships]
+    """
 
     def _get_dependency_instructions(self, query: str) -> str:
-        """
-        Get instructions for dependency analysis questions.
-        
-        Args:
-            query: The user's query
-            
-        Returns:
-            Instructions for generating a dependency analysis response
-        """
+        """Get instructions for dependency questions."""
         return """
-        # Dependency Analysis Instructions
-        
-        ## Analysis Requirements
-        1. **Analyze the provided model code** to identify ALL dependencies
-        2. **Do NOT ask for the model code** - it has already been provided in the search results
-        3. **Focus on complete dependency chain** - both direct and indirect dependencies
-        4. **Include source tables** - identify the ultimate data sources
-        5. **Explain the dependency flow** in business terms
-        
-        ## Response Format
-        Structure your response with these sections:
-        
-        ### 1. Model Overview
-        - Provide a brief description of the model's purpose
-        - Identify its materialization type (table, view, incremental, etc.)
-        - Mention when this model is typically refreshed (if identifiable)
-        
-        ### 2. Direct Dependencies
-        - List all models or sources referenced using `ref()` or `source()`
-        - For each dependency, describe:
-          - Its purpose in relation to this model
-          - The join or relationship type
-          - Key SQL patterns used in the relationship
-        
-        ### 3. Indirect Dependencies (Upstream)
-        - Identify second-level dependencies (models that feed into direct dependencies)
-        - Trace dependencies back to source tables where possible
-        - Present this as a hierarchical structure
-        
-        ### 4. Source Tables
-        - List all ultimate source tables at the origin of the dependency chain
-        - Group by schema/database if applicable
-        - Describe the critical source tables and their importance
-
-        ### 5. Dependency Visualization
-        - Present a text-based visualization of the dependency flow (upstream/downstream)
-        - Use indentation to show hierarchy
-        - Format as:
-          ```
-          fct_orders
-          ├── stg_tpch_orders
-          │   └── raw.tpch.orders
-          └── order_items
-              └── stg_tpch_order_items
-                  └── raw.tpch.order_items
-          ```
-        
-        ### 6. SQL Reference Examples
-        - Include code snippets showing how each key dependency is referenced
-        - Format as:
-          ```sql
-          -- Reference to stg_tpch_orders
-          select * from {{ ref('stg_tpch_orders') }}
-          ```
-        
-        ## Key Requirements
-        - Be specific to the EXACT model provided in the search results
-        - Trace each dependency chain back to source tables where possible
-        - Include both the model names AND their file paths when available
-        - Note any config parameters that affect dependencies (e.g. pre/post hooks)
-        - Explain WHY certain dependencies exist (business context)
-        - YOUR ANALYSIS MUST BE BASED ON THE PROVIDED MODEL, NOT A GENERIC RESPONSE
-        """
+    You are a DBT expert analyzing model dependencies.
+    
+    # TASK
+    You must provide a detailed analysis of a model's dependencies, showing what it depends on and what depends on it.
+    
+    # APPROACH
+    1. Identify the model in question from the context
+    2. Analyze its direct and indirect upstream dependencies
+    3. Analyze its direct and indirect downstream dependencies
+    4. Identify source tables and final output consumers
+    
+    # REQUIREMENTS
+    - Clearly identify the central model
+    - List and explain all direct upstream dependencies
+    - List and explain all direct downstream dependencies
+    - Show indirect dependencies where relevant
+    - Explain the purpose of key dependency relationships
+    - Include a visualization of the dependency network
+    
+    # EXAMPLE RESPONSE FORMAT
+    ## Model Dependencies: [model_name]
+    
+    [Brief description of the model and its purpose]
+    
+    ## Direct Dependencies
+    
+    ### Upstream (models this depends on)
+    - [model_name_1]: [brief description of relationship]
+    - [model_name_2]: [brief description of relationship]
+    
+    ### Downstream (models that depend on this)
+    - [model_name_3]: [brief description of relationship]
+    - [model_name_4]: [brief description of relationship]
+    
+    ## Source Tables
+    [List of original source tables feeding this model]
+    
+    ## Dependency Visualization
+    [Text-based visualization of the dependency network]
+    
+    ## SQL Reference Example
+    ```sql
+    -- Example showing how this model references its dependencies
+    ```
+    """
 
     def _get_development_instructions(self, query: str) -> str:
         """Get instructions for development questions."""
         return """
-        # DBT Development Instructions
+    You are a DBT expert assisting with developing new SQL models.
+    
+    # TASK
+    You must create a new, complete DBT model based on the user's requirements.
+    
+    # APPROACH
+    1. Analyze the requirements and identify the necessary data transformations
+    2. Design a new model that fulfills these requirements
+    3. Implement the model with complete, working SQL code
+    4. Follow DBT best practices for naming, structure, and documentation
+    
+    # REQUIREMENTS
+    - Provide a complete implementation of the new model
+    - Include properly formatted SQL code that follows DBT standards
+    - Add comments explaining key transformations
+    - Include appropriate tests and documentation
+    - Ensure the model is optimized for performance and maintainability
+    
+    # EXAMPLE RESPONSE FORMAT
+    ## Model Overview
+    [Brief explanation of the model's purpose and design]
+    
+    ## Implementation
+    ```sql
+    -- Complete SQL implementation of the new model
+    ```
+    
+    ## Tests
+    ```yaml
+    # Recommended tests for this model
+    ```
+    
+    ## Documentation
+    ```yaml
+    # Recommended documentation for this model
+    ```
+    """
 
-        ## DEVELOPER ROLE
-        Act as an experienced DBT developer who implements practical, executable solutions.
-        Your goal is to provide COMPLETE, PRODUCTION-READY CODE - not just explanations.
-        
-        ## Development Approach
-        1. UNDERSTAND THE EXACT REQUIREMENT from the user's question
-        2. CREATE COMPLETE DBT MODEL FILES with all necessary components
-        3. FOLLOW DBT BEST PRACTICES including proper ref() usage, documentation, and testing
-        4. OPTIMIZE FOR PERFORMANCE with appropriate materialization strategies
-        5. PROVIDE IMPLEMENTATION DETAILS that a developer can immediately use
-        
-        ## Response Format
-        Structure your response with these sections:
-        
-        ### 1. Solution Overview
-        - Brief summary of the implementation approach
-        - Key technical decisions and patterns used
-        
-        ### 2. COMPLETE CODE IMPLEMENTATION
-        - Full, executable DBT model SQL code
-        - Include ALL necessary files (models, schema.yml, etc.)
-        - Use proper file headers and documentation
-        
-        ### 3. Implementation Details
-        - Step-by-step explanation of the code
-        - How the solution addresses the specific requirement
-        - Any configuration or materialization decisions
-        
-        ### 4. Testing & Validation
-        - Specific test cases to validate the implementation
-        - Sample dbt_project.yml configuration if needed
-        
-        ## CRITICAL REQUIREMENTS
-        - PROVIDE COMPLETE, RUNNABLE CODE - not conceptual explanations
-        - USE MODERN DBT SYNTAX and follow dbt best practices
-        - INCLUDE ALL NECESSARY FILES (SQL, YAML, etc.)
-        - OPTIMIZE for appropriate materialization strategies
-        - ADD THOROUGH DOCUMENTATION including descriptions and tests
-        - ENSURE models follow proper naming conventions
-        - STRUCTURE your code with appropriate CTEs and comments
-        """
-
-    def _get_general_instructions(self, query: str) -> str:
-        """Get instructions for general questions."""
+    def _get_code_enhancement_instructions(self, query: str) -> str:
+        """Get instructions for code enhancement questions."""
         return """
-        Provide a focused, detailed response to this general dbt question:
-        
-        1. DIRECT ANSWER
-        - Answer the question explicitly and clearly
-        - Provide specific, actionable information
-        - Address all aspects of the question
-        - Be concise but comprehensive
-        
-        2. TECHNICAL CONTEXT
-        - Explain relevant dbt concepts
-        - Show how dbt handles this scenario
-        - Reference dbt best practices
-        - Include file paths where relevant
-        
-        3. CODE EXAMPLES
-        - Provide practical code examples:
-          * SQL queries with proper syntax highlighting
-          * YAML configurations if relevant
-          * Command line examples if needed
-          * dbt macro examples if applicable
-        - For each example:
-          * Explain what it does
-          * Highlight key parts
-          * Show expected output
-        
-        4. BEST PRACTICES
-        - Recommend optimal approaches
-        - Explain why they're considered best practices
-        - Mention alternatives and trade-offs
-        - Provide implementation guidance
-        
-        5. NEXT STEPS
-        - Suggest follow-up actions
-        - Recommend related topics to explore
-        - Point to relevant documentation
-        - Offer testing strategies if applicable
-        
-        REMEMBER TO:
-        - Use clear, technical language
-        - Include code examples with syntax highlighting
-        - Be specific about file paths and model names
-        - Focus on actionable advice
-        """
+    You are a DBT expert assisting with enhancing SQL code. 
+    
+    # TASK
+    You must provide a complete, working solution to enhance a DBT model based on the user request.
+
+    # APPROACH
+    1. Analyze the model content and understand its current structure
+    2. Identify the specific enhancements needed based on the user's request
+    3. Implement those changes with complete, working SQL code
+    4. Ensure your solution aligns with DBT best practices
+    
+    # REQUIREMENTS
+    - Provide a complete implementation of the enhanced model, not just the changed parts
+    - Include SQL code that is properly formatted and follows DBT standards
+    - Add comments explaining key transformations and the rationale for the changes
+    - Ensure your solution is optimized for performance and maintainability
+    
+    # EXAMPLE RESPONSE FORMAT
+    ## Enhancement Summary
+    [Brief explanation of what changes you made and why]
+    
+    ## Implementation
+    ```sql
+    -- Complete SQL implementation with your enhancements
+    ```
+    
+    ## Key Changes
+    [Bullet points explaining specific changes and their purpose]
+    """
 
     def _extract_json_from_response(self, response: str) -> str:
         """Extract a valid JSON string from a potentially noisy LLM response."""
@@ -2188,143 +1798,289 @@ REMEMBER:
 
     def _get_model_details(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Extract detailed information about models from search results
+        Get detailed information about a model, including content, columns, and dependencies.
+        
+        Enhanced for enterprise repositories with:
+        - Deep nesting
+        - Complex folder structures
+        - Multiple file patterns
+        - Various naming conventions
         
         Args:
-            state: The current agent state
+            state: Current state dictionary with search results
             
         Returns:
             Updated state with model details
         """
-        if not self.dbt_tools:
-            state["model_details"] = []
-            return state
+        try:
+            search_results = state.get("search_results", {})
             
-        # Get search results
-        search_results = state.get("search_results", [])
-        
-        if not search_results:
-            logger.info("No search results available to gather model details")
-            state["model_details"] = []
-            return state
+            # Extract entities from question analysis
+            entities = []
+            question_analysis = state.get("question_analysis", {})
+            if question_analysis:
+                entities = question_analysis.get("entities", [])
             
-        logger.info(f"Processing model details from {len(search_results)} search results")
-        
-        # Initialize detailed model information
-        model_details = []
-        
-        # Process each search result
-        for result in search_results:
-            try:
-                # Extract basic information
+            # Track model details for state
+            model_details = []
+            
+            # If we don't have search results or they're empty, return early
+            if not search_results or not isinstance(search_results, dict) or not any(search_results.values()):
+                logger.warning("No search results available to gather model details")
+                state["model_details"] = model_details
+                return state
+            
+            # Process each entity's search results
+            processed_models = set()  # Track models we've already processed
+            
+            # First, collect all relevant results across all entities
+            all_results = []
+            for entity, results in search_results.items():
+                if results and isinstance(results, list):
+                    for result in results:
+                        # Skip duplicates
+                        if not isinstance(result, dict):
+                            continue
+                            
+                        model_name = result.get("model_name", "")
+                        file_path = result.get("file_path", "")
+                        
+                        # Skip if we don't have both model name and file path
+                        if not model_name or not file_path:
+                            continue
+                            
+                        # Create unique key for this model
+                        model_key = f"{model_name}:{file_path}"
+                        
+                        # Skip if we've already processed this model
+                        if model_key in processed_models:
+                            continue
+                            
+                        processed_models.add(model_key)
+                        all_results.append(result)
+            
+            # Process full file paths first (they're more specific)
+            full_path_results = [r for r in all_results if '/' in r.get("file_path", "")]
+            
+            # For each full path, try to get model details
+            for result in full_path_results:
                 model_name = result.get("model_name", "")
                 file_path = result.get("file_path", "")
                 content = result.get("content", "")
                 
-                if not model_name or not file_path or not content:
-                    logger.warning(f"Skipping model detail extraction due to missing information: {model_name}")
-                    continue
+                # Extract just the filename without extension
+                if '/' in file_path:
+                    short_model_name = os.path.splitext(os.path.basename(file_path))[0]
+                else:
+                    short_model_name = model_name
                 
-                # Initialize model detail dictionary
-                model_detail = {
-                    "model_name": model_name,
-                    "file_path": file_path,
-                    "content": content,
-                    "model_type": self._extract_model_type(content),
-                    "columns": [],
-                    "description": "",
-                    "references": [],
-                    "sources": [],
-                    "lineage": {}
-                }
-                
-                # Get schema information if available
-                try:
-                    schema_info = self.dbt_tools.file_scanner.get_schema_for_model_path(file_path)
-                    if schema_info:
-                        # Extract description from schema
-                        model_detail["description"] = schema_info.get("description", "")
-                        
-                        # Extract column information
-                        columns = schema_info.get("columns", [])
-                        model_detail["columns"] = columns
-                except Exception as e:
-                    logger.warning(f"Error extracting schema for {model_name}: {str(e)}")
-                
-                # If no columns from schema, try to extract from SQL
-                if not model_detail["columns"]:
+                # If we don't have content, try to find it
+                if not content or content.strip() == "":
                     try:
-                        model_detail["columns"] = self._extract_model_columns(content)
+                        logger.info(f"Getting content for model {model_name} at {file_path}")
+                        found, path, content = self._find_model_content(file_path)
+                        
+                        if found and content:
+                            logger.info(f"Found content for {model_name} at {path}")
+                            # Update the file path if we found it at a different path
+                            file_path = path
                     except Exception as e:
-                        logger.warning(f"Error extracting columns from SQL for {model_name}: {str(e)}")
+                        logger.error(f"Error getting model content for {model_name}: {str(e)}")
                 
-                # Get model dependencies
-                try:
-                    # Extract dependencies with more robust error handling
-                    dependencies = self._get_model_dependencies(model_name, file_path)
-                    model_detail["references"] = dependencies.get("refs", [])
-                    model_detail["sources"] = dependencies.get("sources", [])
+                # If we still don't have content, try the model name
+                if not content or content.strip() == "":
+                    try:
+                        logger.info(f"Trying to find content using model name: {short_model_name}")
+                        found, path, content = self._find_model_content(short_model_name)
+                        
+                        if found and content:
+                            logger.info(f"Found content for {short_model_name} at {path}")
+                            # Update the file path if we found it at a different path
+                            file_path = path
+                    except Exception as e:
+                        logger.error(f"Error getting model content using model name {short_model_name}: {str(e)}")
+                
+                # If we have content, extract details
+                if content and content.strip() != "":
+                    try:
+                        # Get model type
+                        model_type = self._extract_model_type(content)
+                        
+                        # Get columns and dependencies
+                        columns = self._extract_model_columns(content)
+                        
+                        # Get more thorough dependencies
+                        dependencies = self._get_model_dependencies(short_model_name, file_path)
+                        
+                        # Add model details to the list
+                        model_detail = {
+                            "model_name": short_model_name,
+                            "file_path": file_path,
+                            "content": content,
+                            "model_type": model_type,
+                            "columns": columns,
+                            "dependencies": dependencies
+                        }
+                        
+                        model_details.append(model_detail)
+                        logger.info(f"Added details for model {short_model_name} ({model_type} with {len(columns)} columns, {len(dependencies.get('upstream', []))} upstreams, {len(dependencies.get('downstream', []))} downstreams)")
+                    except Exception as e:
+                        logger.error(f"Error extracting details for {short_model_name}: {str(e)}")
+            
+            # If we didn't get any model details from full paths, try model names
+            if not model_details:
+                model_name_results = [r for r in all_results if r not in full_path_results]
+                
+                for result in model_name_results:
+                    model_name = result.get("model_name", "")
+                    file_path = result.get("file_path", "")
+                    content = result.get("content", "")
                     
-                    # Get lineage information with retry mechanisms
-                    retry_count = 0
-                    max_retries = 2
-                    lineage = {}
-                    
-                    while retry_count <= max_retries:
+                    # If we don't have content, try to find it
+                    if not content or content.strip() == "":
                         try:
-                            # Try to get deep lineage with depth 2 (upstream and downstream)
-                            lineage = self.dbt_tools.get_model_lineage(model_name, depth=2)
-                            if lineage:
-                                break
-                        except Exception as e:
-                            logger.warning(f"Error getting lineage (attempt {retry_count+1}): {str(e)}")
+                            logger.info(f"Getting content for model {model_name}")
+                            found, path, content = self._find_model_content(model_name)
                             
-                        # Failed attempt - try alternate approach on retry
-                        if retry_count == 0:
-                            # On first retry, try getting lineage using file path
-                            try:
-                                # Extract model name from path for better matching
-                                alt_model_name = os.path.basename(file_path)
-                                if alt_model_name.endswith('.sql'):
-                                    alt_model_name = alt_model_name[:-4]
-                                    
-                                lineage = self.dbt_tools.get_model_lineage(alt_model_name, depth=1)
-                                if lineage:
-                                    break
-                            except Exception as inner_e:
-                                logger.warning(f"Error in alternate lineage approach: {str(inner_e)}")
-                        
-                        # Increment retry counter
-                        retry_count += 1
-                        
-                        # On final retry, use direct relationship extraction
-                        if retry_count == max_retries:
-                            try:
-                                # Extract relationships directly from the content
-                                refs = re.findall(r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}', content)
-                                sources = re.findall(r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}', content)
-                                
-                                lineage = {
-                                    "model": model_name,
-                                    "upstream": [{"model": ref} for ref in refs],
-                                    "sources": [f"{source[0]}.{source[1]}" for source in sources],
-                                    "downstream": []  # Can't determine downstream from content
-                                }
-                            except Exception as direct_e:
-                                logger.warning(f"Error in direct relationship extraction: {str(direct_e)}")
+                            if found and content:
+                                logger.info(f"Found content for {model_name} at {path}")
+                                # Update the file path
+                                file_path = path
+                        except Exception as e:
+                            logger.error(f"Error getting model content for {model_name}: {str(e)}")
                     
-                    model_detail["lineage"] = lineage
-                except Exception as e:
-                    logger.warning(f"Error getting dependencies for {model_name}: {str(e)}")
-                
-                # Add to model details
-                model_details.append(model_detail)
-            except Exception as e:
-                logger.warning(f"Error processing model details: {str(e)}")
-        
-        logger.info(f"Gathered detailed information for {len(model_details)} models")
-        state["model_details"] = model_details
-        return state
+                    # If we have content, extract details
+                    if content and content.strip() != "":
+                        try:
+                            # Get model type
+                            model_type = self._extract_model_type(content)
+                            
+                            # Get columns and dependencies
+                            columns = self._extract_model_columns(content)
+                            
+                            # Get dependencies
+                            dependencies = self._get_model_dependencies(model_name, file_path)
+                            
+                            # Add model details to the list
+                            model_detail = {
+                                "model_name": model_name,
+                                "file_path": file_path,
+                                "content": content,
+                                "model_type": model_type,
+                                "columns": columns,
+                                "dependencies": dependencies
+                            }
+                            
+                            model_details.append(model_detail)
+                            logger.info(f"Added details for model {model_name} ({model_type} with {len(columns)} columns, {len(dependencies.get('upstream', []))} upstreams, {len(dependencies.get('downstream', []))} downstreams)")
+                        except Exception as e:
+                            logger.error(f"Error extracting details for {model_name}: {str(e)}")
+            
+            # Final fallback for entities directly specified in the question
+            if not model_details and entities:
+                # Try directly looking for models mentioned in the question
+                for entity in entities:
+                    # Skip entities that look like file extensions or common terms
+                    if entity in ['sql', 'yml', 'yaml', 'md', 'txt', 'csv', 'model', 'table', 'view']:
+                        continue
+                        
+                    # Try to find the model
+                    try:
+                        logger.info(f"Trying to find model directly from entity: {entity}")
+                        found, path, content = self._find_model_content(entity)
+                        
+                        if found and content:
+                            logger.info(f"Found content for entity {entity} at {path}")
+                            model_name = os.path.splitext(os.path.basename(path))[0]
+                            
+                            # Get model type
+                            model_type = self._extract_model_type(content)
+                            
+                            # Get columns and dependencies
+                            columns = self._extract_model_columns(content)
+                            
+                            # Get dependencies
+                            dependencies = self._get_model_dependencies(model_name, path)
+                            
+                            # Add model details to the list
+                            model_detail = {
+                                "model_name": model_name,
+                                "file_path": path,
+                                "content": content,
+                                "model_type": model_type,
+                                "columns": columns,
+                                "dependencies": dependencies
+                            }
+                            
+                            model_details.append(model_detail)
+                            logger.info(f"Added details for entity {entity} as model {model_name}")
+                    except Exception as e:
+                        logger.error(f"Error getting model details for entity {entity}: {str(e)}")
+            
+            # Special handling for enterprise file structures
+            if not model_details and entities:
+                for entity in entities:
+                    # Try with known enterprise directory patterns
+                    enterprise_patterns = [
+                        f"models/marts/aggregates/{entity}.sql",
+                        f"models/marts/consumption_metrics/{entity}.sql",
+                        f"models/marts/core/{entity}.sql",
+                        f"models/marts/intermediate/{entity}.sql",
+                        f"models/marts/dimensions/{entity}.sql",
+                        f"models/core_models/{entity}.sql",
+                        f"models/**/{entity}.sql"  # Recursive glob pattern
+                    ]
+                    
+                    for pattern in enterprise_patterns:
+                        try:
+                            # Use glob to find matching files
+                            glob_pattern = os.path.join(self.dbt_tools.repo_path, pattern.replace('**/', '**/'))
+                            matching_files = glob.glob(glob_pattern, recursive=True)
+                            
+                            if matching_files:
+                                file_path = os.path.relpath(matching_files[0], self.dbt_tools.repo_path)
+                                logger.info(f"Found enterprise pattern match for {entity} at {file_path}")
+                                
+                                # Try to get content
+                                with open(matching_files[0], 'r') as f:
+                                    content = f.read()
+                                
+                                if content:
+                                    model_name = os.path.splitext(os.path.basename(file_path))[0]
+                                    
+                                    # Get model type
+                                    model_type = self._extract_model_type(content)
+                                    
+                                    # Get columns and dependencies
+                                    columns = self._extract_model_columns(content)
+                                    
+                                    # Get dependencies
+                                    dependencies = self._get_model_dependencies(model_name, file_path)
+                                    
+                                    # Add model details to the list
+                                    model_detail = {
+                                        "model_name": model_name,
+                                        "file_path": file_path,
+                                        "content": content,
+                                        "model_type": model_type,
+                                        "columns": columns,
+                                        "dependencies": dependencies
+                                    }
+                                    
+                                    model_details.append(model_detail)
+                                    logger.info(f"Added details for enterprise model {model_name}")
+                                    break  # Found a match, no need to try other patterns
+                        except Exception as e:
+                            logger.error(f"Error trying enterprise pattern {pattern} for {entity}: {str(e)}")
+            
+            # Update state with model details
+            state["model_details"] = model_details
+            
+            return state
+        except Exception as e:
+            logger.error(f"Error in _get_model_details: {str(e)}")
+            state["model_details"] = []
+            return state
     
     def _extract_model_type(self, content: str) -> str:
         """Extract model materialization type from SQL content"""
@@ -2346,143 +2102,304 @@ REMEMBER:
     
     def _get_model_dependencies(self, model_name: str, file_path: str) -> Dict[str, List[str]]:
         """
-        Extract dependencies for a model with robust error handling
+        Get dependencies for a model, using its content or file path
         
-        This uses multiple approaches to ensure the most complete dependency information:
-        1. Try using the dbt_tools API
-        2. Use regex-based extraction from the model content
-        3. Build upstreams using multiple file resolution strategies
+        Enhanced for enterprise repositories with:
+        - Deep nesting
+        - Complex dependencies
+        - Various reference patterns
         
         Args:
-            model_name: Name of the model
+            model_name: Model name
             file_path: Path to the model file
             
         Returns:
-            Dictionary with refs and sources lists
+            Dictionary with upstream and downstream dependencies
         """
         if not self.dbt_tools:
-            return {"refs": [], "sources": []}
+            return {"upstream": [], "downstream": []}
             
+        logger.info(f"Getting dependencies for model: {model_name} at {file_path}")
+        
+        # Initialize dependency structure
         dependencies = {
-            "refs": [],
+            "upstream": [],
+            "downstream": [],
             "sources": []
         }
         
         try:
-            # Step 1: Try using the dbt_tools API first (most reliable)
-            try:
-                # Try the find_related_models method
-                relations = self.dbt_tools.find_related_models(model_name)
-                if relations:
-                    dependencies["refs"] = relations.get("upstream", [])
-                    
-                    # If the file scanner has the model, try to get sources from there
-                    model_sources = self.dbt_tools.file_scanner.get_model_sources(model_name)
-                    if model_sources:
-                        dependencies["sources"] = model_sources
-            except Exception as e:
-                logger.warning(f"Error getting dependencies from API for {model_name}: {str(e)}")
+            # Step 1: Try to get model content first
+            found, model_path, content = self._find_model_content(file_path)
             
-            # If we don't have dependencies yet, try alternate approaches
-            if not dependencies["refs"] and not dependencies["sources"]:
-                # Step 2: Get model content and extract dependencies with regex
+            if not found:
+                found, model_path, content = self._find_model_content(model_name)
+            
+            if found and content:
+                logger.info(f"Found model content for dependency analysis at: {model_path}")
+                
+                # Step 2: Extract refs from content using regex patterns
+                # Look for ref('model_name') patterns
+                ref_pattern = r"ref\(['\"]([^'\"]+)['\"]\)"
+                refs = re.findall(ref_pattern, content)
+                
+                # Also look for ref('path', 'to', 'model') patterns used in some enterprise repos
+                multi_ref_pattern = r"ref\((['\"][^'\"]+['\"](?:\s*,\s*['\"][^'\"]+['\"])+)\)"
+                multi_refs = re.findall(multi_ref_pattern, content)
+                
+                for multi_ref in multi_refs:
+                    # Extract individual parts
+                    parts = re.findall(r"['\"]([^'\"]+)['\"]", multi_ref)
+                    if parts:
+                        refs.append('.'.join(parts))  # Join with dots for clarity
+                
+                # Step 3: Extract sources from content
+                # Look for source('source_name', 'table_name') patterns
+                source_pattern = r"source\(['\"]([^'\"]+)['\"][^)]*,[^)]*['\"]([^'\"]+)['\"]\)"
+                sources = re.findall(source_pattern, content)
+                
+                # Format sources as "source_name.table_name"
+                formatted_sources = [f"{source[0]}.{source[1]}" for source in sources]
+                
+                # Step 4: Extract direct SQL dependencies
+                # Look for direct FROM and JOIN patterns that might be used in enterprise systems
+                # This helps catch non-dbt style references
+                from_pattern = r"FROM\s+([a-zA-Z0-9_\.]+)"
+                join_pattern = r"JOIN\s+([a-zA-Z0-9_\.]+)"
+                
+                direct_deps = re.findall(from_pattern, content, re.IGNORECASE)
+                direct_deps.extend(re.findall(join_pattern, content, re.IGNORECASE))
+                
+                # Filter out common SQL keywords that might match
+                sql_keywords = ['dual', 'lateral', 'unnest', 'values', 'table']
+                direct_deps = [dep for dep in direct_deps if dep.lower() not in sql_keywords]
+                
+                # Step 5: Get upstream and downstream dependencies using dbt_tools
+                # Check if the methods exist before trying to call them
                 try:
-                    # Try to get content
-                    content = ""
-                    if file_path:
-                        content = self.dbt_tools.get_file_content(file_path)
-                    
-                    if content:
-                        # Extract refs
-                        ref_pattern = r'{{\s*ref\([\'"]([^\'"]+)[\'"]\)\s*}}'
-                        refs = re.findall(ref_pattern, content)
-                        dependencies["refs"] = list(set(refs))  # Deduplicate
-                        
-                        # Extract sources
-                        source_pattern = r'{{\s*source\([\'"]([^\'"]+)[\'"],\s*[\'"]([^\'"]+)[\'"]\)\s*}}'
-                        sources = re.findall(source_pattern, content)
-                        dependencies["sources"] = [f"{source[0]}.{source[1]}" for source in sources]
+                    # Check if get_upstream_models method exists
+                    if hasattr(self.dbt_tools, 'get_upstream_models'):
+                        upstream_models = self.dbt_tools.get_upstream_models(model_name)
+                        if upstream_models:
+                            logger.info(f"Found {len(upstream_models)} upstream models for {model_name}")
+                            for model in upstream_models:
+                                if model not in dependencies["upstream"]:
+                                    dependencies["upstream"].append(model)
+                    else:
+                        logger.warning("get_upstream_models method not available in dbt_tools")
                 except Exception as e:
-                    logger.warning(f"Error extracting dependencies from content for {model_name}: {str(e)}")
+                    logger.error(f"Error getting upstream models: {str(e)}")
                 
-                # Step 3: Try the alternative file scanner mapping
-                if not dependencies["refs"]:
+                try:
+                    # Check if get_downstream_models method exists
+                    if hasattr(self.dbt_tools, 'get_downstream_models'):
+                        downstream_models = self.dbt_tools.get_downstream_models(model_name)
+                        if downstream_models:
+                            logger.info(f"Found {len(downstream_models)} downstream models for {model_name}")
+                            for model in downstream_models:
+                                if model not in dependencies["downstream"]:
+                                    dependencies["downstream"].append(model)
+                    else:
+                        logger.warning("get_downstream_models method not available in dbt_tools")
+                except Exception as e:
+                    logger.error(f"Error getting downstream models: {str(e)}")
+                
+                # Step 6: Try to get relationships from file_scanner
+                try:
+                    if hasattr(self.dbt_tools, 'file_scanner') and hasattr(self.dbt_tools.file_scanner, 'get_model_relationships'):
+                        relationships = self.dbt_tools.file_scanner.get_model_relationships()
+                        if relationships and model_name in relationships:
+                            model_relations = relationships[model_name]
+                            
+                            # Get upstream models
+                            if 'upstream' in model_relations and not dependencies["upstream"]:
+                                dependencies["upstream"] = model_relations['upstream']
+                                
+                            # Get downstream models
+                            if 'downstream' in model_relations and not dependencies["downstream"]:
+                                dependencies["downstream"] = model_relations['downstream']
+                except Exception as e:
+                    logger.error(f"Error getting model relationships: {str(e)}")
+                
+                # Step 7: If no upstream dependencies found yet, use extracted refs
+                if not dependencies["upstream"] and refs:
+                    logger.info(f"Using extracted refs as upstream dependencies: {refs}")
+                    dependencies["upstream"] = refs
+                
+                # Add sources to dependencies
+                if formatted_sources:
+                    logger.info(f"Found {len(formatted_sources)} sources: {formatted_sources}")
+                    dependencies["sources"] = formatted_sources
+                
+                # Step 8: Add direct SQL dependencies if no other dependencies were found
+                if not dependencies["upstream"] and direct_deps:
+                    logger.info(f"Using extracted direct SQL dependencies: {direct_deps}")
+                    dependencies["upstream"].extend(direct_deps)
+                
+                # Step 9: Try to get lineage information as a fallback
+                if not dependencies["upstream"] and not dependencies["downstream"]:
                     try:
-                        # Try to get the model file scanner relation info
-                        if hasattr(self.dbt_tools.file_scanner, 'model_relationships'):
-                            relations = self.dbt_tools.file_scanner.model_relationships.get(model_name, {})
-                            if relations:
-                                dependencies["refs"] = relations.get("refs", [])
-                                dependencies["sources"] = relations.get("sources", [])
+                        if hasattr(self.dbt_tools, 'get_model_lineage'):
+                            lineage = self.dbt_tools.get_model_lineage(model_name)
+                            if lineage:
+                                logger.info(f"Using model lineage for dependencies")
+                                # Extract upstream and downstream from lineage
+                                if "upstream" in lineage and lineage["upstream"]:
+                                    dependencies["upstream"] = lineage["upstream"]
+                                if "downstream" in lineage and lineage["downstream"]:
+                                    dependencies["downstream"] = lineage["downstream"]
                     except Exception as e:
-                        logger.warning(f"Error getting dependencies from file scanner for {model_name}: {str(e)}")
-            
-            # Deduplicate dependencies lists
-            dependencies["refs"] = list(set(dependencies["refs"]))
-            dependencies["sources"] = list(set(dependencies["sources"]))
-            
-            return dependencies
-        
-        except Exception as e:
-            logger.error(f"Error getting model dependencies: {str(e)}")
-            return {"refs": [], "sources": []}
-
-    def _validate_code_enhancement_response(self, response: str, original_code: str, model_path: str, question: str) -> str:
-        """Validate and format the code enhancement response."""
-        logger.info(f"Validating code enhancement response for {model_path}")
-        
-        # Check if model path is in the response
-        if model_path and not re.search(r'model[s]?\s*path[:]?\s*' + re.escape(model_path), response, re.IGNORECASE):
-            logger.warning("Code enhancement response does not include the correct model path")
-            # Add model path to the response if missing
-            header = f"# CODE_ENHANCEMENT\nModel path: {model_path}\n\n"
-            if not response.strip().startswith('# CODE_ENHANCEMENT'):
-                response = header + response
+                        logger.error(f"Error getting model lineage: {str(e)}")
             else:
-                # Replace just the header part to include the model path
-                response = re.sub(r'# CODE_ENHANCEMENT.*?(\n\n|$)', header, response, flags=re.DOTALL)
-        
-        # Check for DBT-specific validation
-        if "ALTER TABLE" in response or "UPDATE " in response:
-            logger.warning("Response contains DDL statements which are not valid in DBT models")
-            warning_note = (
-                "\n\n**NOTE: The above solution contains SQL DDL statements (ALTER TABLE/UPDATE) "
-                "which are not valid in DBT models. Instead, you should modify the DBT model's SELECT "
-                "statement to include the new column with its calculation directly.**\n"
-            )
-            response += warning_note
-        
-        # Check if the response contains complete code implementation
-        if "```sql" not in response.lower() and "```" not in response:
-            logger.warning("Code enhancement response does not contain a proper code block")
-            response += "\n\nPlease ensure your implementation includes the complete SQL code in a code block."
-        
-        # Ensure response has sections for implementation, code, and explanation
-        section_checks = {
-            "summary": re.search(r'(implementation|solution)\s*summary|summary', response, re.IGNORECASE) is not None,
-            "code": re.search(r'(complete\s*modified\s*dbt\s*model|code\s*implementation)', response, re.IGNORECASE) is not None,
-            "explanation": re.search(r'(technical\s*explanation|explanation)', response, re.IGNORECASE) is not None
-        }
-        
-        if not all(section_checks.values()):
-            missing_sections = [k for k, v in section_checks.items() if not v]
-            logger.warning(f"Response is missing required sections: {', '.join(missing_sections)}")
-            
-            section_notes = "\n\n**NOTE: Your response should include the following sections:**\n"
-            if not section_checks["summary"]:
-                section_notes += "- Implementation Summary\n"
-            if not section_checks["code"]:
-                section_notes += "- Complete Modified DBT Model\n"
-            if not section_checks["explanation"]:
-                section_notes += "- Technical Explanation\n"
+                logger.warning(f"Could not find model content for dependency analysis: {model_name}")
                 
-            response += section_notes
+                # Fallback: Try to get dependencies from the file path pattern
+                if '/' in file_path:
+                    # For paths like models/marts/core/some_model.sql, assume
+                    # it might depend on models/staging/stg_some_*.sql
+                    path_parts = file_path.split('/')
+                    if len(path_parts) >= 3:
+                        base_name = os.path.splitext(path_parts[-1])[0]
+                        if base_name.startswith('agg_') or 'mart' in path_parts[-2]:
+                            # For aggregation models, they typically depend on staging models
+                            logger.info(f"Inferring dependencies from file path pattern for {base_name}")
+                            base_name_without_prefix = re.sub(r'^(agg_|fct_|dim_)', '', base_name)
+                            dependencies["upstream"].append(f"stg_{base_name_without_prefix}")
+                            # For specific enterprise patterns
+                            if 'aggregates' in path_parts:
+                                # Look for source staging models
+                                staging_models = self.dbt_tools.search_model(f"stg_{base_name_without_prefix}")
+                                if staging_models:
+                                    logger.info(f"Found potential staging dependencies for {base_name}")
+                                    for model in staging_models:
+                                        model_name = model.model_name if hasattr(model, 'model_name') else ""
+                                        if model_name and model_name not in dependencies["upstream"]:
+                                            dependencies["upstream"].append(model_name)
+        except Exception as e:
+            logger.error(f"Error analyzing dependencies: {str(e)}")
+            
+        return dependencies
+
+    def _validate_code_enhancement_response(self, response: str, state: Dict[str, Any]) -> str:
+        """Validate and format code enhancement responses."""
+        logger.info("Validating code enhancement response")
+        
+        # Check if we have any model content
+        model_details = state.get("model_details", [])
+        model_content = ""
+        model_path = ""
+        
+        if isinstance(model_details, list) and model_details:
+            model_content = model_details[0].get("content", "")
+            model_path = model_details[0].get("file_path", "")
+        elif isinstance(model_details, dict):
+            model_content = model_details.get("content", "")
+            model_path = model_details.get("file_path", "")
+            
+        # Add warning if no actual model content was found
+        if not model_content:
+            warning_message = "\n\n**WARNING: No actual model content was found in the repository. This response is based on generic understanding only and may not be accurate for your specific implementation.**\n\n"
+            # Add warning at the beginning of the response to make it prominent
+            response = warning_message + response
+            logger.warning("No actual model content found for code enhancement response")
+            
+        # Ensure the model path is in the response
+        if model_path and model_path not in response:
+            logger.warning(f"Model path {model_path} not found in code enhancement response")
+            header = f"## Enhanced Code for {model_path}\n\n"
+            response = header + response
+            
+        # Validate DBT-specific statements
+        dbt_patterns = [r"ref\('[^']+'\)", r"source\('[^']+',\s*'[^']+'\)"]
+        has_dbt_patterns = any(re.search(pattern, response) for pattern in dbt_patterns)
+        
+        if not has_dbt_patterns and "```sql" in response:
+            logger.warning("Code enhancement response does not contain DBT ref/source patterns")
+            note = "\n\n**Note:** Ensure you're using proper DBT ref() and source() functions for referencing other models and sources."
+            response += note
+            
+        # Check for complete code implementation
+        if "```sql" in response and "```" in response:
+            sql_blocks = re.findall(r"```sql\n(.*?)\n```", response, re.DOTALL)
+            if not sql_blocks:
+                sql_blocks = re.findall(r"```\n(.*?)\n```", response, re.DOTALL)
+                
+            if sql_blocks:
+                main_sql = sql_blocks[0]
+                # Check if the SQL has the basic structure we need
+                has_select = "SELECT" in main_sql.upper()
+                has_from = "FROM" in main_sql.upper()
+                
+                if not (has_select and has_from):
+                    logger.warning("Code enhancement missing basic SQL structure")
+                    note = "\n\n**Note:** The SQL implementation should include complete SELECT and FROM clauses."
+                    response += note
+        else:
+            logger.warning("Code enhancement response missing code blocks")
+            note = "\n\n**Note:** The response should include a complete SQL implementation in code blocks."
+            response += note
+            
+        # Check for required sections in the response
+        required_sections = ["Implementation", "Explanation", "Changes Made"]
+        missing_sections = []
+        
+        for section in required_sections:
+            if not re.search(section, response, re.IGNORECASE):
+                missing_sections.append(section)
+                
+        if missing_sections:
+            logger.warning(f"Code enhancement response missing sections: {', '.join(missing_sections)}")
+            note = f"\n\n**Note:** This response should include these sections: {', '.join(missing_sections)}"
+            response += note
             
         return response
 
+    def _validate_documentation_response(self, response: str, question_type: str) -> str:
+        """Validate and format documentation or model info responses."""
+        logger.info(f"Validating {question_type} response")
+        
+        # Add warning if no actual model was found in the search results
+        if "No model information found for any search method" in response:
+            warning_message = "\n\n**WARNING: No actual model content was found in the repository. This response is based on generic understanding only and may not be accurate for your specific implementation.**\n\n"
+            # Add warning at the beginning of the response to make it prominent
+            response = warning_message + response
+            logger.warning(f"Adding warning to {question_type} response: No model content found")
+        
+        # Check if the response contains code snippets
+        has_code_snippets = "```" in response or "```sql" in response
+        
+        if not has_code_snippets:
+            logger.warning(f"{question_type} response does not contain code snippets")
+            note = "\n\n**Note:** This response would be improved by including relevant code snippets from the model."
+            response += note
+            
+        # Check if the response is structured with proper sections
+        if question_type == "MODEL_INFO":
+            expected_sections = ["Model Overview", "Technical Implementation", "Data Relationships", "Key Metrics"]
+        else:  # DOCUMENTATION
+            expected_sections = ["Technical Overview", "Implementation Details", "Schema Documentation", "Technical Relationships"]
+            
+        missing_sections = []
+        for section in expected_sections:
+            if not re.search(section, response, re.IGNORECASE):
+                missing_sections.append(section)
+                
+        if missing_sections:
+            logger.warning(f"{question_type} response is missing sections: {', '.join(missing_sections)}")
+            note = f"\n\n**Note:** This response should include these sections: {', '.join(missing_sections)}"
+            response += note
+            
+        return response
+            
     def _find_model_content(self, path_or_model: str) -> Tuple[bool, str, str]:
         """
         Attempt to find a model's content by path or name using multiple methods.
+        
+        Improved to handle complex enterprise repository structures with:
+        - Deep nesting
+        - Many files (1000+)
+        - Varied naming conventions
+        - Custom directory structures
         
         Args:
             path_or_model: Either a model name or a path to search for
@@ -2500,11 +2417,66 @@ REMEMBER:
         if model_name.endswith('.sql'):
             model_name = model_name[:-4]
             
-        # Get the base name if it's a path
+        # Extract base name if it's a path
+        original_path = path_or_model
         if '/' in model_name:
             model_name = os.path.basename(model_name)
         
-        # Step 1: Try direct DBT model search
+        # Step 1: Try direct file access first (fastest for known paths)
+        try:
+            logger.info(f"Trying direct file access for: {original_path}")
+            content = self.dbt_tools.get_file_content(original_path)
+            
+            if content:
+                logger.info(f"Found model content via direct file access: {original_path}")
+                return True, original_path, content
+        except Exception as e:
+            logger.error(f"Error in direct file access: {str(e)}")
+            
+        # Step 1.5: For specific path patterns, try direct variations
+        if "marts/aggregates" in original_path or "marts/core" in original_path:
+            parts = original_path.split('/')
+            if len(parts) >= 3:
+                # Get just the model name from the path
+                filename = parts[-1]
+                
+                # Try both marts/aggregates and marts/core
+                specific_paths = [
+                    f"models/marts/aggregates/{filename}",
+                    f"models/marts/core/{filename}",
+                    f"models/marts/intermediate/{filename}"
+                ]
+                
+                for specific_path in specific_paths:
+                    try:
+                        logger.info(f"Trying specific path: {specific_path}")
+                        content = self.dbt_tools.get_file_content(specific_path)
+                        
+                        if content:
+                            logger.info(f"Found model content via specific path: {specific_path}")
+                            return True, specific_path, content
+                    except Exception as e:
+                        logger.error(f"Error in specific path access: {str(e)}")
+        
+        # Step 2: Try resolving the model from path (enhanced for enterprise repos)
+        try:
+            logger.info(f"Trying to resolve model from path: {original_path}")
+            model_results = self.dbt_tools.resolve_model_from_path(original_path)
+            
+            if model_results and len(model_results) > 0:
+                result = model_results[0]  # Take the first result
+                result_dict = self._convert_search_result_to_dict(result)
+                
+                file_path = result_dict.get("file_path", "")
+                content = result_dict.get("content", "")
+                
+                if file_path and content:
+                    logger.info(f"Found model content via path resolution at: {file_path}")
+                    return True, file_path, content
+        except Exception as e:
+            logger.error(f"Error in model path resolution: {str(e)}")
+            
+        # Step 3: Try direct DBT model search
         try:
             logger.info(f"Trying direct model search for: {model_name}")
             model_results = self.dbt_tools.search_model(model_name)
@@ -2522,44 +2494,66 @@ REMEMBER:
         except Exception as e:
             logger.error(f"Error in direct model search: {str(e)}")
         
-        # Step 2: Try direct file access if path_or_model looks like a file path
-        if '/' in path_or_model or path_or_model.endswith('.sql'):
-            try:
-                logger.info(f"Trying direct file access for: {path_or_model}")
-                content = self.dbt_tools.get_file_content(path_or_model)
-                
-                if content:
-                    logger.info(f"Found model content via direct file access: {path_or_model}")
-                    return True, path_or_model, content
-            except Exception as e:
-                logger.error(f"Error in direct file access: {str(e)}")
-        
-        # Step 3: Try to find the file path first, then get content
+        # Step 4: Try advanced file path search with globbing (better for complex repos)
         try:
-            logger.info(f"Trying to get model file path for: {model_name}")
-            file_path = self.dbt_tools.file_scanner.get_model_file_path(model_name)
+            logger.info(f"Trying glob file search for: {model_name}")
+            # Create glob patterns especially for enterprise repos
+            glob_patterns = [
+                f"**/{model_name}.sql",
+                f"**/models/**/{model_name}.sql",
+                f"**/marts/**/{model_name}.sql",
+                f"**/marts/aggregates/**/{model_name}.sql",  # Added specific path for aggregates
+                f"**/consumption_metrics/**/{model_name}.sql",
+                f"**/*{model_name}*.sql"  # More permissive pattern as last resort
+            ]
             
-            if file_path:
+            # Add additional patterns if this looks like a path
+            if '/' in original_path:
+                path_parts = original_path.strip('/').split('/')
+                if len(path_parts) > 1:
+                    # Try with the last 2-3 parts of the path
+                    if len(path_parts) >= 3:
+                        # Try with wildcards between directories for flexible matching
+                        glob_patterns.append(f"**/{path_parts[-3]}/**/{path_parts[-2]}/**/{path_parts[-1]}")
+                    glob_patterns.append(f"**/{path_parts[-2]}/**/{path_parts[-1]}")
+            
+            # Try each pattern
+            for pattern in glob_patterns:
                 try:
-                    logger.info(f"Found file path: {file_path}, getting content")
-                    content = self.dbt_tools.get_file_content(file_path)
+                    pattern_with_extension = pattern if pattern.endswith('.sql') else f"{pattern}.sql"
+                    glob_path = os.path.join(self.dbt_tools.repo_path, pattern_with_extension)
+                    matching_files = glob.glob(glob_path, recursive=True)
                     
-                    if content:
-                        logger.info(f"Found model content via file path lookup: {file_path}")
+                    if matching_files:
+                        # Take the first match
+                        file_path = os.path.relpath(matching_files[0], self.dbt_tools.repo_path)
+                        with open(matching_files[0], 'r') as f:
+                            content = f.read()
+                        
+                        logger.info(f"Found model content via glob pattern {pattern} at: {file_path}")
                         return True, file_path, content
                 except Exception as e:
-                    logger.error(f"Error getting content from file path: {str(e)}")
+                    logger.error(f"Error in glob pattern search with {pattern}: {str(e)}")
         except Exception as e:
-            logger.error(f"Error getting model file path: {str(e)}")
+            logger.error(f"Error in glob file search: {str(e)}")
         
-        # Step 4: Try path variations
+        # Step 5: Try standard DBT directory paths as fallback
         try:
+            logger.info(f"Trying standard DBT directory paths for: {model_name}")
             variations = [
                 f"models/{model_name}.sql",
                 f"models/marts/core/{model_name}.sql",
                 f"models/marts/{model_name}.sql",
+                f"models/marts/aggregates/{model_name}.sql",  # Added specific path for aggregates
                 f"models/staging/{model_name}.sql",
-                f"models/intermediate/{model_name}.sql"
+                f"models/intermediate/{model_name}.sql",
+                # Add enterprise-specific paths
+                f"models/marts/consumption_metrics/{model_name}.sql",
+                f"models/consumption_metrics/{model_name}.sql",
+                f"models/core_models/{model_name}.sql",
+                f"models/marts/advanced/{model_name}.sql",
+                f"models/marts/forecast/{model_name}.sql",
+                f"core_models/{model_name}.sql"
             ]
             
             logger.info(f"Trying path variations for: {model_name}")
@@ -2575,19 +2569,23 @@ REMEMBER:
                     continue
         except Exception as e:
             logger.error(f"Error trying path variations: {str(e)}")
-        
-        # Step 5: Special case for fct_orders which appears frequently
-        if model_name.lower() in ["fct_orders", "fct_order"]:
-            specific_path = "models/marts/core/fct_orders.sql"
-            try:
-                logger.info(f"Trying special case path for fct_orders: {specific_path}")
-                content = self.dbt_tools.get_file_content(specific_path)
+            
+        # Step 6: Last resort - try keyword search
+        try:
+            logger.info(f"Trying keyword search for: {model_name}")
+            search_results = self._search_by_keyword(model_name)
+            
+            if search_results and len(search_results) > 0:
+                result = search_results[0]  # Take the first result
                 
-                if content:
-                    logger.info(f"Found fct_orders content via special case path: {specific_path}")
-                    return True, specific_path, content
-            except Exception as e:
-                logger.error(f"Error in special case for fct_orders: {str(e)}")
+                file_path = result.get("file_path", "")
+                content = result.get("content", "")
+                
+                if file_path and content:
+                    logger.info(f"Found model content via keyword search at: {file_path}")
+                    return True, file_path, content
+        except Exception as e:
+            logger.error(f"Error in keyword search: {str(e)}")
         
         # Content not found through any method
         logger.warning(f"Could not find model content for: {path_or_model}")
@@ -2952,6 +2950,677 @@ REMEMBER:
         except Exception as e:
             logger.error(f"Error in keyword search: {str(e)}")
             return []
+
+    def _format_dependencies_for_prompt(self, state, model_details, formatted_results):
+        """Format dependencies information for the prompt."""
+        # Get all dependencies from model details
+        all_dependencies = {}
+        
+        for model in model_details:
+            model_name = model.get("model_name", "")
+            file_path = model.get("file_path", "")
+            dependencies = model.get("dependencies", {})
+            content = model.get("content", "")
+            
+            if model_name and dependencies:
+                # Add dependency information to the formatted results
+                dependency_info = []
+                dependency_info.append(f"\n## Dependencies for {model_name}")
+                dependency_info.append(f"### File Path: {file_path}")
+                
+                # Add a code snippet from the content
+                if content:
+                    content_preview = content[:500] + ("..." if len(content) > 500 else "")
+                    dependency_info.append(f"\n### Model Content (Preview):\n```sql\n{content_preview}\n```")
+                
+                # Add upstream dependencies
+                upstream = dependencies.get("upstream", [])
+                if upstream:
+                    dependency_info.append("\n### Upstream Dependencies:")
+                    for dep in upstream:
+                        dependency_info.append(f"- {dep}")
+                else:
+                    dependency_info.append("\n### Upstream Dependencies: None found")
+                
+                # Add downstream dependencies
+                downstream = dependencies.get("downstream", [])
+                if downstream:
+                    dependency_info.append("\n### Downstream Dependencies:")
+                    for dep in downstream:
+                        dependency_info.append(f"- {dep}")
+                else:
+                    dependency_info.append("\n### Downstream Dependencies: None found")
+                
+                # Add sources
+                sources = dependencies.get("sources", [])
+                if sources:
+                    dependency_info.append("\n### Source Dependencies:")
+                    for source in sources:
+                        dependency_info.append(f"- {source}")
+                
+                # Add visualization for dependencies
+                if upstream or downstream or sources:
+                    dependency_info.append("\n### Dependency Visualization:")
+                    
+                    # Create a simple text-based visualization
+                    viz = [f"```\n{model_name}"]
+                    if upstream:
+                        for up in upstream:
+                            viz.append(f" ├── {up}")
+                    if sources:
+                        for source in sources:
+                            viz.append(f" │  └── {source}")
+                    if downstream:
+                        for down in downstream:
+                            viz.append(f" └── {down}")
+                    viz.append("```")
+                    
+                    dependency_info.append("\n".join(viz))
+                
+                # Add model-specific dependency info
+                all_dependencies[model_name] = "\n".join(dependency_info)
+        
+        # Add dependency information to the formatted results
+        if all_dependencies:
+            dependency_section = "\n\n# MODEL DEPENDENCIES\n" + "\n\n".join(all_dependencies.values())
+            formatted_results = formatted_results + dependency_section
+        
+        return formatted_results
+
+    def _format_lineage_for_prompt(self, state, model_details, formatted_results):
+        """Format lineage information for the prompt."""
+        # Similar structure to dependencies but with different formatting
+        lineage_section = "\n\n# MODEL LINEAGE\n"
+        
+        for model in model_details:
+            model_name = model.get("model_name", "")
+            file_path = model.get("file_path", "")
+            dependencies = model.get("dependencies", {})
+            content = model.get("content", "")
+            
+            if model_name:
+                lineage_section += f"\n## Lineage for {model_name}"
+                lineage_section += f"\n### File Path: {file_path}"
+                
+                # Add code preview
+                if content:
+                    content_preview = content[:500] + ("..." if len(content) > 500 else "")
+                    lineage_section += f"\n\n### Model Content (Preview):\n```sql\n{content_preview}\n```"
+                
+                # Add upstream dependencies
+                upstream = dependencies.get("upstream", []) if dependencies else []
+                if upstream:
+                    lineage_section += "\n\n### Upstream Models:"
+                    for up in upstream:
+                        lineage_section += f"\n- {up}"
+                
+                # Add downstream dependencies
+                downstream = dependencies.get("downstream", []) if dependencies else []
+                if downstream:
+                    lineage_section += "\n\n### Downstream Models:"
+                    for down in downstream:
+                        lineage_section += f"\n- {down}"
+                
+                # Add lineage visualization
+                if upstream or downstream:
+                    lineage_section += "\n\n### Lineage Visualization:"
+                    lineage_viz = [f"```"]
+                    
+                    # Add upstream flow
+                    if upstream:
+                        upstream_flow = " → ".join(upstream) + f" → {model_name}"
+                        lineage_viz.append(f"Upstream Flow:\n{upstream_flow}")
+                    
+                    # Add model details
+                    lineage_viz.append(f"\nDetailed Model:\n└── {model_name}")
+                    
+                    # Add downstream flow
+                    if downstream:
+                        lineage_viz.append(f"\nDownstream Flow:")
+                        for down in downstream:
+                            lineage_viz.append(f"└── {down}")
+                    
+                    lineage_viz.append("```")
+                    lineage_section += "\n" + "\n".join(lineage_viz)
+        
+        # Add lineage section to formatted results
+        formatted_results += lineage_section
+        
+        return formatted_results
+
+    def _format_code_enhancement_for_prompt(self, state, model_details, formatted_results):
+        """Format code enhancement information for the prompt."""
+        # Add the current code to the formatted results
+        code_section = "\n\n# CURRENT CODE\n"
+        
+        for model in model_details:
+            model_name = model.get("model_name", "")
+            file_path = model.get("file_path", "")
+            content = model.get("content", "")
+            
+            if model_name and content:
+                code_section += f"## Model: {model_name}\n## Path: {file_path}\n\n```sql\n{content}\n```\n"
+                
+                # Add additional context about the model's structure
+                code_section += "\n## Model Structure Analysis:\n"
+                
+                # Analyze CTEs
+                cte_matches = re.findall(r'with\s+(.*?)\s+as\s+\((.*?)\)', content, re.IGNORECASE | re.DOTALL)
+                if cte_matches:
+                    code_section += "### Common Table Expressions (CTEs):\n"
+                    for cte_name, _ in cte_matches:
+                        code_section += f"- `{cte_name.strip()}`: Used for intermediate calculations\n"
+                
+                # Analyze joins
+                join_matches = re.findall(r'(inner|left|right|full|cross)?\s*join\s+(.*?)\s+on\s+(.*?)(where|\)|group\s+by|order\s+by|limit|$)', 
+                                         content, re.IGNORECASE | re.DOTALL)
+                if join_matches:
+                    code_section += "\n### Key Joins:\n"
+                    for join_type, table, condition, _ in join_matches:
+                        join_type = join_type.strip() if join_type else "inner"
+                        code_section += f"- {join_type.upper()} JOIN with {table.strip()} on {condition.strip()}\n"
+        
+        # Add the code section to formatted results
+        formatted_results += code_section
+        
+        return formatted_results
+
+    def _format_development_for_prompt(self, state, model_details, formatted_results):
+        """Format development information for the prompt."""
+        # Add related models and their structure for context
+        dev_section = "\n\n# DEVELOPMENT CONTEXT\n"
+        
+        # Add examples of similar models
+        for model in model_details:
+            model_name = model.get("model_name", "")
+            file_path = model.get("file_path", "")
+            content = model.get("content", "")
+            model_type = model.get("model_type", "")
+            
+            if model_name and content:
+                dev_section += f"## Reference Model: {model_name}\n"
+                dev_section += f"### File Path: {file_path}\n"
+                dev_section += f"### Model Type: {model_type}\n\n"
+                dev_section += f"```sql\n{content}\n```\n\n"
+        
+        # Add development guidelines
+        dev_section += "## Development Guidelines:\n"
+        dev_section += "- Follow the structure of similar models\n"
+        dev_section += "- Use proper DBT references with ref() and source() functions\n"
+        dev_section += "- Include appropriate documentation in model files\n"
+        dev_section += "- Use CTEs for readability and maintainability\n"
+        
+        # Add the development section to formatted results
+        formatted_results += dev_section
+        
+    def _format_model_info_for_prompt(self, state, model_details, formatted_results):
+        """Format model information for the prompt."""
+        # Create a comprehensive model info section
+        model_info_section = "\n\n# MODEL INFORMATION\n"
+        
+        for model in model_details:
+            model_name = model.get("model_name", "")
+            file_path = model.get("file_path", "")
+            content = model.get("content", "")
+            model_type = model.get("model_type", "")
+            
+            if model_name:
+                model_info_section += f"## Model: {model_name}\n"
+                model_info_section += f"### File Path: {file_path}\n"
+                model_info_section += f"### Model Type: {model_type}\n\n"
+                
+                # Add code preview
+                if content:
+                    model_info_section += f"### SQL Definition:\n```sql\n{content}\n```\n\n"
+                
+                # Extract and display model columns
+                columns = self._extract_model_columns(content) if content else []
+                if columns:
+                    model_info_section += "### Key Columns:\n"
+                    for column in columns:
+                        col_name = column.get("name", "")
+                        col_type = column.get("data_type", "")
+                        col_desc = column.get("description", "")
+                        
+                        if col_name:
+                            model_info_section += f"- **{col_name}** ({col_type}): {col_desc}\n"
+        
+        # Add the model info section to formatted results
+        formatted_results += model_info_section
+        
+        return formatted_results
+
+    def _create_lineage_visualization(self, model_details):
+        """Create lineage visualization data for frontend rendering.
+        
+        Generates a complete graph data structure that can be used by the frontend
+        LineageGraph component to render an interactive visualization.
+        """
+        # Initialize the lineage data structure with models and edges arrays
+        lineage_data = {
+            "models": [],
+            "edges": [],
+            "columns": []  # Support for column-level lineage
+        }
+        
+        processed_models = set()  # Track already processed models to avoid duplicates
+        column_id_counter = 1  # For generating unique column IDs
+        
+        # Helper function to determine model type
+        def determine_model_type(file_path):
+            if not file_path:
+                return "unknown"
+            elif "/staging/" in file_path or "/stg_" in file_path:
+                return "staging"
+            elif "/intermediate/" in file_path or "/int_" in file_path:
+                return "intermediate" 
+            elif "/mart/" in file_path or "/core/" in file_path:
+                return "mart"
+            elif "source:" in file_path:
+                return "source"
+            else:
+                return "model"
+        
+        # Process each model in the details
+        for model in model_details:
+            model_name = model.get("model_name", "")
+            file_path = model.get("file_path", "")
+            model_type = model.get("model_type", determine_model_type(file_path))
+            dependencies = model.get("dependencies", {})
+            content = model.get("content", "")
+            
+            # Skip if no model name
+            if not model_name:
+                continue
+                
+            # Add the central model if not already processed
+            if model_name not in processed_models:
+                processed_models.add(model_name)
+                
+                # Add the model to the lineage data
+                lineage_data["models"].append({
+                    "id": model_name,
+                    "name": model_name,
+                    "path": file_path,
+                    "type": model_type,
+                    "highlight": True  # This is our focal model
+                })
+                
+                # Extract columns if we have content
+                if content:
+                    try:
+                        columns = self._extract_model_columns(content)
+                        for col in columns:
+                            col_name = col.get("name", "")
+                            col_type = "regular"
+                            
+                            # Determine column type (primary key, calculated, etc.)
+                            if "key" in col_name.lower() or "id" in col_name.lower():
+                                col_type = "primary_key"
+                            elif "sum(" in col.get("expression", "").lower() or "avg(" in col.get("expression", "").lower():
+                                col_type = "calculated"
+                                
+                            # Add column to the visualization
+                            lineage_data["columns"].append({
+                                "id": f"col{column_id_counter}",
+                                "modelId": model_name,
+                                "name": col_name,
+                                "type": col_type
+                            })
+                            column_id_counter += 1
+                    except Exception as e:
+                        logging.warning(f"Error extracting columns for {model_name}: {str(e)}")
+                    
+            # Process upstream dependencies
+            upstream = dependencies.get("upstream", []) if dependencies else []
+            for up in upstream:
+                # Skip if empty
+                if not up:
+                    continue
+                    
+                # Add upstream model if not already processed
+                if up not in processed_models:
+                    processed_models.add(up)
+                    
+                    # Find or infer the model type and file path
+                    up_type = "upstream"
+                    up_path = ""
+                    
+                    # Look for this model in other model details
+                    for other_model in model_details:
+                        if other_model.get("model_name", "") == up:
+                            up_path = other_model.get("file_path", "")
+                            up_type = other_model.get("model_type", determine_model_type(up_path))
+                            break
+                    
+                    lineage_data["models"].append({
+                        "id": up,
+                        "name": up,
+                        "path": up_path,
+                        "type": up_type,
+                        "highlight": False
+                    })
+                
+                # Add the edge
+                lineage_data["edges"].append({
+                    "source": up,
+                    "target": model_name
+                })
+            
+            # Process downstream dependencies
+            downstream = dependencies.get("downstream", []) if dependencies else []
+            for down in downstream:
+                # Skip if empty
+                if not down:
+                    continue
+                    
+                # Add downstream model if not already processed
+                if down not in processed_models:
+                    processed_models.add(down)
+                    
+                    # Find or infer the model type and file path
+                    down_type = "downstream"
+                    down_path = ""
+                    
+                    # Look for this model in other model details
+                    for other_model in model_details:
+                        if other_model.get("model_name", "") == down:
+                            down_path = other_model.get("file_path", "")
+                            down_type = other_model.get("model_type", determine_model_type(down_path))
+                            break
+                            
+                    lineage_data["models"].append({
+                        "id": down,
+                        "name": down,
+                        "path": down_path,
+                        "type": down_type,
+                        "highlight": False
+                    })
+                
+                # Add the edge
+                lineage_data["edges"].append({
+                    "source": model_name,
+                    "target": down
+                })
+            
+            # Process source dependencies if available
+            sources = dependencies.get("sources", []) if dependencies else []
+            for source in sources:
+                # Skip if empty
+                if not source:
+                    continue
+                    
+                source_id = f"source:{source}"
+                
+                # Add source if not already processed
+                if source_id not in processed_models:
+                    processed_models.add(source_id)
+                    
+                    lineage_data["models"].append({
+                        "id": source_id,
+                        "name": source,
+                        "path": f"source:{source}",
+                        "type": "source",
+                        "highlight": False
+                    })
+                    
+                    # Add the edge
+                    lineage_data["edges"].append({
+                        "source": source_id,
+                        "target": model_name
+                    })
+        
+        return lineage_data
+
+    def _validate_dependency_response(self, response, model_details):
+        """Validate and enhance dependency response if needed."""
+        # Check if the response already includes a visualization
+        if "```" not in response:
+            # Find the first model with dependencies
+            for model in model_details:
+                model_name = model.get("model_name", "")
+                dependencies = model.get("dependencies", {})
+                
+                if model_name and dependencies:
+                    upstream = dependencies.get("upstream", [])
+                    downstream = dependencies.get("downstream", [])
+                    sources = dependencies.get("sources", [])
+                    
+                    if upstream or downstream or sources:
+                        # Add a simple text-based visualization at the beginning
+                        viz = [f"```\n{model_name}"]
+                        if upstream:
+                            for up in upstream:
+                                viz.append(f" ├── {up}")
+                        if sources:
+                            for source in sources:
+                                viz.append(f" │  └── {source}")
+                        if downstream:
+                            for down in downstream:
+                                viz.append(f" └── {down}")
+                        viz.append("```")
+                        
+                        # Add to beginning of response
+                        response = "\n".join(viz) + "\n\n" + response
+                        break
+        
+        return response
+
+    def _validate_lineage_response(self, response, model_details):
+        """Validate and enhance lineage response if needed."""
+        # Check if the response already includes a visualization
+        if "```" not in response or "Upstream Flow" not in response:
+            # Find the first model with dependencies
+            for model in model_details:
+                model_name = model.get("model_name", "")
+                dependencies = model.get("dependencies", {})
+                
+                if model_name and dependencies:
+                    upstream = dependencies.get("upstream", [])
+                    downstream = dependencies.get("downstream", [])
+                    
+                    if upstream or downstream:
+                        # Create a lineage visualization at the beginning
+                        viz = ["```"]
+                        
+                        # Add upstream flow if present
+                        if upstream:
+                            upstream_flow = " → ".join(upstream) + f" → {model_name}"
+                            viz.append(f"Upstream Flow:\n{upstream_flow}")
+                        
+                        # Add model details
+                        viz.append(f"\nDetailed Model:\n└── {model_name}")
+                        
+                        # Add downstream flow if present
+                        if downstream:
+                            viz.append(f"\nDownstream Flow:")
+                            for down in downstream:
+                                viz.append(f"└── {down}")
+                        
+                        viz.append("```")
+                        
+                        # Add to beginning of response
+                        response = "\n".join(viz) + "\n\n" + response
+                        break
+        
+        return response
+
+    def _validate_development_response(self, response):
+        """Validate and enhance development response if needed."""
+        # Ensure response has code blocks
+        if "```sql" not in response and "```" not in response:
+            return response + "\n\n```sql\n-- Complete SQL implementation should be here\n-- Please refer to the guidance above for implementation details\n```"
+        
+        return response
+
+    def _format_results_for_prompt(self, state: Dict[str, Any]) -> str:
+        """Format search results for the prompt."""
+        results = []
+        
+        # Get data from state
+        search_results = state.get("search_results", {})
+        model_details = state.get("model_details", [])
+        column_details = state.get("column_details", {})
+        related_models = state.get("related_models", {})
+        content_search = state.get("content_search", [])
+        
+        # Format model details
+        if model_details:
+            if isinstance(model_details, list):
+                for model in model_details:
+                    model_name = model.get("model_name", "")
+                    file_path = model.get("file_path", "")
+                    content = model.get("content", "")
+                    
+                    if content:
+                        results.append(f"## Model: {model_name}\n### Path: {file_path}\n```sql\n{content}\n```\n")
+            else:
+                model_name = model_details.get("model_name", "")
+                file_path = model_details.get("file_path", "")
+                content = model_details.get("content", "")
+                
+                if content:
+                    results.append(f"## Model: {model_name}\n### Path: {file_path}\n```sql\n{content}\n```\n")
+        
+        # Format search results if not already covered by model details
+        if search_results and not model_details:
+            # Check if search_results is a dict
+            if isinstance(search_results, dict):
+                for entity, results_list in search_results.items():
+                    if results_list and isinstance(results_list, list):
+                        for result in results_list:
+                            if isinstance(result, dict):
+                                model_name = result.get("model_name", "")
+                                file_path = result.get("file_path", "")
+                                content = result.get("content", "")
+                                match_type = result.get("match_type", "")
+                                
+                                if content:
+                                    results.append(f"## Search Result: {model_name}\n### Path: {file_path}\n### Match Type: {match_type}\n```sql\n{content}\n```\n")
+        
+        # Format column details
+        if column_details:
+            results.append("## Column Details\n")
+            for column, details in column_details.items():
+                model_name = details.get("model_name", "")
+                calculation = details.get("calculation", "")
+                
+                if calculation:
+                    results.append(f"### Column: {column}\n**Model:** {model_name}\n**Calculation:**\n```sql\n{calculation}\n```\n")
+        
+        # Format related models
+        if related_models:
+            results.append("## Related Models\n")
+            for model_type, models in related_models.items():
+                if models:
+                    results.append(f"### {model_type.title()} Models\n")
+                    for model in models:
+                        results.append(f"- {model}\n")
+        
+        # Format content search results
+        if content_search:
+            results.append("## Content Search Results\n")
+            for result in content_search:
+                model_name = result.get("model_name", "")
+                file_path = result.get("file_path", "")
+                match_contexts = result.get("match_contexts", [])
+                
+                if match_contexts:
+                    results.append(f"### Model: {model_name}\n**Path:** {file_path}\n**Matches:**\n")
+                    for context in match_contexts:
+                        results.append(f"```\n{context}\n```\n")
+        
+        return "\n".join(results)
+
+    def _safe_llm_call(self, messages: List[BaseMessage], max_retries: int = 2) -> str:
+        """Safely call LLM with retry mechanism and error handling"""
+        retries = 0
+        while retries <= max_retries:
+            try:
+                response = self.llm.invoke(messages)
+                content = response.content
+
+                # Check if this is a code enhancement task with framework-specific content
+                is_code_enhancement = any(message.content and "enhance the following code" in message.content.lower() for message in messages)
+                
+                # Check if this is a lineage task
+                is_lineage_task = any(message.content and ("data lineage" in message.content.lower() or "model lineage" in message.content.lower()) for message in messages)
+                
+                # Framework mentions that don't belong in a DBT context
+                framework_mentions = ["Laravel", "Django", "Rails", "Java", "Node.js", "Express", "Spring Boot", "Flask"]
+                
+                # Generic lineage phrases that indicate a non-specific response
+                generic_lineage_phrases = [
+                    "lineage overview",
+                    "upstream dependencies",
+                    "downstream dependencies",
+                    "critical path analysis", 
+                    "the model of interest",
+                    "highlight the model in your visualization",
+                    "visualization",
+                    "ALWAYS INCLUDE"
+                ]
+                
+                # DBT model path patterns
+                dbt_model_path_pattern = re.compile(r'models/[a-zA-Z0-9_/]+\.sql')
+                
+                # Check for framework-specific content in code enhancements
+                if is_code_enhancement and any(framework in content for framework in framework_mentions):
+                    correction = """
+                    THE SOLUTION PROVIDED IS NOT APPROPRIATE FOR A DBT PROJECT.
+                    
+                    DBT (data build tool) is SQL-first and specifically designed for data transformation in the data warehouse.
+                    It does not use web frameworks like Laravel, Django, etc.
+                    
+                    CORRECT APPROACH:
+                    1. Make direct edits to the SQL file in the models directory 
+                    2. Focus on SQL transformations, not web application code
+                    3. Follow DBT best practices for model structure and reference
+                    
+                    Please revise your answer to only include DBT-specific SQL transformations.
+                    """
+                    content += "\n\n" + correction
+                
+                # Check for generic lineage responses
+                if is_lineage_task:
+                    # Extract file path mentions
+                    model_paths = dbt_model_path_pattern.findall(content)
+                    
+                    # Check for generic phrases or lacking sufficient concrete paths
+                    has_generic_phrases = any(phrase in content for phrase in generic_lineage_phrases)
+                    
+                    # If there are fewer than 2 model paths or generic phrases are present, flag as generic
+                    if len(model_paths) < 2 or has_generic_phrases:
+                        correction = """
+                        THE LINEAGE INFORMATION PROVIDED APPEARS TO BE GENERIC AND NOT SPECIFIC TO THE REPOSITORY.
+                        
+                        IMPORTANT CORRECTION:
+                        
+                        Your response should ONLY include actual lineage information extracted from the Git repository.
+                        Be specific about:
+                        1. The exact file paths found in the repository
+                        2. True upstream dependencies (models referenced with ref() or source())
+                        3. True downstream dependencies (models that reference this model)
+                        4. Column-level dependencies where possible
+                        
+                        Example of correct paths in this repository:
+                        - models/marts/intermediate/order_items.sql
+                        - models/staging/tpch/stg_tpch_orders.sql
+                        - models/marts/core/fct_order_items.sql
+                        
+                        If the information cannot be found in the repository, please state that clearly instead of providing generalized descriptions.
+                        """
+                        content += "\n\n" + correction
+                
+                return content
+            except Exception as e:
+                retries += 1
+                if retries > max_retries:
+                    # If all retries fail, return an error message
+                    return f"I apologize, but I encountered an error while processing your request. Please try again or rephrase your question. Error details: {str(e)}"
+                # Wait briefly before retrying
+                import time
+                time.sleep(1)
 
 # Define common stop words to exclude from search terms
 COMMON_STOP_WORDS = {
