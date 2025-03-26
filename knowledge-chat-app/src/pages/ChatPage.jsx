@@ -81,7 +81,11 @@ import {
   IoGitBranch,
   IoArrowRedo,
   IoConstruct,
-  IoCheckmarkCircle
+  IoCheckmarkCircle,
+  IoGitCompare,
+  IoList,
+  IoGitCompareOutline,
+  IoCodeSlashOutline
 } from 'react-icons/io5'
 import { useParams, useNavigate } from 'react-router-dom'
 import { CodeDisplay } from '../components/CodeDisplay'
@@ -91,6 +95,8 @@ import { v4 as uuidv4 } from 'uuid'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/cjs/styles/prism'
+import SyntaxHighlighter from 'react-syntax-highlighter'
+import { oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 
 // Sample chat history data
 const chatHistory = [
@@ -999,19 +1005,32 @@ const MarkdownContent = ({ content }) => {
 
 // Update the renderMessageContent function to handle lineage visualization
 const renderMessageContent = (message) => {
-  let content = message.content;
+  if (!message.content) return null;
   
   // Remove any "thinking" sections from the content
-  content = content.replace(/\n+<thinking>[\s\S]*?<\/thinking>\n+/g, '\n\n');
+  let content = message.content.replace(/\n+<thinking>[\s\S]*?<\/thinking>\n+/g, '\n\n');
   
-  // For architect responses, check for lineage visualization data
-  if (message.role === 'assistant' && message.metadata?.agentType === 'data_architect') {
-    // Check if content contains lineage data
+  // If this is an assistant response, check for special content types
+  if (message.role === 'assistant') {
+    // Check for question type in details
+    const questionType = message.details?.question_type;
+    
+    // Handle CODE_ENHANCEMENT type
+    if (questionType === 'CODE_ENHANCEMENT' || content.includes('# CODE ENHANCEMENT') || content.includes('# CODE_ENHANCEMENT_VISUALIZATION')) {
+      return <CodeEnhancementDisplay content={content} />;
+    }
+    
+    // Handle DEVELOPMENT type
+    if (questionType === 'DEVELOPMENT' || content.includes('# Development Response') || content.includes('# DEVELOPMENT_VISUALIZATION')) {
+      return <DevelopmentModelDisplay content={content} />;
+    }
+    
+    // Handle LINEAGE or DEPENDENCIES type with visualization
     const hasLineageData = content.includes('models/') && 
       (content.includes('→') || content.includes('Upstream:') || 
        content.includes('Downstream:') || content.includes('lineage'));
     
-    if (hasLineageData) {
+    if ((questionType === 'LINEAGE' || questionType === 'DEPENDENCIES') && hasLineageData) {
       // Extract sections from content
       const sections = {};
       
@@ -2595,6 +2614,795 @@ const parseLineageData = (text) => {
     console.error("Error parsing lineage data:", error);
     return null;
   }
+};
+
+// Replace the existing CodeDiffDisplay component with this enhanced version
+const CodeDiffDisplay = ({ originalCode, enhancedCode, filePath, language = 'sql' }) => {
+  const [diffView, setDiffView] = useState('result'); // Changed default to 'result'
+  const [copySuccess, setCopySuccess] = useState('');
+  const [error, setError] = useState(null);
+  
+  // Add safety check for required props
+  if (!enhancedCode) {
+    return (
+      <Box p={4} bg="gray.50" borderRadius="md">
+        <Text>No code available to display</Text>
+      </Box>
+    );
+  }
+  
+  try {
+    // Function to copy code to clipboard
+    const copyToClipboard = (code) => {
+      try {
+        navigator.clipboard.writeText(code)
+          .then(() => {
+            setCopySuccess('Copied!');
+            setTimeout(() => setCopySuccess(''), 2000);
+          })
+          .catch(err => {
+            console.error('Failed to copy: ', err);
+            setCopySuccess('Failed to copy');
+          });
+      } catch (err) {
+        console.error('Error in copyToClipboard:', err);
+        setCopySuccess('Failed to copy');
+      }
+    };
+    
+    // Simplified highlightDifferences function - we don't need the complex diff now
+    const highlightDifferences = (oldCode, newCode) => {
+      try {
+        // Just return the lines for rendering, no diff highlighting
+        return newCode.split('\n').map((line, i) => ({
+          lineNumber: i + 1,
+          newLine: line
+        }));
+      } catch (err) {
+        console.error('Error in highlightDifferences:', err);
+        return [];
+      }
+    };
+    
+    // Generate the lines for rendering with safety check
+    const resultLines = enhancedCode ? enhancedCode.split('\n').map((line, i) => ({
+      lineNumber: i + 1,
+      content: line
+    })) : [];
+    
+    // Render the simplified view with just the final code
+    const renderResultView = () => {
+      try {
+        return (
+          <Box width="100%" borderRadius="md" overflow="hidden" border="1px solid" borderColor="gray.300" boxShadow="md">
+            {/* File header with path */}
+            <Box p={2} bg="gray.700" color="white">
+              <HStack justify="space-between">
+                <Text fontWeight="medium" fontSize="sm" isTruncated>
+                  {filePath || 'Enhanced SQL Code'}
+                </Text>
+                <HStack>
+                  <Badge colorScheme={copySuccess ? "green" : "blue"}>
+                    {copySuccess || language || 'sql'}
+                  </Badge>
+                  <IconButton
+                    icon={<IoCopy />}
+                    size="xs"
+                    colorScheme="gray"
+                    variant="ghost"
+                    onClick={() => copyToClipboard(enhancedCode)}
+                    aria-label="Copy code"
+                  />
+                </HStack>
+              </HStack>
+            </Box>
+            
+            {/* Code content */}
+            <Box
+              bg="#1e1e1e"
+              color="white"
+              fontFamily="monospace"
+              fontSize="sm"
+              lineHeight="1.5"
+              p={2}
+              overflowX="auto"
+              maxHeight="500px"
+              overflowY="auto"
+              css={{
+                '&::-webkit-scrollbar': {
+                  width: '8px',
+                  height: '8px',
+                },
+                '&::-webkit-scrollbar-track': {
+                  background: '#2d2d2d',
+                },
+                '&::-webkit-scrollbar-thumb': {
+                  background: '#555',
+                  borderRadius: '4px',
+                },
+                '&::-webkit-scrollbar-thumb:hover': {
+                  background: '#666',
+                },
+              }}
+            >
+              {resultLines.length > 0 ? (
+                <Box display="flex" flexDirection="column">
+                  {resultLines.map((line, idx) => (
+                    <Box key={idx} display="flex" _hover={{ bg: 'rgba(255, 255, 255, 0.05)' }}>
+                      {/* Line numbers */}
+                      <Box
+                        color="gray.500"
+                        width="40px"
+                        flexShrink={0}
+                        textAlign="right"
+                        pr={2}
+                        userSelect="none"
+                        borderRight="1px solid"
+                        borderColor="gray.700"
+                      >
+                        {line.lineNumber}
+                      </Box>
+                      
+                      {/* Code content */}
+                      <Box pl={4} width="100%" whiteSpace="pre">
+                        {line.content}
+                      </Box>
+                    </Box>
+                  ))}
+                </Box>
+              ) : (
+                <Box p={4}>
+                  <Text color="gray.400">No code content to display</Text>
+                </Box>
+              )}
+            </Box>
+          </Box>
+        );
+      } catch (err) {
+        console.error('Error in renderResultView:', err);
+        setError(err.message);
+        return (
+          <Box p={4} bg="red.50" borderRadius="md">
+            <Text color="red.500">Error rendering code view: {err.message}</Text>
+          </Box>
+        );
+      }
+    };
+    
+    // Simplified split view for comparison
+    const renderSplitView = () => {
+      try {
+        if (!originalCode) {
+          return (
+            <Box p={4} bg="orange.50" borderRadius="md">
+              <Text>Original code is not available for comparison.</Text>
+            </Box>
+          );
+        }
+        
+        return (
+          <Box width="100%" borderRadius="md" overflow="hidden" border="1px solid" borderColor="gray.300" boxShadow="md">
+            {/* File header with path */}
+            <Box p={2} bg="gray.700" color="white">
+              <HStack justify="space-between">
+                <Text fontWeight="medium" fontSize="sm" isTruncated>
+                  {filePath || 'SQL Code Comparison'}
+                </Text>
+                <HStack spacing={2}>
+                  <Badge colorScheme="blue">
+                    {language || 'sql'}
+                  </Badge>
+                  <IconButton
+                    icon={<IoCopy />}
+                    size="xs"
+                    colorScheme="gray"
+                    variant="ghost"
+                    onClick={() => copyToClipboard(enhancedCode)}
+                    aria-label="Copy enhanced code"
+                  />
+                </HStack>
+              </HStack>
+            </Box>
+            
+            {/* Code content in a simpler format */}
+            <SimpleGrid columns={2} spacing={0}>
+              <Box p={2} bg="#1e1e1e" borderRight="1px solid" borderColor="gray.700">
+                <Box p={1} bg="gray.800" mb={2}>
+                  <Text fontSize="sm" color="white">Original Code</Text>
+                </Box>
+                <Box
+                  bg="#1e1e1e"
+                  color="white"
+                  fontFamily="monospace"
+                  fontSize="sm"
+                  lineHeight="1.5"
+                  overflowX="auto"
+                  height="400px"
+                  overflowY="auto"
+                  p={2}
+                  css={{
+                    '&::-webkit-scrollbar': { width: '8px', height: '8px' },
+                    '&::-webkit-scrollbar-track': { background: '#2d2d2d' },
+                    '&::-webkit-scrollbar-thumb': { background: '#555', borderRadius: '4px' },
+                  }}
+                >
+                  <Text whiteSpace="pre-wrap">{originalCode}</Text>
+                </Box>
+              </Box>
+              
+              <Box p={2} bg="#1e1e1e">
+                <Box p={1} bg="gray.800" mb={2}>
+                  <Text fontSize="sm" color="white">Enhanced Code</Text>
+                </Box>
+                <Box
+                  bg="#1e1e1e"
+                  color="white"
+                  fontFamily="monospace"
+                  fontSize="sm"
+                  lineHeight="1.5"
+                  overflowX="auto"
+                  height="400px"
+                  overflowY="auto"
+                  p={2}
+                  css={{
+                    '&::-webkit-scrollbar': { width: '8px', height: '8px' },
+                    '&::-webkit-scrollbar-track': { background: '#2d2d2d' },
+                    '&::-webkit-scrollbar-thumb': { background: '#555', borderRadius: '4px' },
+                  }}
+                >
+                  <Text whiteSpace="pre-wrap">{enhancedCode}</Text>
+                </Box>
+              </Box>
+            </SimpleGrid>
+          </Box>
+        );
+      } catch (err) {
+        console.error('Error in renderSplitView:', err);
+        setError(err.message);
+        return (
+          <Box p={4} bg="red.50" borderRadius="md">
+            <Text color="red.500">Error rendering comparison view: {err.message}</Text>
+          </Box>
+        );
+      }
+    };
+    
+    // The render logic
+    return (
+      <Box>
+        {error ? (
+          <Box p={4} bg="red.50" borderRadius="md" mb={4}>
+            <Text color="red.500">{error}</Text>
+            <Button mt={2} size="sm" onClick={() => setError(null)}>Try Again</Button>
+          </Box>
+        ) : null}
+        
+        {diffView === 'result' ? renderResultView() : renderSplitView()}
+        
+        <HStack mt={2} justifyContent="flex-end">
+          <Button 
+            size="sm" 
+            leftIcon={<Icon as={IoCodeSlashOutline} />}
+            colorScheme={diffView === 'result' ? 'blue' : 'gray'}
+            variant={diffView === 'result' ? 'solid' : 'outline'}
+            onClick={() => setDiffView('result')}
+          >
+            Result
+          </Button>
+          <Button 
+            size="sm" 
+            leftIcon={<Icon as={IoGitCompareOutline} />}
+            colorScheme={diffView === 'split' ? 'blue' : 'gray'}
+            variant={diffView === 'split' ? 'solid' : 'outline'}
+            onClick={() => setDiffView('split')}
+            isDisabled={!originalCode}
+          >
+            Compare
+          </Button>
+        </HStack>
+      </Box>
+    );
+  } catch (err) {
+    console.error('Error in CodeDiffDisplay:', err);
+    return (
+      <Box p={4} bg="red.50" borderRadius="md">
+        <Heading size="md" mb={2}>Error Displaying Code</Heading>
+        <Text mb={3}>We encountered an error while trying to display the code.</Text>
+        <CodeBlock code={enhancedCode} language={language} />
+      </Box>
+    );
+  }
+};
+
+// Component to display code enhancement responses
+const CodeEnhancementDisplay = ({ content }) => {
+  const [error, setError] = useState(null);
+  
+  // Wrap extraction in try-catch to prevent white screens
+  try {
+    console.log("CodeEnhancementDisplay received content:", content ? `${content.substring(0, 100)}...` : "null");
+    
+    // Extract the JSON visualization data if present
+    const extractVisualizationData = () => {
+      try {
+        const vizMatch = content.match(/# CODE_ENHANCEMENT_VISUALIZATION\s*```json\s*([\s\S]*?)\s*```/);
+        if (vizMatch && vizMatch[1]) {
+          try {
+            const data = JSON.parse(vizMatch[1]);
+            console.log("Successfully extracted visualization data:", data);
+            return data;
+          } catch (e) {
+            console.error("Error parsing visualization data:", e);
+          }
+        }
+        return null;
+      } catch (err) {
+        console.error("Error in extractVisualizationData:", err);
+        return null;
+      }
+    };
+    
+    // Extract code blocks from the content using multiple patterns
+    const extractCodeBlocks = () => {
+      try {
+        const blocks = {};
+        
+        // Try multiple patterns for extracting the original code
+        const originalCodePatterns = [
+          // Pattern 1: Look for "Before (Original Code)" section
+          /## Before[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
+          // Pattern 2: Look for "CURRENT CODE" section
+          /# CURRENT CODE[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
+          // Pattern 3: Look for "Original Code" section
+          /Original Code[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
+          // Pattern 4: Look for "old_code" or "original_code" in JSON
+          /"old_code"|"original_code"\s*:\s*"([\s\S]*?)"/,
+          // Pattern 5: Look for first SQL block in the content
+          /```sql\s*([\s\S]*?)\s*```/
+        ];
+        
+        // Try multiple patterns for extracting the enhanced code
+        const enhancedCodePatterns = [
+          // Pattern 1: Look for "After (Enhanced Code)" section
+          /## After[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
+          // Pattern 2: Look for "Enhancement" or "Implementation" section
+          /(?:## Enhancement|## Implementation)[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
+          // Pattern 3: Look for "Enhanced Code" section
+          /Enhanced Code[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
+          // Pattern 4: Look for any SQL block
+          /```sql\s*([\s\S]*?)\s*```/
+        ];
+        
+        // Try each pattern for original code
+        for (const pattern of originalCodePatterns) {
+          const match = content.match(pattern);
+          if (match && match[1]) {
+            blocks.originalCode = match[1];
+            break;
+          }
+        }
+        
+        // Try each pattern for enhanced code
+        for (const pattern of enhancedCodePatterns) {
+          const match = content.match(pattern);
+          if (match && match[1]) {
+            blocks.enhancedCode = match[1];
+            break;
+          }
+        }
+        
+        // If still no enhanced code found, look for any code block
+        if (!blocks.enhancedCode) {
+          const allCodeBlocks = content.match(/```(?:sql|[\w]*)?(?:\n|\r\n)([\s\S]*?)```/g);
+          if (allCodeBlocks && allCodeBlocks.length > 0) {
+            // Use the last code block as enhanced
+            const lastMatch = allCodeBlocks[allCodeBlocks.length - 1].match(/```(?:sql|[\w]*)?(?:\n|\r\n)([\s\S]*?)```/);
+            if (lastMatch && lastMatch[1]) {
+              blocks.enhancedCode = lastMatch[1].trim();
+            }
+          }
+        }
+        
+        console.log("Extracted code blocks:", { 
+          originalFound: !!blocks.originalCode, 
+          enhancedFound: !!blocks.enhancedCode
+        });
+        
+        return blocks;
+      } catch (err) {
+        console.error("Error in extractCodeBlocks:", err);
+        return { originalCode: '', enhancedCode: '' };
+      }
+    };
+    
+    // Extract visualization data
+    const vizData = extractVisualizationData();
+    
+    // Extract code blocks if no visualization data
+    const codeBlocks = extractCodeBlocks();
+    
+    // Determine what to display
+    const originalCode = vizData?.original_code || codeBlocks.originalCode || '';
+    const enhancedCode = vizData?.enhanced_code || codeBlocks.enhancedCode || '';
+    const filePath = vizData?.file_path || '';
+    
+    // Return markdown content if we don't have enough data
+    if (!enhancedCode) {
+      console.log("No enhanced code found, falling back to markdown rendering");
+      return <MarkdownContent content={content} />;
+    }
+    
+    // Extract summary and key changes from the content
+    const extractTextSection = (sectionName) => {
+      try {
+        const sectionRegex = new RegExp(`## ${sectionName}([\\s\\S]*?)(?=##|$)`, 'i');
+        const match = content.match(sectionRegex);
+        return match ? match[1].trim() : '';
+      } catch (err) {
+        console.error(`Error extracting section ${sectionName}:`, err);
+        return '';
+      }
+    };
+    
+    const summary = extractTextSection('Summary') || extractTextSection('Enhancement Summary');
+    
+    return (
+      <Box>
+        {summary && (
+          <Box mb={4} p={4} bg="blue.50" borderRadius="md">
+            <Heading size="md" mb={2} color="blue.700">Enhancement Summary</Heading>
+            <MarkdownContent content={summary} />
+          </Box>
+        )}
+        
+        <CodeDiffDisplay 
+          originalCode={originalCode} 
+          enhancedCode={enhancedCode} 
+          filePath={filePath} 
+        />
+      </Box>
+    );
+  } catch (err) {
+    // If anything goes wrong, log and show error but don't break the UI
+    console.error("Error rendering CodeEnhancementDisplay:", err);
+    setError(err.message);
+    
+    // Fallback rendering
+    return (
+      <Box>
+        {error && (
+          <Box mb={4} p={4} bg="red.50" borderRadius="md">
+            <Heading size="md" mb={2} color="red.700">Error Rendering Enhanced Code</Heading>
+            <Text>{error}</Text>
+            <Button mt={3} size="sm" colorScheme="blue" onClick={() => window.location.reload()}>
+              Refresh Page
+            </Button>
+          </Box>
+        )}
+        <MarkdownContent content={content} />
+      </Box>
+    );
+  }
+};
+
+// Component to display development model responses
+const DevelopmentModelDisplay = ({ content }) => {
+  // Extract the JSON visualization data if present
+  const extractVisualizationData = () => {
+    const vizMatch = content.match(/# DEVELOPMENT_VISUALIZATION\s*```json\s*([\s\S]*?)\s*```/);
+    if (vizMatch && vizMatch[1]) {
+      try {
+        return JSON.parse(vizMatch[1]);
+      } catch (e) {
+        console.error("Error parsing development visualization data:", e);
+      }
+    }
+    return null;
+  };
+  
+  // Extract code block from the content
+  const extractModelCode = () => {
+    const codeMatch = content.match(/```sql\s*([\s\S]*?)\s*```/);
+    return codeMatch ? codeMatch[1] : '';
+  };
+  
+  // Extract a specific section by name
+  const extractSection = (sectionName) => {
+    const sectionRegex = new RegExp(`## ${sectionName}([\\s\\S]*?)(?=##|$)`, 'i');
+    const match = content.match(sectionRegex);
+    return match ? match[1].trim() : '';
+  };
+  
+  // Extract visualization data
+  const vizData = extractVisualizationData();
+  
+  // Extract model code and sections
+  const modelCode = vizData?.model_code || extractModelCode();
+  const overview = extractSection('Overview');
+  const schema = extractSection('Schema') || extractSection('Schema/Fields');
+  const usage = extractSection('Usage');
+  const tests = extractSection('Tests');
+  
+  // If no code found, just render the content normally
+  if (!modelCode) {
+    return <MarkdownContent content={content} />;
+  }
+  
+  // Function to get DBT model type
+  const getModelType = () => {
+    const modelType = vizData?.model_type || 'table';
+    let typeDisplay = 'Table';
+    let typeColor = 'green';
+    
+    if (modelCode.includes('incremental')) {
+      typeDisplay = 'Incremental';
+      typeColor = 'purple';
+    } else if (modelCode.includes('ephemeral')) {
+      typeDisplay = 'Ephemeral';
+      typeColor = 'gray';
+    } else if (modelCode.includes('materialized') && modelCode.includes('view')) {
+      typeDisplay = 'View';
+      typeColor = 'blue';
+    }
+    
+    return { display: typeDisplay, color: typeColor };
+  };
+  
+  const modelType = getModelType();
+  
+  return (
+    <Box>
+      {/* Header with model overview */}
+      <Box 
+        borderWidth="1px" 
+        borderRadius="md" 
+        mb={6} 
+        overflow="hidden" 
+        boxShadow="md"
+      >
+        <Box 
+          bg="purple.700" 
+          color="white" 
+          p={4}
+          borderTopRadius="md"
+        >
+          <HStack justifyContent="space-between">
+            <VStack align="start" spacing={1}>
+              <Heading size="md">New DBT Model Development</Heading>
+              <HStack>
+                <Badge colorScheme={modelType.color} px={2} py={1}>
+                  {modelType.display}
+                </Badge>
+                {modelCode.includes('ref(') && (
+                  <Badge colorScheme="blue" px={2} py={1}>
+                    Has Dependencies
+                  </Badge>
+                )}
+              </HStack>
+            </VStack>
+            <IconButton
+              icon={<IoCopy />}
+              aria-label="Copy code"
+              colorScheme="purple"
+              variant="outline"
+              onClick={() => {
+                navigator.clipboard.writeText(modelCode);
+              }}
+            />
+          </HStack>
+        </Box>
+        
+        {/* Overview section */}
+        {overview && (
+          <Box p={4} bg="white">
+            <Text fontWeight="bold" fontSize="sm" color="gray.500" mb={2}>MODEL OVERVIEW</Text>
+            <MarkdownContent content={overview} />
+          </Box>
+        )}
+      </Box>
+      
+      {/* Main content: Code and related sections */}
+      <SimpleGrid columns={{ base: 1, md: 12 }} spacing={6} mb={6}>
+        {/* Code implementation (wider column) */}
+        <Box 
+          colSpan={{ base: 1, md: 8 }} 
+          borderWidth="1px" 
+          borderRadius="md" 
+          overflow="hidden" 
+          boxShadow="md"
+          gridColumn={{ base: "span 1", md: "span 8" }}
+        >
+          <Box
+            bg="#2d2d2d"
+            color="white"
+            p={2}
+            borderBottom="1px solid"
+            borderColor="gray.600"
+          >
+            <HStack justify="space-between">
+              <Text fontWeight="bold">SQL Implementation</Text>
+              <HStack>
+                <Badge colorScheme="green">model.sql</Badge>
+                <IconButton
+                  icon={<IoCopy />}
+                  size="xs"
+                  variant="ghost"
+                  colorScheme="blue"
+                  aria-label="Copy code"
+                  onClick={() => {
+                    navigator.clipboard.writeText(modelCode);
+                  }}
+                />
+              </HStack>
+            </HStack>
+          </Box>
+          
+          {/* Code editor with line numbers */}
+          <Box position="relative" bg="#1e1e1e" width="100%">
+            <HStack align="stretch" spacing={0}>
+              {/* Line numbers */}
+              <Box 
+                bg="#252525" 
+                color="gray.500" 
+                py={2} 
+                width="50px" 
+                textAlign="right" 
+                pr={2} 
+                fontFamily="monospace" 
+                fontSize="sm"
+                borderRight="1px solid"
+                borderColor="gray.700"
+                flexShrink={0}
+              >
+                {modelCode.split('\n').map((_, idx) => (
+                  <Box key={idx} lineHeight="1.5">
+                    {idx + 1}
+                  </Box>
+                ))}
+              </Box>
+              
+              {/* Code content */}
+              <Box 
+                flex="1" 
+                p={2} 
+                pl={4} 
+                overflow="auto" 
+                maxHeight="500px"
+                css={{
+                  '&::-webkit-scrollbar': {
+                    width: '8px',
+                    height: '8px',
+                  },
+                  '&::-webkit-scrollbar-track': {
+                    backgroundColor: '#2d2d2d',
+                  },
+                  '&::-webkit-scrollbar-thumb': {
+                    backgroundColor: '#555',
+                    borderRadius: '4px',
+                  },
+                }}
+              >
+                <SyntaxHighlighter
+                  language="sql"
+                  style={atomDark}
+                  showLineNumbers={false}
+                  customStyle={{
+                    margin: 0,
+                    padding: 0,
+                    background: 'transparent',
+                    fontSize: '14px',
+                  }}
+                >
+                  {modelCode}
+                </SyntaxHighlighter>
+              </Box>
+            </HStack>
+          </Box>
+        </Box>
+        
+        {/* Side panel with model details (narrower column) */}
+        <Box 
+          colSpan={{ base: 1, md: 4 }} 
+          borderWidth="1px" 
+          borderRadius="md" 
+          boxShadow="sm"
+          gridColumn={{ base: "span 1", md: "span 4" }}
+        >
+          <Tabs colorScheme="purple" size="sm" variant="enclosed">
+            <TabList bg="gray.50" borderTopRadius="md">
+              <Tab _selected={{ bg: "white", borderBottom: "none" }}>Schema</Tab>
+              <Tab _selected={{ bg: "white", borderBottom: "none" }}>Usage</Tab>
+              <Tab _selected={{ bg: "white", borderBottom: "none" }}>Tests</Tab>
+            </TabList>
+            <TabPanels>
+              {/* Schema tab */}
+              <TabPanel p={4}>
+                <VStack align="start" spacing={3}>
+                  <Text fontSize="sm" fontWeight="bold" color="gray.600">MODEL FIELDS</Text>
+                  {schema ? (
+                    <MarkdownContent content={schema} />
+                  ) : (
+                    <Box p={4} bg="gray.50" borderRadius="md" width="100%">
+                      <Text color="gray.500" fontSize="sm">No schema information available</Text>
+                    </Box>
+                  )}
+                </VStack>
+              </TabPanel>
+              
+              {/* Usage tab */}
+              <TabPanel p={4}>
+                <VStack align="start" spacing={3}>
+                  <Text fontSize="sm" fontWeight="bold" color="gray.600">HOW TO USE THIS MODEL</Text>
+                  {usage ? (
+                    <MarkdownContent content={usage} />
+                  ) : (
+                    <Box p={4} bg="purple.50" borderRadius="md" width="100%">
+                      <Code p={2} colorScheme="purple" variant="solid" fontSize="sm">
+                        {'{{ ref("model_name") }}'}
+                      </Code>
+                    </Box>
+                  )}
+                </VStack>
+              </TabPanel>
+              
+              {/* Tests tab */}
+              <TabPanel p={4}>
+                <VStack align="start" spacing={3}>
+                  <Text fontSize="sm" fontWeight="bold" color="gray.600">RECOMMENDED TESTS</Text>
+                  {tests ? (
+                    <MarkdownContent content={tests} />
+                  ) : (
+                    <Box p={4} bg="orange.50" borderRadius="md" width="100%">
+                      <Text fontSize="sm" mb={2}>Add these tests to your schema.yml:</Text>
+                      <Code p={2} colorScheme="orange" fontSize="sm" whiteSpace="pre">
+{`models:
+  - name: model_name
+    columns:
+      - name: id
+        tests:
+          - unique
+          - not_null`}
+                      </Code>
+                    </Box>
+                  )}
+                </VStack>
+              </TabPanel>
+            </TabPanels>
+          </Tabs>
+        </Box>
+      </SimpleGrid>
+      
+      {/* Quick reference panel */}
+      <Box 
+        borderWidth="1px" 
+        borderRadius="md" 
+        p={4} 
+        mb={4} 
+        bg="blue.50" 
+        borderColor="blue.200"
+      >
+        <HStack mb={3}>
+          <Icon as={IoInformation} color="blue.500" boxSize={5} />
+          <Text fontWeight="bold" color="blue.700">DBT Development Quick Reference</Text>
+        </HStack>
+        
+        <SimpleGrid columns={{ base: 1, md: 3 }} spacing={4}>
+          <Box>
+            <Text fontWeight="medium" fontSize="sm" mb={1}>Reference Models</Text>
+            <Code p={2} fontSize="xs" colorScheme="blue">{'{{ ref("model_name") }}'}</Code>
+          </Box>
+          <Box>
+            <Text fontWeight="medium" fontSize="sm" mb={1}>Reference Sources</Text>
+            <Code p={2} fontSize="xs" colorScheme="blue">{'{{ source("source_name", "table_name") }}'}</Code>
+          </Box>
+          <Box>
+            <Text fontWeight="medium" fontSize="sm" mb={1}>Configure Model</Text>
+            <Code p={2} fontSize="xs" colorScheme="blue">{'{{ config(materialized="table") }}'}</Code>
+          </Box>
+        </SimpleGrid>
+      </Box>
+    </Box>
+  );
 };
 
 const ChatPage = () => {

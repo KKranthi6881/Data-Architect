@@ -2288,70 +2288,117 @@ class DataArchitectAgent:
         model_details = state.get("model_details", [])
         model_content = ""
         model_path = ""
+        model_name = ""
         
         if isinstance(model_details, list) and model_details:
             model_content = model_details[0].get("content", "")
             model_path = model_details[0].get("file_path", "")
+            model_name = model_details[0].get("model_name", "")
         elif isinstance(model_details, dict):
             model_content = model_details.get("content", "")
             model_path = model_details.get("file_path", "")
-            
+            model_name = model_details.get("model_name", "")
+        
         # Add warning if no actual model content was found
         if not model_content:
             warning_message = "\n\n**WARNING: No actual model content was found in the repository. This response is based on generic understanding only and may not be accurate for your specific implementation.**\n\n"
             # Add warning at the beginning of the response to make it prominent
             response = warning_message + response
             logger.warning("No actual model content found for code enhancement response")
+        
+        # Check if the response already has a code block
+        has_code_block = bool(re.search(r'```sql\s*(.*?)\s*```', response, re.DOTALL))
+        
+        # If no code block is present, try to add one with the enhanced code
+        if not has_code_block:
+            logger.warning("No SQL code block found in code enhancement response. Adding placeholder.")
+            response += "\n\n```sql\n-- Enhanced code should be here\n```\n"
+        
+        # Ensure there are clear before/after sections if we have original model content
+        if model_content and "# CURRENT CODE" not in response and "## Before" not in response:
+            structured_response = f"""# CODE ENHANCEMENT FOR {model_path if model_path else model_name}
+
+## Summary of Enhancements
+{response.strip()}
+
+## Before (Original Code)
+```sql
+{model_content.strip()}
+```
+
+## After (Enhanced Code)
+"""
+            # Extract the SQL code from the existing response
+            code_matches = re.findall(r'```sql\s*(.*?)\s*```', response, re.DOTALL)
+            if code_matches:
+                enhanced_code = code_matches[0].strip()
+                structured_response += f"```sql\n{enhanced_code}\n```\n"
+            else:
+                structured_response += "```sql\n-- Enhanced code was not provided correctly by the model\n```\n"
             
+            # Add a diff visualization using special format markers that frontend can parse
+            structured_response += "\n## Changes Visualization\n"
+            structured_response += "```diff\n"
+            
+            # Add a simple diff visualization (frontend can further enhance this)
+            original_lines = model_content.strip().split('\n')
+            if code_matches:
+                new_lines = code_matches[0].strip().split('\n')
+                
+                # Simple diff visualization with + and - markers
+                try:
+                    import difflib
+                    diff = difflib.unified_diff(
+                        original_lines, 
+                        new_lines,
+                        fromfile='Original',
+                        tofile='Enhanced',
+                        lineterm=''
+                    )
+                    # Skip the first 3 lines (header lines)
+                    diff_lines = list(diff)[3:]
+                    structured_response += '\n'.join(diff_lines)
+                except Exception as e:
+                    logger.error(f"Error generating diff: {e}")
+                    structured_response += "# Unable to generate diff visualization\n"
+            else:
+                structured_response += "# No enhanced code provided to compare\n"
+                
+            structured_response += "\n```\n"
+            
+            # Add JSON data for visualization
+            structured_response += "\n# CODE_ENHANCEMENT_VISUALIZATION\n```json\n"
+            visualization_data = {
+                "original_code": model_content.strip(),
+                "enhanced_code": code_matches[0].strip() if code_matches else "",
+                "model_name": model_name,
+                "file_path": model_path,
+                "enhancement_type": "code_enhancement"
+            }
+            structured_response += json.dumps(visualization_data, indent=2)
+            structured_response += "\n```\n"
+            
+            response = structured_response
+        
         # Ensure the model path is in the response
         if model_path and model_path not in response:
             logger.warning(f"Model path {model_path} not found in code enhancement response")
             header = f"## Enhanced Code for {model_path}\n\n"
             response = header + response
-            
+        
         # Validate DBT-specific statements
         dbt_patterns = [r"ref\('[^']+'\)", r"source\('[^']+',\s*'[^']+'\)"]
         has_dbt_patterns = any(re.search(pattern, response) for pattern in dbt_patterns)
         
-        if not has_dbt_patterns and "```sql" in response:
-            logger.warning("Code enhancement response does not contain DBT ref/source patterns")
-            note = "\n\n**Note:** Ensure you're using proper DBT ref() and source() functions for referencing other models and sources."
-            response += note
-            
-        # Check for complete code implementation
-        if "```sql" in response and "```" in response:
-            sql_blocks = re.findall(r"```sql\n(.*?)\n```", response, re.DOTALL)
-            if not sql_blocks:
-                sql_blocks = re.findall(r"```\n(.*?)\n```", response, re.DOTALL)
-                
-            if sql_blocks:
-                main_sql = sql_blocks[0]
-                # Check if the SQL has the basic structure we need
-                has_select = "SELECT" in main_sql.upper()
-                has_from = "FROM" in main_sql.upper()
-                
-                if not (has_select and has_from):
-                    logger.warning("Code enhancement missing basic SQL structure")
-                    note = "\n\n**Note:** The SQL implementation should include complete SELECT and FROM clauses."
-                    response += note
-        else:
-            logger.warning("Code enhancement response missing code blocks")
-            note = "\n\n**Note:** The response should include a complete SQL implementation in code blocks."
-            response += note
-            
-        # Check for required sections in the response
-        required_sections = ["Implementation", "Explanation", "Changes Made"]
-        missing_sections = []
+        # Check if the code uses DBT patterns
+        if not has_dbt_patterns and model_content and "select" in model_content.lower():
+            # If original model uses DBT patterns but enhanced code doesn't, add a warning
+            original_has_patterns = any(re.search(pattern, model_content) for pattern in dbt_patterns)
+            if original_has_patterns:
+                warning = "\n\n**WARNING: The enhanced code does not use DBT-specific functions like `ref()` or `source()` that were present in the original model. This might cause issues with the DBT dependency graph.**\n\n"
+                response += warning
+                logger.warning("Enhanced code is missing DBT patterns from original model")
         
-        for section in required_sections:
-            if not re.search(section, response, re.IGNORECASE):
-                missing_sections.append(section)
-                
-        if missing_sections:
-            logger.warning(f"Code enhancement response missing sections: {', '.join(missing_sections)}")
-            note = f"\n\n**Note:** This response should include these sections: {', '.join(missing_sections)}"
-            response += note
-            
         return response
 
     def _validate_documentation_response(self, response: str, question_type: str) -> str:
@@ -3447,9 +3494,139 @@ class DataArchitectAgent:
 
     def _validate_development_response(self, response):
         """Validate and enhance development response if needed."""
-        # Ensure response has code blocks
-        if "```sql" not in response and "```" not in response:
-            return response + "\n\n```sql\n-- Complete SQL implementation should be here\n-- Please refer to the guidance above for implementation details\n```"
+        logger.info("Validating development response")
+        
+        # Check if response has code blocks
+        sql_code_blocks = re.findall(r'```sql\s*(.*?)\s*```', response, re.DOTALL)
+        any_code_blocks = re.findall(r'```(?:sql)?\s*(.*?)\s*```', response, re.DOTALL)
+        
+        # If no SQL code blocks but there are other code blocks, convert them to SQL
+        if not sql_code_blocks and any_code_blocks:
+            logger.warning("Development response has code blocks without SQL language specifier")
+            # Replace the first code block with an SQL block
+            response = re.sub(
+                r'```(?!sql)(.*?)\s*(.*?)\s*```',
+                r'```sql\n\2\n```',
+                response,
+                count=1,
+                flags=re.DOTALL
+            )
+            
+        # If still no code blocks at all, add a template
+        if not any_code_blocks:
+            logger.warning("Development response missing code blocks, adding template")
+            response += "\n\n## SQL Implementation\n\n"
+            response += "```sql\n"
+            response += "-- Complete SQL implementation\n"
+            response += "WITH source_data AS (\n"
+            response += "    SELECT * FROM {{ ref('some_model') }}\n"
+            response += "),\n\n"
+            response += "transformed AS (\n"
+            response += "    SELECT\n"
+            response += "        id,\n"
+            response += "        field1,\n"
+            response += "        field2,\n"
+            response += "        -- Add transformation logic here\n"
+            response += "    FROM source_data\n"
+            response += ")\n\n"
+            response += "SELECT * FROM transformed\n"
+            response += "```\n"
+        
+        # Ensure the response has a structured format
+        required_sections = {
+            "Overview": "Brief description of the model's purpose",
+            "SQL Implementation": "The complete SQL code",
+            "Schema/Fields": "Description of the output fields",
+            "Usage": "How to use this model",
+            "Tests": "Recommended tests for this model"
+        }
+        
+        # Check for missing sections
+        missing_sections = []
+        for section, desc in required_sections.items():
+            if not re.search(rf"\b{section}\b", response, re.IGNORECASE):
+                missing_sections.append(section)
+        
+        # If missing critical sections, add them
+        if missing_sections:
+            logger.warning(f"Development response missing sections: {', '.join(missing_sections)}")
+            
+            # Get the existing SQL code if available
+            sql_code = ""
+            if sql_code_blocks:
+                sql_code = sql_code_blocks[0]
+            elif any_code_blocks:
+                sql_code = any_code_blocks[0]
+                
+            # Add missing sections with templates
+            structured_response = "# Development Response\n\n"
+            
+            # Add sections that exist in the original response
+            sections = {}
+            
+            # Try to extract existing sections using headers
+            header_pattern = r'#+\s+(.*?)\s*\n(.*?)(?=#+\s+|\Z)'
+            section_matches = re.findall(header_pattern, response, re.DOTALL)
+            
+            for header, content in section_matches:
+                clean_header = header.strip()
+                sections[clean_header] = content.strip()
+                
+            # Incorporate existing content where possible
+            for section, desc in required_sections.items():
+                # Check if this section or similar exists in the extracted sections
+                section_key = next((k for k in sections.keys() 
+                                   if section.lower() in k.lower()), None)
+                
+                structured_response += f"## {section}\n\n"
+                
+                if section_key:
+                    # Use the existing section content
+                    structured_response += f"{sections[section_key]}\n\n"
+                else:
+                    # Add template content based on section type
+                    if section == "SQL Implementation" and sql_code:
+                        structured_response += f"```sql\n{sql_code}\n```\n\n"
+                    elif section == "Overview":
+                        # Extract potential overview from the start of the response
+                        first_para = response.split('\n\n')[0] if '\n\n' in response else ""
+                        if not first_para.startswith('#') and len(first_para) > 20:
+                            structured_response += f"{first_para}\n\n"
+                        else:
+                            structured_response += f"This model is designed to [describe purpose].\n\n"
+                    elif section == "Schema/Fields":
+                        structured_response += "The model outputs the following fields:\n\n"
+                        structured_response += "- **field1**: Description\n"
+                        structured_response += "- **field2**: Description\n"
+                        structured_response += "- **field3**: Description\n\n"
+                    elif section == "Usage":
+                        structured_response += "This model can be referenced in other models using:\n\n"
+                        structured_response += "```sql\n{{ ref('model_name') }}\n```\n\n"
+                    elif section == "Tests":
+                        structured_response += "Recommended tests for this model:\n\n"
+                        structured_response += "```yaml\nmodels:\n  - name: model_name\n    columns:\n      - name: id\n        tests:\n          - unique\n          - not_null\n```\n\n"
+            
+            # Add visualization data for frontend
+            structured_response += "\n# DEVELOPMENT_VISUALIZATION\n```json\n"
+            visualization_data = {
+                "model_code": sql_code,
+                "model_type": "table",  # Default to table, could be inferred from code
+                "development_type": "new_model",
+                "sections": {k: v for k, v in sections.items()}
+            }
+            structured_response += json.dumps(visualization_data, indent=2)
+            structured_response += "\n```\n"
+            
+            response = structured_response
+        
+        # Validate that the code uses DBT patterns
+        dbt_patterns = [r"ref\(", r"source\(", r"config\(", r"{\{"]
+        has_dbt_patterns = any(re.search(pattern, response) for pattern in dbt_patterns)
+        
+        if not has_dbt_patterns and "```sql" in response:
+            logger.warning("Development response does not contain DBT patterns")
+            note = "\n\n**Note:** For DBT development, ensure you're using proper DBT jinja patterns like `{{ ref() }}` and `{{ source() }}` for referencing other models and sources.\n"
+            response += note
         
         return response
 
