@@ -505,97 +505,120 @@ class DataArchitectAgent:
         return columns
 
     def _search_models(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """Search for models based on entities in the question."""
+        """Search for models in DBT project."""
         try:
-            # Get entities from question analysis
-            entities = state.get("question_analysis", {}).get("entities", [])
+            analysis = state["question_analysis"]
+            entities = analysis.get("entities", [])
+            search_terms = analysis.get("search_terms", [])
+            question_type = analysis.get("question_type", "GENERAL")
             
-            # Skip if no entities or no DBT tools
-            if not entities or not self.dbt_tools:
-                logger.warning("No entities to search for models or no DBT tools available")
-                state["dbt_results"] = []
-                return state
+            results = []
             
-            # Initialize results structure
-            all_results = []
+            # For file paths (e.g., models/marts/core/dim_customers.sql), we do direct file search
+            file_paths = [entity for entity in entities if '/' in entity]
             
-            # Search for each entity
-            for entity in entities:
-                logger.info(f"Searching for model entity: {entity}")
-                
-                # Check if the entity looks like a file path
-                if '/' in entity or entity.endswith('.sql'):
-                    logger.info(f"Searching for file path entity: {entity}")
-                    try:
-                        # Use search_file_path instead of search_by_file_path
-                        path_results = self.dbt_tools.search_file_path(entity)
+            # For model names (e.g., dim_customers), we do model name search
+            model_names = [entity for entity in entities if entity not in file_paths]
+            
+            # Only proceed with DBT search if we have DBT tools initialized
+            if self.dbt_tools:
+                # First, try searching for file paths (if any)
+                if file_paths:
+                    for file_path in file_paths:
+                        logger.info(f"Searching for model by file path: {file_path}")
                         
-                        # Process path results
-                        if path_results:
-                            for result in path_results:
-                                # Convert result to dictionary if it's not already
-                                if not isinstance(result, dict):
-                                    try:
-                                        result_dict = result.__dict__.copy() if hasattr(result, '__dict__') else {"model_name": str(result)}
-                                        result_dict["match_type"] = "path"
-                                        all_results.append(result_dict)
-                                    except Exception as e:
-                                        logger.error(f"Error converting path result to dict: {str(e)}")
-                                else:
-                                    result["match_type"] = "path"
-                                    all_results.append(result)
+                        try:
+                            # Try direct file search
+                            search_results = self.dbt_tools.search_file_path(file_path)
                             
-                            logger.info(f"Found {len(path_results)} models for path entity: {entity}")
-                    except Exception as e:
-                        logger.error(f"Error searching file path: {str(e)}")
+                            if search_results:
+                                logger.info(f"Found {len(search_results)} results for file path '{file_path}'")
+                                
+                                # Process each result to extract basic info
+                                for result in search_results:
+                                    if hasattr(result, '__dict__'):
+                                        results.append(result.__dict__)
+                                    else:
+                                        results.append(result)
+                        except Exception as e:
+                            logger.warning(f"Error searching for file path {file_path}: {str(e)}")
                 
-                # Search as a model name
-                try:
-                    model_results = self.dbt_tools.search_model(entity, search_mode="parse")
+                # Then, try searching for model names
+                for model_name in model_names:
+                    logger.info(f"Searching for model entity: {model_name}")
                     
-                    # Process model results
-                    if model_results:
-                        for result in model_results:
-                            # Convert result to dictionary if it's not already
-                            if not isinstance(result, dict):
-                                try:
-                                    result_dict = result.__dict__.copy() if hasattr(result, '__dict__') else {"model_name": str(result)}
-                                    result_dict["match_type"] = "model"
-                                    all_results.append(result_dict)
-                                except Exception as e:
-                                    logger.error(f"Error converting model result to dict: {str(e)}")
-                            else:
-                                result["match_type"] = "model"
-                                all_results.append(result)
+                    try:
+                        # First try direct model search (more likely to find exact match)
+                        search_results = self.dbt_tools.search_model(model_name)
                         
-                        logger.info(f"Found {len(model_results)} models for entity: {entity}")
-                except Exception as e:
-                    logger.error(f"Error searching model: {str(e)}")
+                        if search_results:
+                            logger.info(f"Found {len(search_results)} results for model '{model_name}'")
+                            
+                            # Process each result to extract basic info
+                            for result in search_results:
+                                if hasattr(result, '__dict__'):
+                                    results.append(result.__dict__)
+                                else:
+                                    results.append(result)
+                        else:
+                            # If no direct results, try keyword-based search
+                            logger.info(f"No direct model matches for '{model_name}', trying keyword search")
+                            keyword_results = self._search_by_keyword(model_name)
+                            
+                            if keyword_results:
+                                logger.info(f"Found {len(keyword_results)} keyword search results for '{model_name}'")
+                                results.extend(keyword_results)
+                    except Exception as e:
+                        logger.warning(f"Error searching for model {model_name}: {str(e)}")
+                
+                # If still no results, try using search terms
+                if not results and search_terms:
+                    # Sort search terms by length (prefer longer, more specific terms)
+                    sorted_terms = sorted(search_terms, key=len, reverse=True)
+                    
+                    # Try first 3 most specific terms
+                    for term in sorted_terms[:3]:
+                        if len(term) > 3 and term.lower() not in COMMON_STOP_WORDS:
+                            logger.info(f"Trying search term: {term}")
+                            
+                            # Try keyword search for this term
+                            keyword_results = self._search_by_keyword(term)
+                            
+                            if keyword_results:
+                                logger.info(f"Found {len(keyword_results)} keyword search results for term '{term}'")
+                                results.extend(keyword_results)
+                                
+                                # If we found results, stop searching
+                                if results:
+                                    break
+            else:
+                # Return error if DBT tools not initialized
+                results = {"error": "DBT tools not initialized"}
             
-            # Deduplicate results by file path
+            # Remove duplicates (by file_path)
             unique_results = []
             seen_paths = set()
             
-            for result in all_results:
+            for result in results:
                 file_path = result.get("file_path", "")
-                model_name = result.get("model_name", "")
                 
-                # Create a unique key for this result
-                unique_key = f"{file_path}|{model_name}"
-                
-                if unique_key and unique_key not in seen_paths:
-                    seen_paths.add(unique_key)
+                if file_path and file_path not in seen_paths:
+                    seen_paths.add(file_path)
                     unique_results.append(result)
             
-            # Update state with the results
-            logger.info(f"Found {len(unique_results)} unique model results")
+            # Update state with search results
             state["dbt_results"] = unique_results
             
+            logger.info(f"Found {len(unique_results)} unique model results")
             return state
             
         except Exception as e:
-            logger.error(f"Error searching for models: {str(e)}")
-            state["dbt_results"] = []
+            logger.error(f"Error searching models: {str(e)}")
+            state["dbt_results"] = {
+                "error": str(e),
+                "status": "error",
+                "message": f"Error searching models: {str(e)}"
+            }
             return state
     
     def _search_columns(self, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -731,7 +754,8 @@ class DataArchitectAgent:
             
             # If we found column results, get model details for those models
             if results and not any("error" in k for k in results.keys()):
-                self._get_related_model_info(state, results)
+                # Call with only the state parameter
+                self._get_related_model_info(state)
             
             return state
             
@@ -833,107 +857,355 @@ class DataArchitectAgent:
             return state
     
     def _search_content(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """Search for content in DBT models."""
-        try:
-            analysis = state["question_analysis"]
-            question = state["messages"][-1].content
-            entities = analysis.get("entities", [])
-            search_terms = analysis.get("search_terms", [])
+        """
+        Search for content based on the question's search terms.
+        
+        Args:
+            state: The current agent state
             
-            results = {}
+        Returns:
+            Updated state with content search results
+        """
+        if not self.dbt_tools:
+            return state
             
-            # Only proceed with DBT search if we have DBT tools initialized
-            if self.dbt_tools:
-                # Add sales-related terms that might be relevant based on common patterns
-                sales_terms = []
-                if any('sales' in term.lower() or 'amount' in term.lower() or 'discount' in term.lower() 
-                       or 'tax' in term.lower() or 'gross' in term.lower() or 'net' in term.lower() 
-                       for term in search_terms + entities):
-                    sales_terms = ['sales', 'amount', 'discount', 'tax', 'gross', 'net', 'item']
+        # Get search terms from state
+        analysis = state.get("question_analysis", {})
+        search_terms = analysis.get("search_terms", [])
+        entities = analysis.get("entities", [])
+        
+        if not search_terms and not entities:
+            logger.warning("No search terms or entities found for content search")
+            state["content_search"] = {"results": []}
+            return state
+        
+        # Combine all search terms
+        all_terms = []
+        all_terms.extend(entities)  # Add entities first as they're more important
+        for term in search_terms:
+            if term not in all_terms:  # Avoid duplicates
+                all_terms.append(term)
                 
-                # Filter out common stop words and short terms
-                filtered_terms = [term for term in search_terms 
-                               if len(term) > 3 and term.lower() not in COMMON_STOP_WORDS]
+        # For technical terms, also add variations
+        tech_terms = []
+        for term in all_terms:
+            if '_' in term:
+                parts = term.split('_')
+                for part in parts:
+                    if len(part) > 3 and part not in tech_terms:  # Only add meaningful parts
+                        tech_terms.append(part)
+        
+        # Add technical terms to the search list
+        for term in tech_terms:
+            if term not in all_terms:
+                all_terms.append(term)
                 
-                # Add entities as search terms if they seem relevant
-                filtered_terms.extend([entity for entity in entities 
-                                   if len(entity) > 3 and entity.lower() not in COMMON_STOP_WORDS
-                                   and entity not in filtered_terms])
+        # For each term, try to find relevant content
+        results = []
+        for entity in entities:
+            try:
+                # First, try to find the entity as a model
+                entity_results = self.dbt_tools.search_model(entity, search_mode="output")
+                if entity_results:
+                    for result in entity_results:
+                        # Add model-specific details
+                        if hasattr(result, 'model_name') and result.model_name:
+                            result_dict = {
+                                "term": entity,
+                                "match_type": "model",
+                                "model_name": result.model_name,
+                                "file_path": result.file_path if hasattr(result, 'file_path') else "",
+                                "content": result.content if hasattr(result, 'content') else "",
+                                "context": f"Model '{result.model_name}'"
+                            }
+                            results.append(result_dict)
+                            logger.info(f"Found entity '{entity}' as model '{result.model_name}'")
+            except Exception as e:
+                logger.warning(f"Error searching for entity '{entity}' as model: {str(e)}")
+            
+            # Try fallback approaches if the model search failed or if this isn't a model name
+            try:
+                # Try direct path search - more reliable than content search
+                logger.info(f"Trying file path search for entity: {entity}")
+                path_pattern = f"*{entity}*"
+                path_results = self.dbt_tools.search_file_path(path_pattern)
                 
-                # Add the sales terms if relevant
-                for term in sales_terms:
-                    if term not in filtered_terms:
-                        filtered_terms.append(term)
+                if path_results:
+                    for result in path_results:
+                        # Add file-specific details
+                        file_path = result.file_path if hasattr(result, 'file_path') else ""
+                        content = result.content if hasattr(result, 'content') else ""
+                        
+                        # Try to get content if not present
+                        if file_path and not content:
+                            try:
+                                content = self.dbt_tools.get_file_content(file_path)
+                            except Exception as e:
+                                logger.warning(f"Error getting content for {file_path}: {str(e)}")
+                        
+                        if file_path and content:
+                            model_name = os.path.basename(file_path)
+                            if model_name.endswith('.sql'):
+                                model_name = model_name[:-4]
+                                
+                            result_dict = {
+                                "term": entity,
+                                "match_type": "file_path",
+                                "model_name": model_name,
+                                "file_path": file_path,
+                                "content": content,
+                                "context": f"File path containing '{entity}'"
+                            }
+                            results.append(result_dict)
+                            logger.info(f"Found entity '{entity}' in file path '{file_path}'")
+            except Exception as e:
+                logger.warning(f"Error in file path search for entity '{entity}': {str(e)}")
                 
-                # If no usable search terms, extract from question directly
-                if not filtered_terms:
-                    # Look for keywords in the question that might be relevant
-                    question_words = question.lower().split()
-                    relevant_keywords = [word for word in question_words 
-                                      if len(word) > 3 
-                                      and word not in COMMON_STOP_WORDS
-                                      and any(c.isalpha() for c in word)]  # Ensure it has letters
-                    filtered_terms.extend(relevant_keywords)
+            # Try content search as a last resort, with proper error handling
+            try:
+                logger.info(f"Trying content search for entity: {entity}")
+                try:
+                    # Attempt content search but handle the models_dir error
+                    content_results = self.dbt_tools.search_content(entity)
+                    
+                    if content_results:
+                        for result in content_results:
+                            file_path = result.file_path if hasattr(result, 'file_path') else ""
+                            content = result.content if hasattr(result, 'content') else ""
+                            
+                            # Try to get content if not present
+                            if file_path and not content:
+                                try:
+                                    content = self.dbt_tools.get_file_content(file_path)
+                                except Exception as e:
+                                    logger.warning(f"Error getting content for {file_path}: {str(e)}")
+                            
+                            if file_path and content:
+                                model_name = os.path.basename(file_path)
+                                if model_name.endswith('.sql'):
+                                    model_name = model_name[:-4]
+                                    
+                                result_dict = {
+                                    "term": entity,
+                                    "match_type": "content",
+                                    "model_name": model_name,
+                                    "file_path": file_path,
+                                    "content": content,
+                                    "context": f"Content containing '{entity}'"
+                                }
+                                results.append(result_dict)
+                                logger.info(f"Found entity '{entity}' in content of '{file_path}'")
+                except AttributeError as att_err:
+                    if "models_dir" in str(att_err):
+                        logger.warning(f"AttributeError with models_dir for entity '{entity}': {str(att_err)}")
+                        # Use fallback approach - try manual search in all models
+                        self._manual_content_search(entity, results)
+                    else:
+                        raise att_err
+            except Exception as e:
+                logger.warning(f"Error in content search for entity '{entity}': {str(e)}")
+                # Try manual search as final fallback
+                self._manual_content_search(entity, results)
+        
+        # For additional search terms (not entities), do a simpler search
+        for term in search_terms:
+            if term not in entities:  # Skip terms we've already processed as entities
+                try:
+                    logger.info(f"Trying file path search for term: {term}")
+                    path_pattern = f"*{term}*"
+                    path_results = self.dbt_tools.search_file_path(path_pattern)
+                    
+                    if path_results:
+                        for result in path_results:
+                            file_path = result.file_path if hasattr(result, 'file_path') else ""
+                            content = result.content if hasattr(result, 'content') else ""
+                            
+                            # Try to get content if not present
+                            if file_path and not content:
+                                try:
+                                    content = self.dbt_tools.get_file_content(file_path)
+                                except Exception as e:
+                                    logger.warning(f"Error getting content for {file_path}: {str(e)}")
+                            
+                            if file_path and content:
+                                model_name = os.path.basename(file_path)
+                                if model_name.endswith('.sql'):
+                                    model_name = model_name[:-4]
+                                    
+                                result_dict = {
+                                    "term": term,
+                                    "match_type": "file_path",
+                                    "model_name": model_name,
+                                    "file_path": file_path,
+                                    "content": content,
+                                    "context": f"File path containing '{term}'"
+                                }
+                                results.append(result_dict)
+                                logger.info(f"Found term '{term}' in file path '{file_path}'")
+                except Exception as e:
+                    logger.warning(f"Error in file path search for term '{term}': {str(e)}")
                 
-                # Get the most specific terms first (longer and less common terms)
-                filtered_terms.sort(key=lambda x: len(x), reverse=True)
-                
-                # Log what we're searching for
-                logger.info(f"Content search using terms: {', '.join(filtered_terms[:5])}" + 
-                           (f" and {len(filtered_terms) - 5} more" if len(filtered_terms) > 5 else ""))
-                
-                # Search for specific multi-word phrases first (more precise)
-                for entity in entities:
-                    if ' ' in entity and len(entity) > 8:  # Only longer phrases
-                        content_results = self.dbt_tools.search_content(entity)
-                        if content_results:
-                            logger.info(f"Found {len(content_results)} results for phrase '{entity}'")
-                            results[entity] = [result.__dict__ for result in content_results]
-                
-                # Search for each term individually
-                for term in filtered_terms[:5]:  # Limit to top 5 terms for efficiency
-                    if term not in results:  # Skip if already found
+                # Try to find terms in content safely
+                try:
+                    try:
+                        logger.info(f"Trying content search for term: {term}")
                         content_results = self.dbt_tools.search_content(term)
+                        
                         if content_results:
-                            logger.info(f"Found {len(content_results)} results for term '{term}'")
-                            results[term] = [result.__dict__ for result in content_results]
-                
-                # Special search for specific column calculations
-                calculation_terms = ['gross_item_sales_amount', 'item_discount_amount', 'item_tax_amount', 'net_item_sales_amount']
-                if any(term in question.lower() for term in ['calculation', 'formula', 'compute', 'derive']):
-                    for calc_term in calculation_terms:
-                        if calc_term not in results and calc_term.lower() in question.lower():
-                            logger.info(f"Searching for calculation term '{calc_term}'")
-                            calc_results = self.dbt_tools.search_content(calc_term)
-                            if calc_results:
-                                logger.info(f"Found {len(calc_results)} results for calculation '{calc_term}'")
-                                results[calc_term] = [result.__dict__ for result in calc_results]
-                
-                # If no results, try path-based search
-                if not results:
-                    logger.info("No content results found, trying path-based search")
-                    for term in filtered_terms[:3]:
-                        path_results = self.dbt_tools.search_file_path(term)
-                        if path_results:
-                            logger.info(f"Found {len(path_results)} path results for '{term}'")
-                            results[f"path:{term}"] = [result.__dict__ for result in path_results]
-            else:
-                results = self._get_dbt_tools_error()
-            
-            # Update state
-            state["content_search"] = results
-            
-            return state
-            
-        except Exception as e:
-            logger.error(f"Error searching content: {str(e)}")
-            state["content_search"] = {
-                "error": str(e),
-                "status": "error",
-                "message": f"Error searching content: {str(e)}"
-            }
-            return state
+                            for result in content_results:
+                                file_path = result.file_path if hasattr(result, 'file_path') else ""
+                                content = result.content if hasattr(result, 'content') else ""
+                                
+                                # Try to get content if not present
+                                if file_path and not content:
+                                    try:
+                                        content = self.dbt_tools.get_file_content(file_path)
+                                    except Exception as e:
+                                        logger.warning(f"Error getting content for {file_path}: {str(e)}")
+                                
+                                if file_path and content:
+                                    model_name = os.path.basename(file_path)
+                                    if model_name.endswith('.sql'):
+                                        model_name = model_name[:-4]
+                                        
+                                    result_dict = {
+                                        "term": term,
+                                        "match_type": "content",
+                                        "model_name": model_name,
+                                        "file_path": file_path,
+                                        "content": content,
+                                        "context": f"Content containing '{term}'"
+                                    }
+                                    results.append(result_dict)
+                                    logger.info(f"Found term '{term}' in content of '{file_path}'")
+                    except AttributeError as att_err:
+                        if "models_dir" in str(att_err):
+                            logger.warning(f"AttributeError with models_dir for term '{term}': {str(att_err)}")
+                            # Use fallback approach - try manual search in all models
+                            self._manual_content_search(term, results)
+                        else:
+                            raise att_err
+                except Exception as e:
+                    logger.warning(f"Error in content search for term '{term}': {str(e)}")
+                    # Try manual search as final fallback
+                    self._manual_content_search(term, results)
+        
+        # Look for calculation terms as well
+        for term in all_terms:
+            # If the term appears to be a calculation reference (contains math symbols or aggregation)
+            calc_indicators = ['sum(', 'avg(', 'count(', 'max(', 'min(', '+', '-', '*', '/', '=']
+            if any(indicator in term.lower() for indicator in calc_indicators):
+                try:
+                    # Extract the calculation term (remove operators)
+                    calc_term = re.sub(r'[+\-*/=()]', ' ', term).strip()
+                    if len(calc_term) < 3:
+                        continue  # Skip if too short after cleaning
+                        
+                    logger.info(f"Trying calculation search for: {calc_term}")
+                    try:
+                        calc_results = self.dbt_tools.search_content(calc_term)
+                        
+                        if calc_results:
+                            for result in calc_results:
+                                file_path = result.file_path if hasattr(result, 'file_path') else ""
+                                content = result.content if hasattr(result, 'content') else ""
+                                
+                                # Try to get content if not present
+                                if file_path and not content:
+                                    try:
+                                        content = self.dbt_tools.get_file_content(file_path)
+                                    except Exception as e:
+                                        logger.warning(f"Error getting content for {file_path}: {str(e)}")
+                                
+                                if file_path and content:
+                                    model_name = os.path.basename(file_path)
+                                    if model_name.endswith('.sql'):
+                                        model_name = model_name[:-4]
+                                        
+                                    result_dict = {
+                                        "term": term,
+                                        "match_type": "calculation",
+                                        "model_name": model_name,
+                                        "file_path": file_path,
+                                        "content": content,
+                                        "context": f"Possible calculation for '{term}'"
+                                    }
+                                    results.append(result_dict)
+                                    logger.info(f"Found possible calculation '{term}' in '{file_path}'")
+                    except AttributeError as att_err:
+                        if "models_dir" in str(att_err):
+                            logger.warning(f"AttributeError with models_dir for calc_term '{calc_term}': {str(att_err)}")
+                            # Use fallback approach
+                            self._manual_content_search(calc_term, results, match_type="calculation")
+                        else:
+                            raise att_err
+                except Exception as e:
+                    logger.warning(f"Error searching for calculation term '{term}': {str(e)}")
+        
+        # Deduplicate results based on file path to avoid redundancy
+        unique_results = []
+        file_paths_seen = set()
+        
+        for result in results:
+            file_path = result.get("file_path", "")
+            if file_path and file_path not in file_paths_seen:
+                file_paths_seen.add(file_path)
+                unique_results.append(result)
+        
+        # Update state with content search results
+        state["content_search"] = {"results": unique_results}
+        logger.info(f"Found {len(unique_results)} unique content search results")
+        
+        return state
     
+    def _manual_content_search(self, search_term: str, results: List[Dict], match_type: str = "content") -> None:
+        """
+        Perform a manual search through all models for a term.
+        This is a fallback when the normal content search fails.
+        
+        Args:
+            search_term: The term to search for
+            results: The results list to append matches to 
+            match_type: The type of match to report
+        """
+        try:
+            # Get all models
+            model_files = self.dbt_tools.get_all_models()
+            if not model_files:
+                return
+                
+            logger.info(f"Performing manual search for '{search_term}' across {len(model_files)} models")
+            
+            # Search each model
+            for model in model_files:
+                try:
+                    # Get file path
+                    file_path = self.dbt_tools.file_scanner.get_model_file_path(model)
+                    if not file_path:
+                        continue
+                        
+                    # Get content
+                    content = self.dbt_tools.get_file_content(file_path)
+                    if not content:
+                        continue
+                        
+                    # Simple text search
+                    if search_term.lower() in content.lower():
+                        result_dict = {
+                            "term": search_term,
+                            "match_type": match_type,
+                            "model_name": model,
+                            "file_path": file_path,
+                            "content": content,
+                            "context": f"Manual search found '{search_term}' in model"
+                        }
+                        results.append(result_dict)
+                        logger.info(f"Manual search found '{search_term}' in model '{model}'")
+                except Exception as e:
+                    logger.warning(f"Error in manual search for model {model}: {str(e)}")
+        except Exception as e:
+            logger.warning(f"Error in manual content search: {str(e)}")
+
     def _get_dbt_tools_error(self) -> Dict[str, Any]:
         """Get a standardized error for when DBT tools are not available."""
         return {
@@ -959,8 +1231,8 @@ class DataArchitectAgent:
             # Log core information
             logger.info(f"Generating response for {question_type} question with {len(entities)} entities")
             
-            # Get search results
-            search_results = self._format_results_for_prompt(state)
+            # Get search results and format them
+            formatted_search_results = self._format_results_for_prompt(state)
             
             # Check if we need more model-specific information
             model_details = state.get("model_details", {})
@@ -969,12 +1241,16 @@ class DataArchitectAgent:
             model_content = ""
             model_file_path = ""
             
+            # Track if we have any content to include in the prompt
+            has_any_model_information = False
+            
             # Check if we have model details and content
             if model_details:
                 for model_name, details in model_details.items():
                     model_info = details.get("model", {})
                     if isinstance(model_info, dict) and model_info.get("content"):
                         has_model_content = True
+                        has_any_model_information = True
                         model_file_path = model_info.get("file_path", "unknown")
                         model_paths.append(model_file_path)
                         
@@ -991,6 +1267,7 @@ class DataArchitectAgent:
                     found, content, file_path = self._find_model_content(entity)
                     if found:
                         has_model_content = True
+                        has_any_model_information = True
                         model_content = content
                         model_file_path = file_path
                         model_paths = [file_path]
@@ -1026,12 +1303,14 @@ class DataArchitectAgent:
                                     # Use 'content' attribute instead of 'sql_content'
                                     if hasattr(result, 'content') and result.content:
                                         has_model_content = True
+                                        has_any_model_information = True
                                         model_content = result.content
                                         model_file_path = result.file_path if hasattr(result, 'file_path') else path
                                         logger.info(f"Found model content for {model_name}")
                                         break
                                     elif isinstance(result, dict) and 'content' in result and result['content']:
                                         has_model_content = True
+                                        has_any_model_information = True
                                         model_content = result['content']
                                         model_file_path = result.get('file_path', path)
                                         logger.info(f"Found model content for {model_name}")
@@ -1047,6 +1326,7 @@ class DataArchitectAgent:
                                 content = self.dbt_tools.get_file_content(path)
                                 if content:
                                     has_model_content = True
+                                    has_any_model_information = True
                                     model_content = content
                                     model_file_path = path
                                     logger.info(f"Found content via direct file access for {path}")
@@ -1056,6 +1336,65 @@ class DataArchitectAgent:
             
             # Get the request type and prepare prompt instructions
             instructions = self._get_instructions_for_type(question_type, question)
+            
+            # Check if we have empty search results but found model content
+            if not formatted_search_results.strip() and has_model_content:
+                logger.info("No formatted search results but model content was found. Adding model content to prompt.")
+                
+                # Extract column information 
+                columns = self._extract_model_columns(model_content)
+                
+                # Format column information as a table if we have columns
+                column_table = ""
+                if columns:
+                    column_table = "\n\n### Column Information\n\n"
+                    column_table += "| Column Name | Data Type | Description | Source/Expression |\n"
+                    column_table += "|-------------|-----------|-------------|-------------------|\n"
+                    
+                    for col in columns:
+                        name = col.get("name", "")
+                        data_type = col.get("data_type", "unknown")
+                        description = col.get("description", "")
+                        
+                        # Determine source or expression
+                        source = col.get("source", "")
+                        expression = col.get("expression", "")
+                        source_expr = source
+                        if not source and expression:
+                            # Truncate long expressions
+                            if len(expression) > 40:
+                                source_expr = expression[:37] + "..."
+                            else:
+                                source_expr = expression
+                        
+                        column_table += f"| {name} | {data_type} | {description} | {source_expr} |\n"
+                
+                # Add the model content and column information to the formatted results
+                formatted_search_results = f"## MODEL CONTENT\n\nPath: {model_file_path}\n\n```sql\n{model_content}\n```\n{column_table}"
+                has_any_model_information = True
+                
+                # If this is a logic request, add special instructions
+                if "logic" in question.lower() and "summary" in model_file_path.lower():
+                    special_logic_instructions = f"""
+                    ## Logic Analysis Instructions
+                    
+                    The user is specifically asking about the **logic** in this model. Focus your response on:
+                    
+                    1. How data is transformed and calculated in this model
+                    2. Where the data comes from (source models/tables)
+                    3. The business meaning of the calculations
+                    4. Any special handling or filters applied
+                    
+                    Break down each calculation step-by-step, explaining in business terms what is happening.
+                    """
+                    
+                    instructions += "\n" + special_logic_instructions
+                    
+            # If we still have no information, explicitly log this issue
+            if not has_any_model_information:
+                logger.warning("No model information found for any search method! Response may be generic.")
+            else:
+                logger.info(f"Found model information to include in prompt. Content length: {len(model_content)}")
             
             # Add specific model content for CODE_ENHANCEMENT
             if question_type == "CODE_ENHANCEMENT" and model_content:
@@ -1068,17 +1407,19 @@ class DataArchitectAgent:
                 - Provide specific Snowflake/DBT optimization techniques
                 - Include complete enhanced model code, not just the changes
                 
+                Model File Path: {model_file_path}
+                
                 Analyze this EXACT model code:
                 
                 ```sql
                 {model_content}
                 ```
-                """.format(model_content=model_content)
+                """
                 
                 instructions += "\n" + dbt_enhancement_instructions
             elif (question_type == "DOCUMENTATION" or question_type == "MODEL_INFO") and model_content:
                 # Add special DBT-specific instructions for documentation
-                dbt_documentation_instructions = """
+                dbt_documentation_instructions = f"""
                 # DBT-Specific Documentation Requirements
                 - The documentation must accurately describe THIS EXACT model
                 - Focus on the purpose, structure, and key columns of the model
@@ -1086,14 +1427,53 @@ class DataArchitectAgent:
                 - Document the primary/unique keys and their significance
                 - Explain important joins and relationships with other models
                 
+                ## Schema Documentation Requirements
+                Present all columns in a well-formatted markdown table with these headers:
+                
+                | Column Name | Data Type | Description | Source | Business Logic |
+                | ----------- | --------- | ----------- | ------ | -------------- |
+                
+                For each column:
+                - **Data Type**: Use standardized data types (integer, string, decimal, timestamp, etc.)
+                - **Description**: Clear business definition that explains what the data represents
+                - **Source**: Where the data originates (upstream model/source, reference path)
+                - **Business Logic**: For calculated fields, explain the calculation logic
+                
+                ## Formatting Requirements
+                - Format all SQL snippets in code blocks
+                - Use proper markdown formatting for tables, headers, and lists
+                - Use business-friendly language for descriptions
+                - Include complete model code with explanations
+                
+                Model File Path: {model_file_path}
+                
                 Analyze this EXACT model code:
                 
                 ```sql
                 {model_content}
                 ```
-                """.format(model_content=model_content)
+                """
                 
                 instructions += "\n" + dbt_documentation_instructions
+            elif question_type == "LINEAGE" and model_content:
+                # Add special instructions for lineage questions with model content
+                lineage_instructions = f"""
+                # DBT-Specific Lineage Requirements
+                - Focus on the dependencies and relationships of THIS EXACT model
+                - Include both upstream and downstream dependencies
+                - Detail which columns from source models flow into this model
+                - Explain the transformations that occur
+                
+                Model File Path: {model_file_path}
+                
+                Analyze this EXACT model code for its lineage:
+                
+                ```sql
+                {model_content}
+                ```
+                """
+                
+                instructions += "\n" + lineage_instructions
             
             # Create messages with system message, context, and question
             system_message = """
@@ -1131,7 +1511,7 @@ class DataArchitectAgent:
                 {question_type}
                 
                 # Search Results
-                {search_results}
+                {formatted_search_results}
                 
                 # Instructions
                 {instructions}
@@ -1140,12 +1520,20 @@ class DataArchitectAgent:
                 """)
             ]
             
+            # Record the prompt length for logging
+            prompt_text = messages[1].content
+            logger.info(f"Formatted prompt contains {len(prompt_text)} characters")
+            
+            # Check if we're sending a prompt with content
+            if "EXACT model code" in prompt_text:
+                logger.info("Prompt includes exact model code for analysis.")
+            
             # Call the LLM to generate response
             response = self._safe_llm_call(messages)
             
             # For CODE_ENHANCEMENT, validate the response
             if question_type == "CODE_ENHANCEMENT" and model_content:
-                response = self._validate_code_enhancement_response(response, model_content, model_paths[0] if model_paths else "", question)
+                response = self._validate_code_enhancement_response(response, model_content, model_file_path, question)
             
             # Store response
             state["final_response"] = response
@@ -1224,19 +1612,33 @@ class DataArchitectAgent:
         - Materialization strategy and refresh pattern
         - Data volume and granularity information
 
-        ### 2. Technical Details
-        - Schema information with column descriptions
+        ### 2. Schema Information
+        Present the schema as a well-formatted markdown table with these columns:
+        
+        | Column Name | Data Type | Description | Source | Business Logic |
+        | ----------- | --------- | ----------- | ------ | -------------- |
+        | order_id    | integer   | Unique identifier for each order | stg_orders.id | Direct mapping |
+        | customer_id | integer   | Foreign key to customer dimension | stg_orders.customer_id | Direct mapping |
+        | amount      | decimal   | Total order amount including tax | | SUM(order_items.amount) |
+
+        For each column, include:
+        - **Data Type**: The column's data type (string, integer, timestamp, etc.)
+        - **Description**: Clear business definition of what the column represents
+        - **Source**: Where the data originates (if directly mapped from another model)
+        - **Business Logic**: For calculated fields, explain the calculation
+
+        ### 3. Technical Details
         - Primary/unique keys and their significance
         - Important joins and filters explained
         - Performance considerations
         - Any special handling or edge cases
 
-        ### 3. Lineage & Dependencies
+        ### 4. Lineage & Dependencies
         - List upstream dependencies with descriptions
         - List downstream dependencies with descriptions
         - How this model fits in the overall data architecture
 
-        ### 4. SQL Breakdown
+        ### 5. SQL Breakdown
         - Explanation of complex SQL patterns used
         - Description of CTEs and their purposes
         - Explanation of business logic implemented in code
@@ -1244,10 +1646,13 @@ class DataArchitectAgent:
 
         ## Critical Requirements
         - Documentation must be **specific to the actual model provided**, not generic
-        - Include technical details AND business context
+        - Ensure the schema table is properly formatted with column alignment
+        - All column descriptions must be business-oriented, not technical repetitions of the column name
+        - Include both technical details AND business context
         - Make the documentation useful for both technical and business users
         - Use clear, concise language with proper formatting
-        - Focus on information that helps users understand and work with the model
+        - For complex transformations, include the SQL snippets that demonstrate the logic
+        - Format column data types consistently (all lowercase)
         """
 
     def _safe_llm_call(self, messages: List[BaseMessage], max_retries: int = 2) -> str:
@@ -1342,6 +1747,7 @@ class DataArchitectAgent:
     def _format_results_for_prompt(self, state: Dict[str, Any]) -> str:
         """Format the search results for inclusion in the prompt."""
         formatted_text = ""
+        found_model_content = False
         
         # Format DBT results
         if "dbt_results" in state and state["dbt_results"]:
@@ -1355,6 +1761,7 @@ class DataArchitectAgent:
                     file_path = result.get("file_path", "")
                     description = result.get("description", "")
                     match_type = result.get("match_type", "")
+                    content = result.get("content", "")
                     
                     if model_name:
                         formatted_text += f"### Model: {model_name}\n"
@@ -1364,6 +1771,9 @@ class DataArchitectAgent:
                         formatted_text += f"Description: {description}\n"
                     if match_type:
                         formatted_text += f"Match Type: {match_type}\n"
+                    if content and len(content) > 0:
+                        formatted_text += f"Content:\n```sql\n{content}\n```\n"
+                        found_model_content = True
                     
                     formatted_text += "\n"
             elif isinstance(dbt_results, dict):
@@ -1375,6 +1785,7 @@ class DataArchitectAgent:
                             model_name = result.get("model_name", "")
                             file_path = result.get("file_path", "")
                             description = result.get("description", "")
+                            content = result.get("content", "")
                             
                             if model_name:
                                 formatted_text += f"### Model: {model_name}\n"
@@ -1382,12 +1793,16 @@ class DataArchitectAgent:
                                 formatted_text += f"Path: {file_path}\n"
                             if description:
                                 formatted_text += f"Description: {description}\n"
+                            if content and len(content) > 0:
+                                formatted_text += f"Content:\n```sql\n{content}\n```\n"
+                                found_model_content = True
                             
                             formatted_text += "\n"
                     elif isinstance(results, dict) and "error" not in results:
                         model_name = results.get("model_name", "")
                         file_path = results.get("file_path", "")
                         description = results.get("description", "")
+                        content = results.get("content", "")
                         
                         if model_name:
                             formatted_text += f"### Model: {model_name}\n"
@@ -1395,6 +1810,9 @@ class DataArchitectAgent:
                             formatted_text += f"Path: {file_path}\n"
                         if description:
                             formatted_text += f"Description: {description}\n"
+                        if content and len(content) > 0:
+                            formatted_text += f"Content:\n```sql\n{content}\n```\n"
+                            found_model_content = True
                         
                         formatted_text += "\n"
             else:
@@ -1421,6 +1839,9 @@ class DataArchitectAgent:
                             formatted_text += f"Type: {model['model_type']}\n"
                         if "description" in model:
                             formatted_text += f"Description: {model['description']}\n"
+                        if "content" in model and model["content"]:
+                            formatted_text += f"Content:\n```sql\n{model['content']}\n```\n"
+                            found_model_content = True
                 
                 # Add schema information if available
                 if "schema" in details and details["schema"]:
@@ -1511,6 +1932,7 @@ class DataArchitectAgent:
                     file_path = result.get("file_path", "")
                     search_text = result.get("search_text", "")
                     contexts = result.get("match_contexts", [])
+                    content = result.get("content", "")
                     
                     if file_path:
                         formatted_text += f"### File: {file_path}\n"
@@ -1525,6 +1947,10 @@ class DataArchitectAgent:
                         if len(contexts) > 3:
                             formatted_text += f"...and {len(contexts) - 3} more matches\n"
                     
+                    if content and len(content) > 0:
+                        formatted_text += f"Full Content:\n```sql\n{content}\n```\n"
+                        found_model_content = True
+                    
                     formatted_text += "\n"
             elif isinstance(content_search, dict):
                 for search_term, results in content_search.items():
@@ -1534,21 +1960,35 @@ class DataArchitectAgent:
                         for result in results:
                             file_path = result.get("file_path", "")
                             contexts = result.get("match_contexts", [])
+                            content = result.get("content", "")
                             
                             if file_path:
                                 formatted_text += f"File: {file_path}\n"
                             
                             if contexts:
                                 formatted_text += "Matches:\n"
-                                for context in contexts[:2]:  # Limit to first 2 contexts
+                                for i, context in enumerate(contexts[:3]):  # Limit to first 3 contexts
                                     formatted_text += f"```\n{context}\n```\n"
+                                
+                                if len(contexts) > 3:
+                                    formatted_text += f"...and {len(contexts) - 3} more matches\n"
+                            
+                            if content and len(content) > 0:
+                                formatted_text += f"Full Content:\n```sql\n{content}\n```\n"
+                                found_model_content = True
                             
                             formatted_text += "\n"
-            
+        
         # Check if we have any content to return
         if not formatted_text:
             formatted_text = "No search results were found to include in the prompt!"
             logger.warning("No search results were found to include in the prompt!")
+        
+        # Log whether we found model content
+        if found_model_content:
+            logger.info("Model content included in formatted results")
+        else:
+            logger.warning("No model content found in any search results to include in formatted output")
         
         # Log the size of the formatted text for debugging
         logger.info(f"Formatted prompt contains {len(formatted_text)} characters")
@@ -2291,6 +2731,425 @@ REMEMBER:
         except Exception as e:
             logger.error(f"Error finding model content: {str(e)}")
             return False, "", ""
+
+    def _search_by_keyword(self, keyword: str) -> List[Dict[str, Any]]:
+        """
+        Search for models based on keyword content rather than exact model names.
+        This provides a fallback when exact model name search fails.
+        
+        Args:
+            keyword: Keyword to search for in model content
+            
+        Returns:
+            List of search results with content
+        """
+        if not self.dbt_tools:
+            logger.warning("DBT tools not initialized for keyword search")
+            return []
+            
+        logger.info(f"Performing content-based search for keyword: {keyword}")
+        results = []
+        
+        # Directly try to find models using file search first - this is more reliable
+        try:
+            # Try the most reliable method first - search_model with partial matching
+            logger.info(f"Trying search_model with keyword: {keyword}")
+            model_results = self.dbt_tools.search_model(keyword)
+            
+            if model_results and len(model_results) > 0:
+                for result in model_results:
+                    file_path = ""
+                    if hasattr(result, 'file_path') and result.file_path:
+                        file_path = result.file_path
+                    elif isinstance(result, dict) and result.get('file_path'):
+                        file_path = result.get('file_path')
+                    
+                    if not file_path:
+                        continue
+                        
+                    # Extract model name from file path
+                    model_name = os.path.basename(file_path)
+                    if model_name.endswith('.sql'):
+                        model_name = model_name[:-4]
+                    
+                    # Get content safely
+                    content = ""
+                    if hasattr(result, 'content') and result.content:
+                        content = result.content
+                    elif isinstance(result, dict) and result.get('content'):
+                        content = result.get('content')
+                    
+                    # If no content, try to get it directly
+                    if not content:
+                        try:
+                            content = self.dbt_tools.get_file_content(file_path)
+                        except Exception as e:
+                            logger.warning(f"Error getting content for {file_path}: {str(e)}")
+                    
+                    if content:
+                        result_dict = {
+                            "model_name": model_name,
+                            "file_path": file_path,
+                            "content": content,
+                            "match_type": "model_search",
+                            "description": f"Model containing '{keyword}' in its name or definition"
+                        }
+                        
+                        results.append(result_dict)
+                        logger.info(f"Added model search result for '{model_name}' at '{file_path}'")
+        except Exception as e:
+            logger.warning(f"Error in model search for '{keyword}': {str(e)}")
+        
+        # If no results found from model search, try file path search
+        if not results:
+            try:
+                # Try file path search with glob pattern
+                logger.info(f"Trying file path search with pattern: *{keyword}*")
+                path_pattern = f"*{keyword}*"
+                path_results = self.dbt_tools.search_file_path(path_pattern)
+                
+                if path_results and len(path_results) > 0:
+                    for result in path_results:
+                        file_path = ""
+                        if hasattr(result, 'file_path') and result.file_path:
+                            file_path = result.file_path
+                        elif isinstance(result, dict) and result.get('file_path'):
+                            file_path = result.get('file_path')
+                        
+                        if not file_path:
+                            continue
+                            
+                        # Extract model name from file path
+                        model_name = os.path.basename(file_path)
+                        if model_name.endswith('.sql'):
+                            model_name = model_name[:-4]
+                        
+                        # Get content safely
+                        content = ""
+                        if hasattr(result, 'content') and result.content:
+                            content = result.content
+                        elif isinstance(result, dict) and result.get('content'):
+                            content = result.get('content')
+                        
+                        # If no content, try to get it directly
+                        if not content:
+                            try:
+                                content = self.dbt_tools.get_file_content(file_path)
+                            except Exception as e:
+                                logger.warning(f"Error getting content for {file_path}: {str(e)}")
+                        
+                        if content:
+                            result_dict = {
+                                "model_name": model_name,
+                                "file_path": file_path,
+                                "content": content,
+                                "match_type": "path_search",
+                                "description": f"Model with path containing '{keyword}'"
+                            }
+                            
+                            results.append(result_dict)
+                            logger.info(f"Added path search result for '{model_name}' at '{file_path}'")
+            except Exception as e:
+                logger.warning(f"Error in file path search for '{keyword}': {str(e)}")
+        
+        # Last resort: try to directly get a specific file that may match the model name
+        if not results:
+            try:
+                # Try variations of typical model paths
+                logger.info(f"Trying direct file access for: {keyword}")
+                variations = [
+                    f"models/{keyword}.sql",
+                    f"models/marts/{keyword}.sql",
+                    f"models/staging/{keyword}.sql",
+                    f"models/core/{keyword}.sql",
+                    f"models/marts/core/{keyword}.sql",
+                    f"models/marts/marketing/{keyword}.sql",
+                    f"models/intermediate/{keyword}.sql"
+                ]
+                
+                for var_path in variations:
+                    try:
+                        content = self.dbt_tools.get_file_content(var_path)
+                        if content:
+                            result_dict = {
+                                "model_name": keyword,
+                                "file_path": var_path,
+                                "content": content,
+                                "match_type": "direct_file",
+                                "description": f"Model accessed directly via path: {var_path}"
+                            }
+                            
+                            results.append(result_dict)
+                            logger.info(f"Added direct file result for '{keyword}' at '{var_path}'")
+                            break
+                    except Exception as e:
+                        continue
+            except Exception as e:
+                logger.warning(f"Error in direct file access for '{keyword}': {str(e)}")
+        
+        # Further attempt: try SQL statements that might reference the model
+        if not results and len(keyword) > 3:
+            try:
+                # Try to find all DBT model files
+                model_files = self.dbt_tools.get_all_models()
+                
+                # Search through each model manually
+                for model in model_files:
+                    try:
+                        # Get the file path for this model
+                        file_path = self.dbt_tools.file_scanner.get_model_file_path(model)
+                        if not file_path:
+                            continue
+                            
+                        # Get the content
+                        content = self.dbt_tools.get_file_content(file_path)
+                        if not content:
+                            continue
+                            
+                        # Simple text search
+                        if keyword.lower() in content.lower():
+                            result_dict = {
+                                "model_name": model,
+                                "file_path": file_path,
+                                "content": content,
+                                "match_type": "manual_search",
+                                "description": f"Model containing '{keyword}' text found through manual search"
+                            }
+                            
+                            results.append(result_dict)
+                            logger.info(f"Added manual search result for '{model}' at '{file_path}'")
+                    except Exception as inner_e:
+                        continue
+            except Exception as e:
+                logger.warning(f"Error in manual search for '{keyword}': {str(e)}")
+        
+        # De-duplicate results based on file_path
+        unique_results = []
+        file_paths_seen = set()
+        
+        for result in results:
+            file_path = result.get("file_path", "")
+            if file_path and file_path not in file_paths_seen:
+                file_paths_seen.add(file_path)
+                unique_results.append(result)
+        
+        return unique_results
+
+    def _extract_model_columns(self, content: str) -> List[Dict]:
+        """
+        Extract columns and their descriptions from SQL model content.
+        
+        Args:
+            content: The SQL content of the model
+            
+        Returns:
+            List of column information dictionaries
+        """
+        if not content:
+            return []
+            
+        columns = []
+        try:
+            # Look for select statement patterns
+            select_pattern = re.compile(r'(?:select|SELECT).*?(?:from|FROM)', re.DOTALL)
+            select_matches = select_pattern.findall(content)
+            
+            # If we found select statements, extract columns from them
+            if select_matches:
+                for select_clause in select_matches:
+                    # Split by commas but ignore commas inside functions
+                    in_function = 0
+                    current_part = ""
+                    parts = []
+                    
+                    for char in select_clause:
+                        if char == '(':
+                            in_function += 1
+                            current_part += char
+                        elif char == ')':
+                            in_function -= 1
+                            current_part += char
+                        elif char == ',' and in_function == 0:
+                            parts.append(current_part.strip())
+                            current_part = ""
+                        else:
+                            current_part += char
+                    
+                    # Add the last part if not empty
+                    if current_part.strip():
+                        parts.append(current_part.strip())
+                    
+                    # Process each column expression
+                    for part in parts:
+                        # Skip 'from' keyword that might be included
+                        if part.lower().startswith('from '):
+                            continue
+                            
+                        # Look for "as column_name" pattern
+                        as_match = re.search(r'(?:as|AS)\s+([a-zA-Z0-9_]+)\s*$', part)
+                        if as_match:
+                            column_name = as_match.group(1)
+                            expression = part[:as_match.start()].strip()
+                            
+                            # Try to determine data type from expression
+                            data_type = self._infer_data_type(expression)
+                            
+                            # Try to create a simple description from the expression
+                            description = self._create_column_description(column_name, expression)
+                            
+                            # Add column info
+                            columns.append({
+                                "name": column_name,
+                                "data_type": data_type,
+                                "expression": expression,
+                                "description": description
+                            })
+                        else:
+                            # Handle direct column references without AS
+                            # For example: "order_id" or "customers.name"
+                            direct_match = re.search(r'([a-zA-Z0-9_]+)(?:\.([a-zA-Z0-9_]+))?\s*$', part)
+                            if direct_match:
+                                if direct_match.group(2):  # Table.column format
+                                    table_name = direct_match.group(1)
+                                    column_name = direct_match.group(2)
+                                    description = f"Column {column_name} from {table_name}"
+                                else:  # Just column name
+                                    column_name = direct_match.group(1)
+                                    description = f"Column {column_name}"
+                                
+                                # Add column info
+                                columns.append({
+                                    "name": column_name,
+                                    "data_type": "unknown",
+                                    "expression": part.strip(),
+                                    "description": description
+                                })
+            
+            # If we have very few columns, try to extract from CTE definitions
+            if len(columns) < 2:
+                # Look for CTE (Common Table Expression) definitions
+                cte_pattern = re.compile(r'(?:with|WITH)\s+([a-zA-Z0-9_]+)\s+as\s*\((.*?)\)', re.DOTALL)
+                cte_matches = cte_pattern.findall(content)
+                
+                for cte_name, cte_content in cte_matches:
+                    # Extract columns from each CTE
+                    cte_columns = self._extract_model_columns(cte_content)
+                    for col in cte_columns:
+                        col["source"] = cte_name
+                        columns.append(col)
+            
+            return columns
+            
+        except Exception as e:
+            logger.error(f"Error extracting columns: {str(e)}")
+            return []
+    
+    def _infer_data_type(self, expression: str) -> str:
+        """
+        Infer the data type of a column based on its expression.
+        
+        Args:
+            expression: The SQL expression for the column
+            
+        Returns:
+            Inferred data type as string
+        """
+        expression = expression.lower()
+        
+        # Numeric functions and patterns
+        if any(func in expression for func in ['sum(', 'count(', 'avg(', 'min(', 'max(']):
+            return "numeric"
+        elif re.search(r'::(?:int|integer|bigint|decimal|numeric|float)', expression):
+            return "numeric"
+        
+        # String functions and patterns
+        if any(func in expression for func in ['concat(', 'upper(', 'lower(', 'trim(']):
+            return "string"
+        elif re.search(r'::(?:varchar|text|string|char)', expression):
+            return "string"
+        
+        # Date/time functions and patterns
+        if any(func in expression for func in ['date(', 'current_date', 'timestamp', 'to_date']):
+            return "timestamp"
+        elif re.search(r'::(?:date|timestamp|datetime)', expression):
+            return "timestamp"
+        
+        # Boolean patterns
+        if any(pattern in expression for pattern in ['= true', '= false', 'is null', 'is not null', '::boolean']):
+            return "boolean"
+        elif ' and ' in expression or ' or ' in expression:
+            return "boolean"
+        
+        # Default to string for unknown types
+        return "unknown"
+    
+    def _create_column_description(self, column_name: str, expression: str) -> str:
+        """
+        Create a human-readable description for a column based on its name and expression.
+        
+        Args:
+            column_name: Name of the column
+            expression: SQL expression used to calculate the column
+            
+        Returns:
+            Human-readable description
+        """
+        column_name = column_name.lower()
+        expression = expression.lower()
+        
+        # ID columns
+        if column_name.endswith('_id') or column_name.endswith('_key'):
+            if 'primary' in expression or 'unique' in expression:
+                return f"Primary identifier for this entity"
+            else:
+                entity = column_name.replace('_id', '').replace('_key', '')
+                return f"Reference to {entity} entity"
+        
+        # Date columns
+        if any(date_part in column_name for date_part in ['_date', '_time', '_timestamp']):
+            for date_part in ['_date', '_time', '_timestamp']:
+                if date_part in column_name:
+                    event = column_name.replace(date_part, '')
+                    return f"Time when {event.replace('_', ' ')} occurred"
+        
+        # Amount columns
+        if any(amount_part in column_name for amount_part in ['amount', 'total', 'sum', 'price', 'cost']):
+            if 'discount' in column_name:
+                return "Discount amount applied"
+            elif 'tax' in column_name:
+                return "Tax amount applied"
+            elif 'net' in column_name:
+                return "Net amount after discounts and taxes"
+            elif 'gross' in column_name:
+                return "Gross amount before discounts and taxes"
+            else:
+                return f"Monetary value for {column_name.replace('_', ' ')}"
+        
+        # Count columns
+        if any(count_part in column_name for count_part in ['count', 'quantity', 'number', 'qty']):
+            entity = re.sub(r'count_|num_|quantity_|qty_', '', column_name)
+            return f"Count of {entity.replace('_', ' ')}"
+        
+        # Status columns
+        if any(status_part in column_name for status_part in ['status', 'state', 'type', 'category']):
+            entity = column_name.replace('_status', '').replace('_state', '').replace('_type', '').replace('_category', '')
+            return f"Classification or status of {entity.replace('_', ' ')}"
+        
+        # Flag columns
+        if column_name.startswith('is_') or column_name.startswith('has_'):
+            return f"Flag indicating if {column_name[3:].replace('_', ' ')}"
+        
+        # Look for expressions with common aggregations
+        if 'sum(' in expression:
+            matches = re.findall(r'sum\((.*?)\)', expression)
+            if matches:
+                return f"Sum of {matches[0].strip()}"
+        
+        if 'count(' in expression:
+            return f"Count of records"
+        
+        # Default description based on column name
+        return f"{column_name.replace('_', ' ').title()}"
 
 # Define common stop words to exclude from search terms
 COMMON_STOP_WORDS = {

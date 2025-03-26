@@ -839,8 +839,35 @@ class DbtSearcher:
     """Search tools for DBT models"""
     
     def __init__(self, repo_path: str):
+        """
+        Initialize the searcher with repository path
+        
+        Args:
+            repo_path: Path to the repository root directory
+        """
         self.repo_path = repo_path
         self.file_scanner = DbtFileScanner(repo_path)
+        
+        # Initialize models_dir to prevent AttributeError
+        self.models_dir = os.path.join(self.repo_path, 'models')
+        
+        # Use project structure to find alternative models directories
+        try:
+            self.file_scanner.index_project()
+            
+            # Check if we have a models directory from the project structure
+            if not os.path.exists(self.models_dir) or not os.path.isdir(self.models_dir):
+                # Look for any directory containing model files
+                for root, dirs, files in os.walk(self.repo_path):
+                    if any(f.endswith('.sql') for f in files):
+                        if 'model' in root.lower() or 'dbt' in root.lower():
+                            self.models_dir = root
+                            logger.info(f"Using alternate models directory: {self.models_dir}")
+                            break
+        except Exception as e:
+            logger.warning(f"Error initializing models directory: {str(e)}")
+            # Keep the default models_dir as fallback
+        
         self.model_parser = DbtModelParser(repo_path)
         self._column_cache = {}  # Cache for column search results
         
