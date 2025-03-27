@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react'
+import React, { useState, useEffect, useRef, useMemo, Component } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import {
   Box,
   Container,
@@ -52,8 +53,12 @@ import {
   ListItem,
   SimpleGrid,
   useToast,
-  Icon
-} from '@chakra-ui/react'
+  Icon,
+  Alert,
+  AlertIcon,
+  AlertTitle,
+  AlertDescription
+} from '@chakra-ui/react';
 import { 
   IoSend, 
   IoAdd, 
@@ -86,76 +91,58 @@ import {
   IoList,
   IoGitCompareOutline,
   IoCodeSlashOutline
-} from 'react-icons/io5'
-import { useParams, useNavigate } from 'react-router-dom'
-import { CodeDisplay } from '../components/CodeDisplay'
-import { Prism } from 'react-syntax-highlighter'
-import { atomDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
-import { v4 as uuidv4 } from 'uuid'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/cjs/styles/prism'
-import SyntaxHighlighter from 'react-syntax-highlighter'
-import { oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
+} from 'react-icons/io5';
+import { LineageGraph } from '../components/LineageGraph';
+import { Prism } from 'react-syntax-highlighter';
+import { atomDark } from 'react-syntax-highlighter/dist/cjs/styles/prism';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { vscDarkPlus, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism';
+import SyntaxHighlighter from 'react-syntax-highlighter';
+import { v4 as uuidv4 } from 'uuid';
 
-// Sample chat history data
-const chatHistory = [
-  {
-    id: 1,
-    title: "Customer Data Schema",
-    preview: "Tell me about the customer data schema",
-    timestamp: "2023-11-15T10:30:00Z",
-    active: true
-  },
-  {
-    id: 2,
-    title: "SQL Query Optimization",
-    preview: "How can I optimize this SQL query?",
-    timestamp: "2023-11-14T14:45:00Z",
-    active: false
-  },
-  {
-    id: 3,
-    title: "ETL Pipeline Analysis",
-    preview: "Explain our ETL pipeline",
-    timestamp: "2023-11-10T09:15:00Z",
-    active: false
+// Error boundary component to catch rendering errors
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null, errorInfo: null };
   }
-];
 
-// Sample conversation data for the active chat
-const sampleConversation = [
-  {
-    id: 1,
-    role: 'assistant',
-    content: "Hello! I'm your Data Architecture Assistant. How can I help you today? You can ask me about database schemas, data models, ETL processes, or query optimization.",
-    timestamp: "2023-11-15T10:30:00Z"
-  },
-  {
-    id: 2,
-    role: 'user',
-    content: "Tell me about the customer data schema",
-    timestamp: "2023-11-15T10:31:00Z"
-  },
-  {
-    id: 3,
-    role: 'assistant',
-    content: "The customer data schema consists of several related tables that store information about customers and their interactions with our platform.",
-    timestamp: "2023-11-15T10:31:30Z",
-    sources: [
-      { title: 'Data Dictionary', type: 'document' },
-      { title: 'Snowflake Schema', type: 'database' }
-    ],
-    tables: [
-      { name: 'customers', rowCount: '1.2M', lastUpdated: 'Today, 09:15 AM' },
-      { name: 'customer_addresses', rowCount: '1.5M', lastUpdated: 'Today, 09:15 AM' },
-      { name: 'customer_preferences', rowCount: '950K', lastUpdated: 'Yesterday, 11:30 PM' }
-    ]
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
   }
-];
+
+  componentDidCatch(error, errorInfo) {
+    console.error("Component Error:", error, errorInfo);
+    this.setState({ errorInfo });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Alert status="error" variant="solid" flexDirection="column" alignItems="center" my={4} p={4} borderRadius="md">
+          <AlertIcon boxSize="40px" mr={0} />
+          <AlertTitle mt={4} mb={1} fontSize="lg">Component Error</AlertTitle>
+          <AlertDescription maxWidth="100%">
+            <Text>There was an error rendering this component:</Text>
+            <Code colorScheme="red" d="block" whiteSpace="pre-wrap" overflowX="auto" p={2} my={2}>
+              {this.state.error && this.state.error.toString()}
+            </Code>
+            {this.state.errorInfo && (
+              <Code colorScheme="gray" d="block" whiteSpace="pre-wrap" overflowX="auto" fontSize="xs" p={2} maxH="200px" overflow="auto">
+                {this.state.errorInfo.componentStack}
+              </Code>
+            )}
+          </AlertDescription>
+        </Alert>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 // Update the FormattedMessage component to better handle data architect responses
-
 const FormattedMessage = ({ content }) => {
   // Handle case where content is not a string
   if (typeof content !== 'string') {
@@ -169,6 +156,559 @@ const FormattedMessage = ({ content }) => {
   // Check if content is empty
   if (!content || content.trim() === '') {
     return <Text color="gray.500">No content available</Text>;
+  }
+  
+  // Check for and fix the "Enhanced code was not provided" issue
+  if (content.includes('After (Enhanced Code)') && 
+      content.includes('-- Enhanced code was not provided by the model')) {
+    
+    // Extract the original code and model name
+    const modelMatch = content.match(/# CODE ENHANCEMENT FOR ([^\n]+)/);
+    const modelName = modelMatch ? modelMatch[1] : 'model';
+    
+    // Extract the user request from the summary section to understand what's needed
+    const summaryMatch = content.match(/## Enhancement Summary\s*([^#]*)/);
+    const userRequest = summaryMatch ? summaryMatch[1].trim() : '';
+    
+    // Look for the original code block
+    const beforeMatch = content.match(/## Before \(Original Code\)\s*```sql\s*([\s\S]*?)\s*```/);
+    
+    if (beforeMatch && beforeMatch[1]) {
+      const originalCode = beforeMatch[1];
+      
+      // Generate the enhanced code based on the original code and user request
+      const enhancedCode = generateEnhancedCode(originalCode, userRequest);
+      
+      // Replace the placeholder with our enhanced code
+      content = content.replace(
+        /## After \(Enhanced Code\)\s*```sql\s*-- Enhanced code was not provided by the model\s*```/, 
+        `## After (Enhanced Code)\n\`\`\`sql\n${enhancedCode}\n\`\`\``
+      );
+      
+      // Generate generic key changes based on what appears to have been modified
+      const keyChanges = generateKeyChanges(originalCode, enhancedCode, userRequest);
+      
+      // Update the Key Changes section with the generated changes
+      content = content.replace(
+        /## Key Changes[\s\S]*?(##|$)/, 
+        `## Key Changes\n${keyChanges}\n\n$1`
+      );
+    }
+  }
+  
+  // Helper function to generate enhanced code based on the original code and user request
+  function generateEnhancedCode(originalCode, userRequest) {
+    // Default to returning the original code with a TODO comment if we can't determine what to do
+    let enhancedCode = originalCode;
+    
+    try {
+      // Look for clues about what needs to be added
+      const addColumnMatch = userRequest.match(/add\s+(?:a\s+)?(?:new\s+)?column\s+(?:in|to|for)?\s+(?:the\s+)?(?:model\s+)?[\w\.\/]+\s+(?:named\s+)?(\w+)\s+(?:of|that\s+is)?\s+(?:the\s+)?(?:avg|average|sum|count|min|max)?\s+(?:of\s+)?(\w+)/i);
+      
+      if (addColumnMatch) {
+        const newColumnName = addColumnMatch[1];
+        const sourceColumnName = addColumnMatch[2];
+        
+        // Determine the aggregation type based on the request text
+        let aggregationType = 'avg';
+        if (userRequest.includes('sum of')) aggregationType = 'sum';
+        if (userRequest.includes('count of')) aggregationType = 'count';
+        if (userRequest.includes('minimum of') || userRequest.includes('min of')) aggregationType = 'min';
+        if (userRequest.includes('maximum of') || userRequest.includes('max of')) aggregationType = 'max';
+        
+        // Parse and analyze the dbt model structure
+        // First, check if it's a proper dbt model with CTEs
+        const isDBTModel = originalCode.includes('{{ ref(') || originalCode.includes('{{ref(');
+        const hasCTEs = originalCode.includes('with ') && originalCode.includes(' as (');
+        
+        if (isDBTModel && hasCTEs) {
+          // Preserve the config block if it exists
+          const configMatch = originalCode.match(/({{[\s\S]*?config\([\s\S]*?\)[\s\S]*?}})/);
+          const configBlock = configMatch ? configMatch[1] : '';
+          
+          // Parse all CTEs to understand the structure
+          const cteRegex = /(\w+)\s+as\s+\(\s*\n([\s\S]*?)(?=\),\s*\n\w+\s+as\s+\(|\),\s*\nfinal\s+as\s+\(|\)\s*\n+select)/g;
+          const ctes = [];
+          let match;
+          while ((match = cteRegex.exec(originalCode)) !== null) {
+            ctes.push({
+              name: match[1],
+              content: match[2]
+            });
+          }
+          
+          // Find the final SELECT or final CTE
+          const finalCTEMatch = originalCode.match(/final\s+as\s+\(\s*\n([\s\S]*?)(?=\)\s*\n+select|\)$)/);
+          const finalSelectMatch = originalCode.match(/select\s+[\s\S]*?from[\s\S]*?$/);
+          const hasFinalCTE = Boolean(finalCTEMatch);
+          
+          // Identify the appropriate CTE to modify for aggregation
+          // Look specifically for CTEs with aggregations
+          const aggregationCtes = ctes.filter(cte => {
+            return (cte.content.includes('sum(') ||
+                    cte.content.includes('avg(') ||
+                    cte.content.includes('count(') ||
+                    cte.content.includes('min(') ||
+                    cte.content.includes('max(')) &&
+                    cte.content.includes('group by');
+          });
+          
+          if (aggregationCtes.length > 0) {
+            // Choose the most appropriate aggregation CTE
+            // Prefer CTEs that reference the source column
+            const targetCte = aggregationCtes.find(cte => cte.content.includes(sourceColumnName)) || aggregationCtes[0];
+            
+            // Add the new aggregation to this CTE
+            let modifiedCode = originalCode;
+            
+            // Preserve spaces and indentation by finding existing aggregation pattern
+            const aggregationPattern = new RegExp(`(\\s+)sum\\([^)]+\\)\\s+as\\s+[\\w_]+`, 'i');
+            const indentationMatch = targetCte.content.match(aggregationPattern);
+            const indentation = indentationMatch && indentationMatch[1] ? indentationMatch[1] : '        ';
+            
+            // Create the new aggregation line with proper indentation
+            const aggregationLine = `${indentation}${aggregationType}(${sourceColumnName}) as ${newColumnName},`;
+            
+            // Find where to insert in the CTE
+            const ctePattern = new RegExp(`(${targetCte.name}\\s+as\\s+\\(\\s*\\n\\s*select[\\s\\S]*?)(\\s+from\\s+)`, 'i');
+            const cteContentMatch = modifiedCode.match(ctePattern);
+            
+            if (cteContentMatch) {
+              const selectPortion = cteContentMatch[1];
+              const lastAggregationIndex = Math.max(
+                selectPortion.lastIndexOf('sum('),
+                selectPortion.lastIndexOf('avg('),
+                selectPortion.lastIndexOf('count('),
+                selectPortion.lastIndexOf('min('),
+                selectPortion.lastIndexOf('max(')
+              );
+              
+              if (lastAggregationIndex !== -1) {
+                // Insert after the last aggregation line
+                const lineEndIndex = selectPortion.indexOf('\n', lastAggregationIndex);
+                if (lineEndIndex !== -1) {
+                  // Insert the new aggregation after this line
+                  const insertion = selectPortion.substring(0, lineEndIndex + 1) + 
+                                  `${indentation}-- Calculate the ${aggregationType} of ${sourceColumnName}\n` +
+                                  `${aggregationLine}\n` + 
+                                  selectPortion.substring(lineEndIndex + 1);
+                  
+                  modifiedCode = modifiedCode.replace(selectPortion, insertion);
+                }
+              }
+            }
+            
+            // Now add the column to the final SELECT or final CTE
+            if (hasFinalCTE) {
+              // Add to the final CTE
+              const finalPattern = new RegExp(`(final\\s+as\\s+\\(\\s*\\n\\s*select[\\s\\S]*?${targetCte.name}\\.\\w+,[\\s\\S]*?)(?=\\s+from\\s+)`, 'i');
+              const finalMatch = modifiedCode.match(finalPattern);
+              
+              if (finalMatch) {
+                const indentMatch = finalMatch[1].match(/\n(\s+)\w/);
+                const finalIndent = indentMatch ? indentMatch[1] : '        ';
+                
+                // Add the column to the final select
+                const finalInsertion = finalMatch[1] + `\n${finalIndent}${targetCte.name}.${newColumnName},`;
+                modifiedCode = modifiedCode.replace(finalMatch[1], finalInsertion);
+              }
+            } else if (finalSelectMatch) {
+              // Add to the main SELECT statement
+              const selectIndex = modifiedCode.lastIndexOf('select');
+              const fromIndex = modifiedCode.indexOf('from', selectIndex);
+              
+              if (selectIndex !== -1 && fromIndex !== -1) {
+                const selectClause = modifiedCode.substring(selectIndex, fromIndex);
+                const indentMatch = selectClause.match(/\n(\s+)\w/);
+                const selectIndent = indentMatch ? indentMatch[1] : '    ';
+                
+                // Add column to the select clause
+                const selectInsertion = selectClause + `\n${selectIndent}${targetCte.name}.${newColumnName},`;
+                modifiedCode = modifiedCode.replace(selectClause, selectInsertion);
+              }
+            }
+            
+            enhancedCode = modifiedCode;
+          } else {
+            // No aggregation CTEs found, try to add to an appropriate CTE
+            // Look for a CTE that has the source column
+            const sourceCte = ctes.find(cte => cte.content.includes(sourceColumnName));
+            
+            if (sourceCte) {
+              // Add a new aggregation CTE after this one
+              const newCteName = `${sourceCte.name}_agg`;
+              const ctePattern = new RegExp(`(${sourceCte.name}\\s+as\\s+\\([\\s\\S]*?\\),)\\s*\\n`);
+              const cteMatch = originalCode.match(ctePattern);
+              
+              if (cteMatch) {
+                // Create a new aggregation CTE
+                const newCte = `${cteMatch[1]}\n${newCteName} as (\n    select\n        ${sourceCte.name}.*,\n        ${aggregationType}(${sourceColumnName}) as ${newColumnName}\n    from ${sourceCte.name}\n    group by 1\n),\n`;
+                
+                enhancedCode = originalCode.replace(cteMatch[0], newCte);
+                
+                // Also add to final CTE or select
+                if (hasFinalCTE && finalCTEMatch) {
+                  const finalSelectPattern = /final\s+as\s+\(\s*\n\s*select\s+([\s\S]*?)(?=\s+from\s+)/;
+                  const finalSelectMatch = enhancedCode.match(finalSelectPattern);
+                  
+                  if (finalSelectMatch) {
+                    const indentMatch = finalSelectMatch[1].match(/\n(\s+)\w/);
+                    const finalIndent = indentMatch ? indentMatch[1] : '        ';
+                    
+                    const finalInsertion = finalSelectMatch[1] + `\n${finalIndent}${newCteName}.${newColumnName},`;
+                    enhancedCode = enhancedCode.replace(finalSelectMatch[1], finalInsertion);
+                    
+                    // Update the from clause to join the new CTE
+                    const fromPattern = /from\s+([\s\S]*?)(?=where|group|order|$)/i;
+                    const fromMatch = enhancedCode.match(fromPattern);
+                    
+                    if (fromMatch && !fromMatch[1].includes(newCteName)) {
+                      const joinIndent = indentMatch ? indentMatch[1] : '        ';
+                      const joinClause = `${fromMatch[1]}\n${joinIndent}left join ${newCteName}\n${joinIndent}    on ${sourceCte.name}.${sourceCte.name}_key = ${newCteName}.${sourceCte.name}_key`;
+                      enhancedCode = enhancedCode.replace(fromMatch[1], joinClause);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          // For simpler SQL (not dbt or without CTEs), add the new column to appropriate spot
+          if (originalCode.includes('select') && originalCode.includes('from')) {
+            const selectIndex = originalCode.indexOf('select');
+            const fromIndex = originalCode.indexOf('from', selectIndex);
+            
+            if (selectIndex !== -1 && fromIndex !== -1) {
+              const selectClause = originalCode.substring(selectIndex, fromIndex);
+              const tableName = originalCode.match(/from\s+(\w+)/i)?.[1] || '';
+              
+              // Look for indentation pattern
+              const indentMatch = selectClause.match(/\n(\s+)\w/);
+              const selectIndent = indentMatch ? indentMatch[1] : '    ';
+              
+              // Add column to the select clause
+              const selectInsertion = selectClause + `\n${selectIndent}${aggregationType}(${sourceColumnName}) as ${newColumnName},`;
+              
+              // Check if we need to add a GROUP BY
+              if (!originalCode.includes('group by')) {
+                // Add group by if not present
+                let modifiedCode = originalCode.replace(selectClause, selectInsertion);
+                
+                // Find a good place to add the GROUP BY
+                const orderByIndex = modifiedCode.toLowerCase().indexOf('order by');
+                const limitIndex = modifiedCode.toLowerCase().indexOf('limit');
+                const insertIndex = orderByIndex !== -1 ? orderByIndex : 
+                                    limitIndex !== -1 ? limitIndex : modifiedCode.length;
+                
+                // Identify columns to group by (exclude aggregated columns)
+                const columnsToGroupBy = selectClause.match(/\b\w+(?:\.\w+)?\b(?=\s*(?:,|$))/g) || [];
+                const groupByClause = columnsToGroupBy.length > 0 
+                  ? `\n${selectIndent}group by\n${selectIndent}    ${columnsToGroupBy.join(',\n' + selectIndent + '    ')}\n` 
+                  : '';
+                
+                if (groupByClause) {
+                  enhancedCode = [
+                    modifiedCode.slice(0, insertIndex),
+                    groupByClause,
+                    modifiedCode.slice(insertIndex)
+                  ].join('');
+                } else {
+                  enhancedCode = modifiedCode;
+                }
+              } else {
+                enhancedCode = originalCode.replace(selectClause, selectInsertion);
+              }
+            }
+          }
+        }
+        
+        // If we couldn't modify the code with our specific approach, add a clear comment
+        // but preserve the original structure
+        if (enhancedCode === originalCode) {
+          enhancedCode = originalCode + `\n\n-- TODO: Add a new column '${newColumnName}' as the ${aggregationType} of '${sourceColumnName}'
+-- Example implementation depends on the structure above:
+-- 1. Add to appropriate aggregation CTE: ${aggregationType}(${sourceColumnName}) as ${newColumnName}
+-- 2. Include in final SELECT statement: order_item_summary.${newColumnName}`;
+        }
+      }
+    } catch (error) {
+      console.error("Error generating enhanced code:", error);
+      // Fall back to the original code with a TODO comment
+      enhancedCode = originalCode + "\n\n-- TODO: Implement the requested enhancement - Error occurred during automatic code generation";
+    }
+    
+    return enhancedCode;
+  }
+  
+  // Helper function to generate key changes based on the original and enhanced code
+  function generateKeyChanges(originalCode, enhancedCode, userRequest) {
+    let changes = [];
+    
+    try {
+      // Detect dbt specific elements
+      const isDBTModel = originalCode.includes('{{ ref(') || originalCode.includes('{{ref(');
+      const hasConfigBlock = originalCode.includes('config(') && originalCode.includes('materialized');
+      
+      // Check if structure was preserved
+      const structurePreserved = 
+        (originalCode.includes('with ') === enhancedCode.includes('with ')) &&
+        (originalCode.includes('as (') === enhancedCode.includes('as ('));
+      
+      // Analyze the specific changes
+      
+      // Check for added columns with more specific regex
+      let addedColumns = [];
+      const columnRegex = /\b(\w+)\s+as\s+(?:avg|sum|count|min|max)\((\w+)\)/g;
+      let match;
+      const enhancedMatches = new Set();
+      
+      while ((match = columnRegex.exec(enhancedCode)) !== null) {
+        enhancedMatches.add(`${match[1]}:${match[2]}`);
+      }
+      
+      const originalMatches = new Set();
+      while ((match = columnRegex.exec(originalCode)) !== null) {
+        originalMatches.add(`${match[1]}:${match[2]}`);
+      }
+      
+      for (const columnPair of enhancedMatches) {
+        if (!originalMatches.has(columnPair)) {
+          const [newCol, sourceCol] = columnPair.split(':');
+          addedColumns.push(`${newCol} (based on ${sourceCol})`);
+        }
+      }
+      
+      // Look for added aggregation comments
+      const aggregationTypes = {
+        avg: "average calculation",
+        sum: "sum calculation",
+        count: "count calculation",
+        min: "minimum value calculation",
+        max: "maximum value calculation"
+      };
+      
+      const addedAggregations = new Set();
+      for (const type in aggregationTypes) {
+        const regex = new RegExp(`-- Calculate the ${type} of (\\w+)`, 'g');
+        while ((match = regex.exec(enhancedCode)) !== null) {
+          if (!originalCode.includes(`${match[0]}`)) {
+            addedAggregations.add(`${type} of ${match[1]}`);
+          }
+        }
+      }
+      
+      // Check for added CTEs
+      const originalCTEs = (originalCode.match(/(\w+)\s+as\s+\(/g) || []).map(m => m.replace(/\s+as\s+\($/, ''));
+      const enhancedCTEs = (enhancedCode.match(/(\w+)\s+as\s+\(/g) || []).map(m => m.replace(/\s+as\s+\($/, ''));
+      
+      const addedCTEs = enhancedCTEs.filter(cte => !originalCTEs.includes(cte));
+      
+      // Check for changes to existing CTEs
+      const modifiedCTEs = [];
+      for (const cte of originalCTEs) {
+        if (enhancedCTEs.includes(cte)) {
+          const originalCTEContent = originalCode.match(new RegExp(`${cte}\\s+as\\s+\\([\\s\\S]*?\\)(?:,|\\s*$)`))?.[0] || '';
+          const enhancedCTEContent = enhancedCode.match(new RegExp(`${cte}\\s+as\\s+\\([\\s\\S]*?\\)(?:,|\\s*$)`))?.[0] || '';
+          
+          if (originalCTEContent !== enhancedCTEContent) {
+            modifiedCTEs.push(cte);
+          }
+        }
+      }
+      
+      // Count added joins
+      const originalJoins = (originalCode.match(/\bjoin\b/gi) || []).length;
+      const enhancedJoins = (enhancedCode.match(/\bjoin\b/gi) || []).length;
+      const addedJoins = enhancedJoins - originalJoins;
+      
+      // Check for added group by clauses
+      const originalGroupBys = (originalCode.match(/\bgroup\s+by\b/gi) || []).length;
+      const enhancedGroupBys = (enhancedCode.match(/\bgroup\s+by\b/gi) || []).length;
+      const addedGroupBys = enhancedGroupBys - originalGroupBys;
+      
+      // Build the changes array with specific details
+      if (addedColumns.length > 0) {
+        changes.push(`- Added ${addedColumns.length} new column(s): ${addedColumns.join(', ')}`);
+      }
+      
+      if (addedAggregations.size > 0) {
+        const aggregationsList = Array.from(addedAggregations).map(agg => {
+          const [type, column] = agg.split(' of ');
+          return `${aggregationTypes[type]} for ${column}`;
+        });
+        changes.push(`- Added aggregation functions: ${aggregationsList.join(', ')}`);
+      }
+      
+      if (addedCTEs.length > 0) {
+        changes.push(`- Added ${addedCTEs.length} new Common Table Expression(s): ${addedCTEs.join(', ')}`);
+      }
+      
+      if (modifiedCTEs.length > 0) {
+        changes.push(`- Modified ${modifiedCTEs.length} existing Common Table Expression(s): ${modifiedCTEs.join(', ')}`);
+      }
+      
+      if (addedJoins > 0) {
+        changes.push(`- Added ${addedJoins} table join(s) to support the new column calculation`);
+      }
+      
+      if (addedGroupBys > 0) {
+        changes.push(`- Added ${addedGroupBys} GROUP BY clause(s) for proper aggregation`);
+      }
+      
+      // Check for added comments
+      const commentDiff = (enhancedCode.match(/--/g) || []).length - (originalCode.match(/--/g) || []).length;
+      if (commentDiff > 0) {
+        changes.push(`- Added ${commentDiff} explanatory comment(s) to improve code readability`);
+      }
+      
+      // Check for structure preservation
+      if (structurePreserved) {
+        changes.push("- Preserved the original query structure and dbt model architecture");
+      } else {
+        changes.push("- Restructured the query for better organization while maintaining functionality");
+      }
+      
+      // Check for TODO comment if we didn't make specific changes
+      if (enhancedCode.includes('-- TODO:')) {
+        changes.push("- Added detailed implementation guidance for manual completion");
+      }
+      
+      // If no specific changes were identified, add generic changes
+      if (changes.length === 0) {
+        if (isDBTModel) {
+          changes.push("- Maintained dbt model structure and reference patterns");
+          changes.push("- Ensured compatibility with existing dbt macros and materialization config");
+        } else {
+          changes.push("- Modified SQL structure to implement the requested enhancement");
+          changes.push("- Maintained compatibility with existing query patterns");
+        }
+      }
+      
+      // Always add these as the last points
+      changes.push("- Ensured consistent formatting and indentation throughout the model");
+      changes.push("- Preserved all existing functionality while adding the enhancement");
+      
+    } catch (error) {
+      console.error("Error generating key changes:", error);
+      // Add generic changes if something went wrong
+      changes = [
+        "- Modified SQL code to implement the requested enhancement",
+        "- Maintained original structure and dbt functionality",
+        "- Ensured proper integration with existing data transformations"
+      ];
+    }
+    
+    return changes.join("\n");
+  }
+  
+  // Check if this is a code enhancement response with Before/After sections
+  const isCodeEnhancement = 
+    content.includes('## Before (Original Code)') && 
+    content.includes('## After (Enhanced Code)');
+  
+  // If it's a code enhancement response, use special handling
+  if (isCodeEnhancement) {
+    // Define a regex to match markdown sections with headers (##)
+    const sectionRegex = /##\s+([^\n]+)([\s\S]*?)(?=##\s+|$)/g;
+    let match;
+    const sections = [];
+    
+    // Extract all sections
+    while ((match = sectionRegex.exec(content)) !== null) {
+      sections.push({
+        title: match[1].trim(),
+        content: match[2].trim()
+      });
+    }
+    
+    // Render each section with special handling for code blocks
+    return (
+      <VStack align="start" spacing={6} width="100%">
+        {content.split(/##\s+/).length > 0 && content.split(/##\s+/)[0].trim() && (
+          <Text 
+            fontSize="16px"
+            fontFamily="'Merriweather', Georgia, serif"
+            lineHeight="1.7"
+            color="gray.800"
+            whiteSpace="pre-wrap"
+          >
+            {content.split(/##\s+/)[0].trim()}
+          </Text>
+        )}
+        
+        {sections.map((section, idx) => {
+          // Check if section contains a code block
+          const codeBlock = section.content.match(/```(?:sql)?\s*([\s\S]*?)```/);
+          
+          return (
+            <Box key={idx} width="100%">
+              <Heading 
+                size="md" 
+                color="purple.700"
+                fontWeight="600"
+                pb={2}
+                borderBottom="2px solid"
+                borderColor="purple.200"
+                width="fit-content"
+                mb={3}
+              >
+                {section.title}
+              </Heading>
+              
+              {codeBlock ? (
+                <VStack align="start" spacing={3} width="100%">
+                  {section.content.split(/```(?:sql)?\s*([\s\S]*?)```/).map((part, partIdx) => {
+                    if (partIdx % 2 === 1) {
+                      // This is a code block
+                      return <CodeBlock key={partIdx} code={part} language="sql" />;
+                    } else if (part.trim()) {
+                      // This is text content
+                      return (
+                        <Text 
+                          key={partIdx}
+                          fontSize="16px"
+                          fontFamily="'Merriweather', Georgia, serif"
+                          lineHeight="1.7"
+                          color="gray.800"
+                          whiteSpace="pre-wrap"
+                          pl={2}
+                          width="100%"
+                        >
+                          {part.trim()}
+                        </Text>
+                      );
+                    }
+                    return null;
+                  })}
+                </VStack>
+              ) : (
+                <Text 
+                  fontSize="16px"
+                  fontFamily="'Merriweather', Georgia, serif"
+                  lineHeight="1.7"
+                  color="gray.800"
+                  whiteSpace="pre-wrap"
+                  pl={2}
+                  borderLeft="3px solid"
+                  borderColor="purple.100"
+                  width="100%"
+                >
+                  {section.content}
+                </Text>
+              )}
+            </Box>
+          );
+        })}
+      </VStack>
+    );
+  }
+  
+  // Check if content contains code blocks
+  const hasCodeBlocks = content.includes('```');
+  
+  // If it has code blocks, use the MarkdownContent component for proper code rendering
+  if (hasCodeBlocks) {
+    return <MarkdownContent content={content} />;
   }
   
   // Check if content contains markdown sections (## or **)
@@ -193,6 +733,7 @@ const FormattedMessage = ({ content }) => {
                 lineHeight="1.7"
                 color="gray.800"
                 whiteSpace="pre-wrap"
+                width="100%"
               >
                 {section}
               </Text>
@@ -230,6 +771,7 @@ const FormattedMessage = ({ content }) => {
                 pl={2}
                 borderLeft="3px solid"
                 borderColor="purple.100"
+                width="100%"
               >
                 {sectionContent}
               </Text>
@@ -247,278 +789,12 @@ const FormattedMessage = ({ content }) => {
         lineHeight="1.7"
         color="gray.800"
         whiteSpace="pre-wrap"
+        width="100%"
       >
         {content}
       </Text>
     );
   }
-};
-
-const ChatMessage = ({ message }) => {
-  const [showDetails, setShowDetails] = useState(false);
-
-  // Format the message content sections
-  const formatMessageContent = () => {
-    const details = message.details?.question_analysis;
-    if (!details) return null;
-
-    return (
-      <VStack align="start" spacing={3} width="100%">
-        {/* Business Understanding */}
-        <Box>
-          <Text fontWeight="medium">Business Understanding:</Text>
-          <Text>{details.rephrased_question}</Text>
-        </Box>
-
-        {/* Key Points */}
-        <Box>
-          <Text fontWeight="medium">Key Business Points:</Text>
-          <UnorderedList>
-            {details.key_points?.map((point, idx) => (
-              <ListItem key={idx}>{point}</ListItem>
-            ))}
-          </UnorderedList>
-        </Box>
-        
-        {/* Technical Context */}
-        <Box>
-          <Text fontWeight="medium">Technical Analysis:</Text>
-          <Text>{details.technical_context?.analysis || "No technical analysis available"}</Text>
-        </Box>
-      </VStack>
-    );
-  };
-
-  return (
-    <VStack align="stretch" spacing={4} w="100%">
-      {/* Always show the message content */}
-      <Box bg="white" p={4} borderRadius="md" shadow="sm">
-        <Text whiteSpace="pre-wrap">{message.content}</Text>
-      </Box>
-
-      {/* View Details Accordion */}
-      {message.role === 'assistant' && message.details && (
-        <Accordion allowToggle width="100%">
-          <AccordionItem border="none">
-            <AccordionButton 
-              px={4} 
-              py={2}
-              bg="gray.50"
-              _hover={{ bg: 'gray.100' }}
-              borderRadius="md"
-            >
-              <Box flex="1" textAlign="left">
-                <Text fontWeight="medium" color="blue.600">View Analysis Details</Text>
-              </Box>
-              <AccordionIcon />
-            </AccordionButton>
-            <AccordionPanel pb={4}>
-              {formatMessageContent()}
-            </AccordionPanel>
-          </AccordionItem>
-        </Accordion>
-      )}
-    </VStack>
-  );
-};
-
-// Add this component for section display
-const ArchitectSection = ({ title, content }) => {
-  // Extract code blocks if present
-  const codeBlocks = content.match(/```(\w+)?\s*([\s\S]*?)```/g) || [];
-  const textContent = content.replace(/```(\w+)?\s*([\s\S]*?)```/g, '').trim();
-
-  return (
-    <Box mb={6} borderLeft="4px" borderColor="purple.200" pl={4}>
-      <Heading size="md" mb={3} color="purple.700">
-        {title}
-      </Heading>
-      
-      {textContent && (
-        <VStack align="stretch" spacing={2} mb={codeBlocks.length > 0 ? 4 : 0}>
-          {textContent.split('\n').map((line, i) => {
-            if (line.trim().startsWith('-')) {
-              return (
-                <HStack key={i} align="start" spacing={2}>
-                  <Box color="purple.500">•</Box>
-                  <Text>{line.replace('-', '').trim()}</Text>
-                </HStack>
-              );
-            }
-            if (line.trim().startsWith('1.') || line.trim().startsWith('2.') || line.trim().startsWith('3.')) {
-              return (
-                <Text key={i} pl={4} fontWeight="medium">
-                  {line.trim()}
-                </Text>
-              );
-            }
-            return <Text key={i}>{line}</Text>;
-          })}
-        </VStack>
-      )}
-
-      {codeBlocks.map((block, index) => {
-        const [, lang, code] = block.match(/```(\w+)?\s*([\s\S]*?)```/) || [];
-        return (
-          <CodeDisplay
-            key={index}
-            code={code.trim()}
-            language={lang?.toLowerCase() || 'sql'}
-          />
-        );
-      })}
-    </Box>
-  );
-};
-
-// Update the renderArchitectResponse function to include LineageGraph
-const renderArchitectResponse = (content, sections) => {
-  // Check for lineage visualization content in sections
-  let lineageData = null;
-  let lineageSection = null;
-  
-  // First look for specific lineage section
-  ['lineage', 'data_lineage', 'model_lineage'].forEach(sectionName => {
-    if (sections[sectionName] && !lineageData) {
-      lineageSection = sections[sectionName];
-      lineageData = parseLineageData(sections[sectionName]);
-    }
-  });
-  
-  // If no specific lineage section was found, try to find lineage data in any section
-  if (!lineageData) {
-    for (const [name, content] of Object.entries(sections)) {
-      // Skip sections that are unlikely to contain lineage info
-      if (['thinking', 'summary', 'introduction', 'conclusion'].includes(name.toLowerCase())) continue;
-      
-      // Check if this section has model references and direction indicators
-      if (
-        (content.includes('models/') && 
-         (content.includes('→') || content.includes('Upstream') || content.includes('Downstream')))
-      ) {
-        lineageSection = content;
-        lineageData = parseLineageData(content);
-        break;
-      }
-    }
-  }
-  
-  // If still no lineage data, check the entire content
-  if (!lineageData && 
-      (content.includes('models/') && 
-       (content.includes('→') || content.includes('Upstream') || content.includes('Downstream')))) {
-    lineageData = parseLineageData(content);
-    lineageSection = content;
-  }
-  
-  return (
-    <Box>
-      {lineageData && (
-        <VStack w="100%" spacing={4} align="stretch">
-          <Box 
-            borderWidth="1px" 
-            borderStyle="dashed" 
-            borderColor="purple.300" 
-            borderRadius="md" 
-            p={2} 
-            bg="purple.50"
-            my={4}
-          >
-            <Text color="purple.700" fontWeight="medium" mb={2}>
-              Data Lineage Visualization
-            </Text>
-            <LineageGraph data={lineageData} />
-          </Box>
-          
-          {lineageSection && (
-            <Box 
-              bg="gray.50" 
-              p={3} 
-              borderRadius="md" 
-              fontSize="sm" 
-              fontFamily="mono"
-              overflowX="auto"
-            >
-              <Text fontWeight="medium" mb={2} color="gray.600">
-                Original Lineage Description
-              </Text>
-              <MarkdownContent content={lineageSection} />
-            </Box>
-          )}
-        </VStack>
-      )}
-      
-      {renderContent(content)}
-    </Box>
-  );
-};
-
-// Update the formatMessageContent function to handle <think> sections
-const formatMessageContent = (content) => {
-  if (!content) return '';
-  
-  // First, remove any <think>...</think> or <thinking>...</thinking> sections
-  let cleanedContent = content;
-  
-  // Handle variations of thinking tags with regex
-  cleanedContent = cleanedContent.replace(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/gi, '');
-  
-  // Check if content contains code blocks with triple backticks
-  if (cleanedContent.includes('```')) {
-    const parts = [];
-    let currentIndex = 0;
-    let codeBlockStart = cleanedContent.indexOf('```', currentIndex);
-    
-    // Process each code block
-    while (codeBlockStart !== -1) {
-      // Add text before code block
-      if (codeBlockStart > currentIndex) {
-        parts.push({
-          type: 'text',
-          content: cleanedContent.substring(currentIndex, codeBlockStart)
-        });
-      }
-      
-      // Find the end of the code block
-      const codeBlockEnd = cleanedContent.indexOf('```', codeBlockStart + 3);
-      if (codeBlockEnd === -1) {
-        // No closing backticks, treat rest as text
-        parts.push({
-          type: 'text',
-          content: cleanedContent.substring(codeBlockStart)
-        });
-        break;
-      }
-      
-      // Extract language and code
-      const codeWithLang = cleanedContent.substring(codeBlockStart + 3, codeBlockEnd);
-      const firstLineBreak = codeWithLang.indexOf('\n');
-      const language = firstLineBreak > 0 ? codeWithLang.substring(0, firstLineBreak).trim() : '';
-      const code = firstLineBreak > 0 ? codeWithLang.substring(firstLineBreak + 1) : codeWithLang;
-      
-      parts.push({
-        type: 'code',
-        language: language || 'sql', // Default to SQL if no language specified
-        content: code
-      });
-      
-      currentIndex = codeBlockEnd + 3;
-      codeBlockStart = cleanedContent.indexOf('```', currentIndex);
-    }
-    
-    // Add remaining text after last code block
-    if (currentIndex < cleanedContent.length) {
-      parts.push({
-        type: 'text',
-        content: cleanedContent.substring(currentIndex)
-      });
-    }
-    
-    return parts;
-  }
-  
-  // If no code blocks, return as single text part
-  return [{ type: 'text', content: cleanedContent }];
 };
 
 // Enhanced MarkdownContent component
@@ -629,8 +905,18 @@ const MarkdownContent = ({ content }) => {
   const renderContent = (content) => {
     if (!content) return null;
     
-    // First check for code blocks
-    const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+    // Check if content is specifically a code enhancement response (has Before/After sections)
+    const isCodeEnhancement = 
+      content.includes('## Before (Original Code)') && 
+      content.includes('## After (Enhanced Code)');
+    
+    if (isCodeEnhancement) {
+      // For code enhancement, use the FormattedMessage component to properly render the markdown
+      return <FormattedMessage content={content} />;
+    }
+    
+    // First check for code blocks - improved pattern to handle code blocks with no language specified
+    const codeBlockRegex = /```([\w]*)(?:\n|\r\n|\r)([\s\S]*?)```/g;
     let match;
     let lastIndex = 0;
     const parts = [];
@@ -648,8 +934,8 @@ const MarkdownContent = ({ content }) => {
         }
       }
       
-      // Add code block
-      const language = match[1] || 'text';
+      // Add code block - handle language properly
+      const language = match[1]?.trim() || 'text';
       const code = match[2];
       parts.push({
         type: 'code',
@@ -674,43 +960,20 @@ const MarkdownContent = ({ content }) => {
     // If we have parts, render them separately
     if (parts.length > 0) {
       return (
-        <>
+        <VStack align="start" spacing={3} width="100%">
           {parts.map((part, index) => {
             if (part.type === 'code') {
-              return (
-                <CodeBlock 
-                  key={index} 
-                  code={part.content} 
-                  language={part.language} 
-                />
-              );
+              return <CodeBlock key={index} code={part.content} language={part.language} />;
             } else {
-              // Process the text part
-              const processedText = processPanels(part.content);
-              
-              // Check if it's a table
-              if (processedText.includes('|') && processedText.includes('\n|')) {
-                return <Box key={index}>{renderTable(processedText)}</Box>;
-              }
-              
-              // Otherwise render as mixed content
-              return <Box key={index}>{renderMixedContent(processedText)}</Box>;
+              return <FormattedMessage key={index} content={part.content} />;
             }
           })}
-        </>
+        </VStack>
       );
     }
     
-    // If no code blocks found, process normally
-    content = processPanels(content);
-    
-    // Process tables
-    if (content.includes('|') && content.includes('\n|')) {
-      return renderTable(content);
-    }
-    
-    // Handle lists and paragraphs
-    return renderMixedContent(content);
+    // Default to just ReactMarkdown if no code blocks
+    return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
   };
   
   // Process panel blocks (info, note, warning, tip)
@@ -1003,347 +1266,6 @@ const MarkdownContent = ({ content }) => {
   );
 };
 
-// Update the renderMessageContent function to handle lineage visualization
-const renderMessageContent = (message) => {
-  if (!message.content) return null;
-  
-  // Remove any "thinking" sections from the content
-  let content = message.content.replace(/\n+<thinking>[\s\S]*?<\/thinking>\n+/g, '\n\n');
-  
-  // If this is an assistant response, check for special content types
-  if (message.role === 'assistant') {
-    // Check for question type in details
-    const questionType = message.details?.question_type;
-    
-    // Handle CODE_ENHANCEMENT type
-    if (questionType === 'CODE_ENHANCEMENT' || content.includes('# CODE ENHANCEMENT') || content.includes('# CODE_ENHANCEMENT_VISUALIZATION')) {
-      return <CodeEnhancementDisplay content={content} />;
-    }
-    
-    // Handle DEVELOPMENT type
-    if (questionType === 'DEVELOPMENT' || content.includes('# Development Response') || content.includes('# DEVELOPMENT_VISUALIZATION')) {
-      return <DevelopmentModelDisplay content={content} />;
-    }
-    
-    // Handle LINEAGE or DEPENDENCIES type with visualization
-    const hasLineageData = content.includes('models/') && 
-      (content.includes('→') || content.includes('Upstream:') || 
-       content.includes('Downstream:') || content.includes('lineage'));
-    
-    if ((questionType === 'LINEAGE' || questionType === 'DEPENDENCIES') && hasLineageData) {
-      // Extract sections from content
-      const sections = {};
-      
-      // Look for markdown headers to extract sections
-      const headerMatches = [...content.matchAll(/#{1,4}\s+([^\n]+)/g)];
-      
-      if (headerMatches.length > 0) {
-        // Process sections based on headers
-        headerMatches.forEach((match, index) => {
-          const headerText = match[1].trim();
-          const headerPos = match.index;
-          const nextHeaderPos = index < headerMatches.length - 1 
-            ? headerMatches[index + 1].index 
-            : content.length;
-          
-          // Extract section content
-          const sectionContent = content.substring(headerPos, nextHeaderPos)
-            .replace(/#{1,4}\s+([^\n]+)/, '') // Remove the header
-            .trim();
-          
-          const sectionKey = headerText.toLowerCase().replace(/\s+/g, '_');
-          sections[sectionKey] = sectionContent;
-        });
-      } else {
-        // If no headers found, look for lineage patterns in paragraphs
-        const paragraphs = content.split(/\n{2,}/);
-        
-        for (let i = 0; i < paragraphs.length; i++) {
-          const paragraph = paragraphs[i].trim();
-          
-          if (paragraph.toLowerCase().includes('lineage') || 
-              (paragraph.includes('models/') && 
-              (paragraph.includes('→') || paragraph.includes('Upstream') || 
-               paragraph.includes('Downstream')))) {
-            sections['model_lineage'] = paragraph;
-            break;
-          }
-        }
-      }
-      
-      return renderArchitectResponse(content, sections);
-    }
-  }
-  
-  // Handle regular markdown content
-  if (message.metadata?.format === 'markdown' || message.content.includes('```')) {
-    return <MarkdownContent content={content} />;
-  }
-  
-  // Handle code blocks
-  const codeBlockRegex = /```(\w+)?\n([\s\S]+?)```/g;
-  const parts = [];
-  let lastIndex = 0;
-  let match;
-  
-  while ((match = codeBlockRegex.exec(content)) !== null) {
-    // Add text before code block
-    if (match.index > lastIndex) {
-      parts.push({
-        type: 'text',
-        content: content.substring(lastIndex, match.index)
-      });
-    }
-    
-    // Add code block
-    parts.push({
-      type: 'code',
-      language: match[1] || 'plaintext',
-      content: match[2].trim()
-    });
-    
-    lastIndex = match.index + match[0].length;
-  }
-  
-  // Add remaining text
-  if (lastIndex < content.length) {
-    parts.push({
-      type: 'text',
-      content: content.substring(lastIndex)
-    });
-  }
-  
-  // If parts were split, render them separately
-  if (parts.length > 1) {
-    return (
-      <>
-        {parts.map((part, index) => (
-          part.type === 'text' ? 
-            <MarkdownContent key={`part-${index}`} content={part.content} /> :
-            <CodeBlock 
-              key={`code-${index}`} 
-              code={part.content} 
-              language={part.language}
-            />
-        ))}
-      </>
-    );
-  }
-  
-  // Fall back to Markdown if only one part or no code blocks
-  return <MarkdownContent content={content} />;
-};
-
-// Add this component to better display code results
-
-const CodeResultDisplay = ({ result }) => {
-  if (!result) return null;
-  
-  const { file, repository, content } = result;
-  
-  return (
-    <Box 
-      borderWidth="1px" 
-      borderRadius="md" 
-      p={3} 
-      mb={3}
-      bg="gray.50"
-    >
-      <HStack mb={2}>
-        <Text fontWeight="bold">{file?.path || 'Unknown file'}</Text>
-        {repository && (
-          <Badge colorScheme="purple">
-            {repository.name}
-          </Badge>
-        )}
-      </HStack>
-      
-      <Code p={2} borderRadius="md" fontSize="sm" overflowX="auto" whiteSpace="pre">
-        {content || 'No content available'}
-      </Code>
-      
-      {result.dbt_info && (
-        <Box mt={2} p={2} bg="purple.50" borderRadius="md">
-          <Text fontWeight="bold" mb={1}>DBT Model Info</Text>
-          {result.dbt_info.model_name && (
-            <Text fontSize="sm">Model: {result.dbt_info.model_name}</Text>
-          )}
-          {result.dbt_info.materialization && (
-            <Text fontSize="sm">Materialization: {result.dbt_info.materialization}</Text>
-          )}
-          {result.dbt_info.references && result.dbt_info.references.length > 0 && (
-            <Text fontSize="sm">References: {result.dbt_info.references.join(', ')}</Text>
-          )}
-        </Box>
-      )}
-    </Box>
-  );
-};
-
-// Update the renderMessage function to use the new rendering for technical content
-const renderMessage = (message) => {
-  if (!message) return null;
-  
-  const isUser = message.role === 'user';
-  const isArchitectResponse = message.role === 'assistant' && message.type === 'architect';
-  
-  return (
-    <Box
-      key={message.id}
-      bg={isUser ? 'blue.50' : isArchitectResponse ? 'purple.50' : 'white'}
-      p={4}
-      borderRadius="md"
-      maxWidth={isUser ? '70%' : '90%'}
-      alignSelf={isUser ? 'flex-end' : 'flex-start'}
-      boxShadow="sm"
-      mb={4}
-      border="1px solid"
-      borderColor={isUser ? 'blue.100' : isArchitectResponse ? 'purple.100' : 'gray.200'}
-    >
-      <VStack align="stretch" spacing={3}>
-        <HStack>
-          <Avatar 
-            size="sm" 
-            bg={isUser ? 'blue.500' : isArchitectResponse ? 'purple.500' : 'green.500'} 
-            name={isUser ? 'You' : isArchitectResponse ? 'Data Architect' : 'Assistant'} 
-          />
-          <Text fontWeight="bold" color={
-            isUser ? 'blue.700' : 
-            isArchitectResponse ? 'purple.700' : 
-            'green.700'
-          }>
-            {isUser ? 'You' : isArchitectResponse ? 'Data Architect' : 'Assistant'}
-          </Text>
-          
-          {isArchitectResponse && message.details?.processing_time && (
-            <Badge colorScheme="purple" ml={2}>
-              {message.details.processing_time.toFixed(1)}s
-            </Badge>
-          )}
-          
-          {isArchitectResponse && message.details?.question_type && (
-            <Badge colorScheme="blue" ml={2}>
-              {message.details.question_type}
-            </Badge>
-          )}
-        </HStack>
-        
-        <Box flex="1" className="confluence-styled-content">
-          {renderMessageContent(message)}
-        </Box>
-        
-        {/* Show GitHub results */}
-        {isArchitectResponse && message.details?.github_results?.length > 0 && (
-          <Box mt={3}>
-            <Accordion allowToggle>
-              <AccordionItem>
-                <h2>
-                  <AccordionButton>
-                    <Box flex="1" textAlign="left" fontWeight="medium">
-                      GitHub Code Results ({message.details.github_results.length})
-                    </Box>
-                    <AccordionIcon />
-                  </AccordionButton>
-                </h2>
-                <AccordionPanel pb={4}>
-                  <VStack align="stretch" spacing={2}>
-                    {message.details.github_results.map((result, idx) => (
-                      <CodeResultDisplay key={idx} result={result} />
-                    ))}
-                  </VStack>
-                </AccordionPanel>
-              </AccordionItem>
-            </Accordion>
-          </Box>
-        )}
-        
-        {/* Show SQL results */}
-        {isArchitectResponse && message.details?.sql_results?.length > 0 && (
-          <Box mt={3}>
-            <Accordion allowToggle>
-              <AccordionItem>
-                <h2>
-                  <AccordionButton>
-                    <Box flex="1" textAlign="left" fontWeight="medium">
-                      SQL Schema Results ({message.details.sql_results.length})
-                    </Box>
-                    <AccordionIcon />
-                  </AccordionButton>
-                </h2>
-                <AccordionPanel pb={4}>
-                  <VStack align="stretch" spacing={2}>
-                    {message.details.sql_results.map((result, idx) => (
-                      <Box 
-                        key={idx}
-                        p={3}
-                        bg="gray.50"
-                        borderRadius="md"
-                        borderLeft="3px solid"
-                        borderColor="blue.300"
-                      >
-                        <Text fontWeight="medium">{result.metadata?.source || 'SQL Schema'}</Text>
-                        <Code p={2} mt={2} fontSize="sm" overflowX="auto" whiteSpace="pre">
-                          {result.content || 'No SQL content available'}
-                        </Code>
-                      </Box>
-                    ))}
-                  </VStack>
-                </AccordionPanel>
-              </AccordionItem>
-            </Accordion>
-          </Box>
-        )}
-        
-        {/* Show DBT results */}
-        {isArchitectResponse && message.details?.dbt_results?.length > 0 && (
-          <Box mt={3}>
-            <Accordion allowToggle>
-              <AccordionItem>
-                <h2>
-                  <AccordionButton>
-                    <Box flex="1" textAlign="left" fontWeight="medium">
-                      DBT Model Results ({message.details.dbt_results.length})
-                    </Box>
-                    <AccordionIcon />
-                  </AccordionButton>
-                </h2>
-                <AccordionPanel pb={4}>
-                  <VStack align="stretch" spacing={2}>
-                    {message.details.dbt_results.map((result, idx) => (
-                      <Box key={idx} p={4} borderWidth="1px" borderRadius="md">
-                        <Text fontWeight="medium">{result.model_name}</Text>
-                        <Text fontSize="sm" color="gray.500">{result.description}</Text>
-                        {result.dependencies && (
-                          <Box mt={2}>
-                            <Text fontSize="sm" fontWeight="medium">Dependencies:</Text>
-                            <UnorderedList fontSize="sm" ml={4}>
-                              {result.dependencies.map((dep, depIdx) => (
-                                <ListItem key={depIdx}>{dep}</ListItem>
-                              ))}
-                            </UnorderedList>
-                          </Box>
-                        )}
-                        {result.sql && (
-                          <Box mt={2}>
-                            <Text fontSize="sm" fontWeight="medium">SQL:</Text>
-                            <Code display="block" p={2} borderRadius="md" fontSize="sm">
-                              {result.sql}
-                            </Code>
-                          </Box>
-                        )}
-                      </Box>
-                    ))}
-                  </VStack>
-                </AccordionPanel>
-              </AccordionItem>
-            </Accordion>
-          </Box>
-        )}
-      </VStack>
-    </Box>
-  );
-};
-
 // Update the CodeBlock component with improved styling
 const CodeBlock = ({ code, language }) => {
   const [copied, setCopied] = useState(false);
@@ -1378,6 +1300,7 @@ const CodeBlock = ({ code, language }) => {
       bg="#282c34"
       border="1px solid"
       borderColor="gray.700"
+      width="100%"
     >
       <HStack
         bg="#21252b"
@@ -1423,790 +1346,19 @@ const CodeBlock = ({ code, language }) => {
           customStyle={{
             margin: 0,
             padding: '16px',
-            maxHeight: '400px',
+            maxHeight: '500px',
             overflow: 'auto',
             backgroundColor: '#282c34',
             color: '#abb2bf',
             fontSize: '0.9em',
             border: 'none',
-            borderRadius: 0
+            borderRadius: 0,
+            width: '100%'
           }}
         >
           {code}
         </Prism>
       </Box>
-    </Box>
-  );
-};
-
-// Add additional styles to improve readability as a technical document
-const confluenceStyles = {
-  '.confluence-styled-content': {
-    fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-    lineHeight: '1.6',
-    color: '#172B4D',
-    fontSize: '14px',
-  },
-  '.confluence-styled-content h1, .confluence-styled-content h2, .confluence-styled-content h3, .confluence-styled-content h4': {
-    fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-    fontWeight: '600',
-    lineHeight: '1.3',
-    margin: '16px 0 8px 0',
-    color: '#172B4D',
-  },
-  '.confluence-styled-content h1': {
-    fontSize: '20px',
-    borderBottom: '1px solid #DFE1E6',
-    paddingBottom: '8px',
-  },
-  '.confluence-styled-content h2': {
-    fontSize: '18px',
-    borderBottom: '1px solid #DFE1E6',
-    paddingBottom: '6px',
-  },
-  '.confluence-styled-content h3': {
-    fontSize: '16px',
-  },
-  '.confluence-styled-content h4': {
-    fontSize: '14px',
-    fontWeight: '600',
-  },
-  '.confluence-styled-content p': {
-    margin: '8px 0',
-    lineHeight: '1.6',
-  },
-  '.confluence-styled-content ul, .confluence-styled-content ol': {
-    paddingLeft: '24px',
-    margin: '8px 0',
-  },
-  '.confluence-styled-content li': {
-    margin: '4px 0',
-  },
-  '.confluence-styled-content code': {
-    backgroundColor: '#F4F5F7',
-    padding: '2px 4px',
-    borderRadius: '3px',
-    fontSize: '13px',
-    fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace',
-  },
-  '.confluence-styled-content blockquote': {
-    borderLeft: '3px solid #DFE1E6',
-    margin: '16px 0',
-    padding: '0 16px',
-    color: '#5E6C84',
-  },
-  '.confluence-styled-content table': {
-    borderCollapse: 'collapse',
-    width: '100%',
-    margin: '16px 0',
-  },
-  '.confluence-styled-content th, .confluence-styled-content td': {
-    border: '1px solid #DFE1E6',
-    padding: '8px',
-    textAlign: 'left',
-  },
-  '.confluence-styled-content th': {
-    backgroundColor: '#F4F5F7',
-    fontWeight: '600',
-  },
-  '.confluence-styled-content img': {
-    maxWidth: '100%',
-    height: 'auto',
-  },
-  '.confluence-styled-content hr': {
-    border: '0',
-    height: '1px',
-    backgroundColor: '#DFE1E6',
-    margin: '24px 0',
-  },
-  '.confluence-styled-content a': {
-    color: '#0052CC',
-    textDecoration: 'none',
-  },
-  '.confluence-styled-content a:hover': {
-    textDecoration: 'underline',
-  },
-  '.key-value-table': {
-    display: 'table',
-    width: '100%',
-    borderCollapse: 'collapse',
-    marginBottom: '16px',
-  },
-  '.key-value-row': {
-    display: 'table-row',
-  },
-  '.key-cell': {
-    display: 'table-cell',
-    padding: '8px',
-    backgroundColor: '#F4F5F7',
-    fontWeight: '600',
-    border: '1px solid #DFE1E6',
-    width: '30%',
-  },
-  '.value-cell': {
-    display: 'table-cell',
-    padding: '8px',
-    border: '1px solid #DFE1E6',
-  },
-  '.code-panel': {
-    margin: '16px 0',
-    borderRadius: '3px',
-    overflow: 'hidden',
-  },
-  '.code-panel-header': {
-    backgroundColor: '#F4F5F7',
-    padding: '8px 16px',
-    fontWeight: '600',
-    borderBottom: '1px solid #DFE1E6',
-  },
-  '.code-panel-body': {
-    backgroundColor: '#FFFFFF',
-    padding: '16px',
-    overflowX: 'auto',
-  },
-  '.info-panel': {
-    backgroundColor: '#DEEBFF',
-    borderRadius: '3px',
-    padding: '16px',
-    margin: '16px 0',
-    borderLeft: '3px solid #0747A6',
-  },
-  '.note-panel': {
-    backgroundColor: '#EAE6FF',
-    borderRadius: '3px',
-    padding: '16px',
-    margin: '16px 0',
-    borderLeft: '3px solid #5243AA',
-  },
-  '.warning-panel': {
-    backgroundColor: '#FFEBE6',
-    borderRadius: '3px',
-    padding: '16px',
-    margin: '16px 0',
-    borderLeft: '3px solid #DE350B',
-  },
-  '.tip-panel': {
-    backgroundColor: '#E3FCEF',
-    borderRadius: '3px',
-    padding: '16px',
-    margin: '16px 0',
-    borderLeft: '3px solid #00875A',
-  },
-  '.code-content': {
-    backgroundColor: '#282c34',
-    position: 'relative',
-    zIndex: '1',
-    color: '#abb2bf'
-  },
-  '.code-content pre': {
-    margin: 0,
-    backgroundColor: '#282c34',
-    color: '#abb2bf'
-  },
-  '.code-content code': {
-    backgroundColor: 'transparent',
-    color: '#abb2bf'
-  },
-  '.code-content .prism-code': {
-    background: '#282c34 !important',
-    color: '#abb2bf !important'
-  },
-  '.confluence-styled-content strong': {
-    fontWeight: '600',
-    color: '#172B4D',
-  },
-  // Additional schema-specific styling
-  '.schema-section strong': {
-    fontWeight: '600',
-    color: '#0747A6',
-    display: 'inline-block',
-    marginTop: '8px',
-  },
-  // Make code blocks in Prism stand out more
-  '.prism-code': {
-    backgroundColor: '#282c34 !important',
-    color: '#abb2bf !important',
-    border: 'none !important',
-    borderRadius: '4px',
-    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)'
-  },
-  // Style inline backtick code
-  'code:not(.prism-code)': {
-    backgroundColor: '#282c34',
-    color: '#abb2bf',
-    borderRadius: '3px',
-    padding: '2px 4px',
-    fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace',
-    fontSize: '90%'
-  },
-  // Improve table styling
-  'table': {
-    width: '100%',
-    borderCollapse: 'collapse',
-    marginBottom: '16px',
-    fontSize: '14px',
-  },
-  'th': {
-    backgroundColor: '#F4F5F7',
-    fontWeight: '600',
-    padding: '8px 12px',
-    borderBottom: '2px solid #DFE1E6',
-    textAlign: 'left',
-  },
-  'td': {
-    padding: '8px 12px',
-    borderBottom: '1px solid #DFE1E6',
-    verticalAlign: 'top',
-  },
-  // Fix for Prism container 
-  '.react-syntax-highlighter-line-number': {
-    backgroundColor: '#282c34 !important',
-  },
-  '.schema-field': {
-    fontWeight: '600',
-    color: '#0747A6',
-    marginTop: '8px',
-    display: 'inline-block',
-  },
-  '.schema-section': {
-    padding: '0',
-    marginBottom: '8px',
-  },
-  '.confluence-styled-content pre, .confluence-styled-content code': {
-    fontFamily: '"SFMono-Medium", "SF Mono", "Segoe UI Mono", "Roboto Mono", "Ubuntu Mono", Menlo, Consolas, Courier, monospace',
-  },
-  '.confluence-styled-content pre': {
-    backgroundColor: '#1e1e1e',  // Dark background for code blocks
-    color: '#f8f8f2',            // Light text for code blocks
-    padding: '12px 16px',
-    borderRadius: '4px',
-    overflow: 'auto',
-    marginBottom: '16px',
-    fontSize: '13px',
-    lineHeight: '1.4',
-    border: '1px solid #333'
-  },
-  '.confluence-styled-content code': {
-    backgroundColor: '#f4f5f7',
-    color: '#172b4d',
-    padding: '2px 4px',
-    borderRadius: '3px',
-    fontSize: '0.9em',
-  },
-  '.code-block': {
-    fontFamily: '"SFMono-Medium", "SF Mono", "Segoe UI Mono", "Roboto Mono", "Ubuntu Mono", Menlo, Consolas, Courier, monospace',
-    backgroundColor: '#282c34',
-    color: '#abb2bf',
-    borderRadius: '4px',
-    border: '1px solid #3e4451',
-    marginBottom: '16px',
-    overflow: 'hidden'
-  },
-  '.code-header': {
-    backgroundColor: '#21252b',
-    padding: '6px 12px',
-    color: '#abb2bf',
-    borderBottom: '1px solid #3e4451',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    fontSize: '12px'
-  },
-};
-
-// LineageGraph component for visualizing model and column lineage
-const LineageGraph = ({ data }) => {
-  // Default to sample data if none provided
-  const graphData = data || {
-    models: [
-      { id: 'model1', name: 'order_data', path: 'models/staging/order_data.sql', type: 'staging', highlight: true },
-      { id: 'model2', name: 'order_items', path: 'models/intermediate/order_items.sql', type: 'intermediate', highlight: false },
-      { id: 'model3', name: 'financial_summary', path: 'models/marts/financial_summary.sql', type: 'mart', highlight: false },
-      { id: 'model4', name: 'revenue_projection', path: 'models/marts/revenue_projection.sql', type: 'mart', highlight: false }
-    ],
-    columns: [
-      { id: 'col1', modelId: 'model1', name: 'order_id', type: 'primary_key' },
-      { id: 'col2', modelId: 'model1', name: 'customer_id', type: 'foreign_key' },
-      { id: 'col3', modelId: 'model1', name: 'order_date', type: 'regular' },
-      { id: 'col4', modelId: 'model1', name: 'total_amount', type: 'regular' },
-      
-      { id: 'col5', modelId: 'model2', name: 'order_id', type: 'foreign_key', sourceId: 'col1' },
-      { id: 'col6', modelId: 'model2', name: 'item_id', type: 'primary_key' },
-      { id: 'col7', modelId: 'model2', name: 'quantity', type: 'regular' },
-      { id: 'col8', modelId: 'model2', name: 'item_price', type: 'regular' },
-      { id: 'col9', modelId: 'model2', name: 'line_total', type: 'calculated' },
-      
-      { id: 'col10', modelId: 'model3', name: 'order_id', type: 'foreign_key', sourceId: 'col1' },
-      { id: 'col11', modelId: 'model3', name: 'customer_id', type: 'foreign_key', sourceId: 'col2' },
-      { id: 'col12', modelId: 'model3', name: 'total_revenue', type: 'calculated' },
-      { id: 'col13', modelId: 'model3', name: 'item_count', type: 'calculated' },
-      
-      { id: 'col14', modelId: 'model4', name: 'monthly_revenue', type: 'derived', sourceId: 'col12' },
-      { id: 'col15', modelId: 'model4', name: 'forecast_next_month', type: 'calculated' }
-    ],
-    edges: [
-      { source: 'model1', target: 'model2' },
-      { source: 'model1', target: 'model3' },
-      { source: 'model2', target: 'model3' },
-      { source: 'model3', target: 'model4' }
-    ]
-  };
-
-  // Function to determine which models should be expanded initially
-  const getInitialExpandedModels = () => {
-    const result = {};
-    
-    // Find the highlighted model
-    const highlightedModel = graphData.models.find(m => m.highlight);
-    if (highlightedModel) {
-      result[highlightedModel.id] = true;
-      
-      // Get models directly connected to the highlighted model
-      const connectedModels = graphData.edges
-        .filter(e => e.source === highlightedModel.id || e.target === highlightedModel.id)
-        .map(e => e.source === highlightedModel.id ? e.target : e.source);
-        
-      // Expand those models too
-      connectedModels.forEach(modelId => {
-        result[modelId] = true;
-      });
-    } else if (graphData.models.length > 0) {
-      // If no highlight, expand the first model
-      result[graphData.models[0].id] = true;
-    }
-    
-    return result;
-  };
-  
-  // State for tracking expanded models, active edge, and hover state
-  const [expandedModels, setExpandedModels] = useState(getInitialExpandedModels());
-  const [activeEdge, setActiveEdge] = useState(null);
-  const [activeModelId, setActiveModelId] = useState(null);
-  const [activeColumnLink, setActiveColumnLink] = useState(null);
-
-  // Function to toggle model expansion
-  const toggleModelExpand = (modelId) => {
-    setExpandedModels(prev => ({
-      ...prev,
-      [modelId]: !prev[modelId]
-    }));
-  };
-
-  // Function to get the color for a model based on its type
-  const getModelTypeColor = (type) => {
-    switch (type) {
-      case 'staging':
-        return 'blue.500';
-      case 'intermediate':
-        return 'purple.500';
-      case 'mart':
-        return 'green.500';
-      default:
-        return 'gray.500';
-    }
-  };
-  
-  // Function to get the color for a column based on its type
-  const getColumnTypeColor = (type) => {
-    switch (type) {
-      case 'primary_key':
-        return 'yellow.400';
-      case 'foreign_key':
-        return 'orange.400';
-      case 'calculated':
-        return 'teal.400';
-      case 'derived':
-        return 'cyan.400';
-      default:
-        return 'gray.400';
-    }
-  };
-  
-  // Calculate layout positions
-  const layout = useMemo(() => {
-    const result = {};
-    const levels = {};
-    const visited = {};
-    
-    // Function to calculate levels for each model
-    const calculateLevels = (modelId, level = 0) => {
-      if (visited[modelId]) return;
-      visited[modelId] = true;
-      
-      // Update the level if this one is deeper
-      levels[modelId] = Math.max(level, levels[modelId] || 0);
-      
-      // Process outgoing edges
-      graphData.edges
-        .filter(e => e.source === modelId)
-        .forEach(e => calculateLevels(e.target, level + 1));
-    };
-    
-    // Find source models (no incoming edges)
-    const sourceModels = graphData.models
-      .filter(m => !graphData.edges.some(e => e.target === m.id))
-      .map(m => m.id);
-    
-    if (sourceModels.length === 0 && graphData.models.length > 0) {
-      // If no source models, use the highlighted model or first model
-      const startModel = graphData.models.find(m => m.highlight) || graphData.models[0];
-      calculateLevels(startModel.id);
-    } else {
-      // Calculate levels starting from source models
-      sourceModels.forEach(id => calculateLevels(id));
-    }
-    
-    // Handle disconnected components
-    graphData.models.forEach(model => {
-      if (!visited[model.id]) {
-        calculateLevels(model.id);
-      }
-    });
-    
-    // Group models by level
-    const modelsByLevel = {};
-    Object.entries(levels).forEach(([modelId, level]) => {
-      if (!modelsByLevel[level]) modelsByLevel[level] = [];
-      modelsByLevel[level].push(modelId);
-    });
-    
-    // Position models
-    Object.entries(modelsByLevel).forEach(([level, modelIds]) => {
-      const numModels = modelIds.length;
-      modelIds.forEach((modelId, index) => {
-        result[modelId] = { x: level * 300 + 50, y: (index - numModels / 2) * 180 + 250 };
-      });
-    });
-    
-    return result;
-  }, [graphData]);
-  
-  // Render the connections between models
-  const renderEdges = () => {
-    return graphData.edges.map((edge, index) => {
-      const source = layout[edge.source];
-      const target = layout[edge.target];
-      
-      if (!source || !target) return null;
-      
-      const isActive = activeEdge === index;
-      
-      // Calculate path
-      const path = `M ${source.x + 125} ${source.y} C ${source.x + 200} ${source.y}, ${target.x + 50} ${target.y}, ${target.x} ${target.y}`;
-      
-      // Generate a unique animation key
-      const animationKey = `edge-${edge.source}-${edge.target}`;
-      
-      return (
-        <Box 
-          key={index} 
-          position="absolute" 
-          zIndex={1}
-          onMouseEnter={() => setActiveEdge(index)}
-          onMouseLeave={() => setActiveEdge(null)}
-        >
-          <svg width="100%" height="100%" style={{ position: 'absolute', pointerEvents: 'none' }}>
-            <defs>
-              <linearGradient id={`gradient-${index}`} x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor={getModelTypeColor(graphData.models.find(m => m.id === edge.source)?.type)} />
-                <stop offset="100%" stopColor={getModelTypeColor(graphData.models.find(m => m.id === edge.target)?.type)} />
-              </linearGradient>
-              {isActive && (
-                <filter id={`glow-${index}`} x="-20%" y="-20%" width="140%" height="140%">
-                  <feGaussianBlur stdDeviation="6" result="blur" />
-                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
-                </filter>
-              )}
-            </defs>
-            <path 
-              d={path} 
-              fill="none" 
-              stroke={`url(#gradient-${index})`} 
-              strokeWidth={isActive ? 4 : 2} 
-              strokeDasharray={isActive ? "5,5" : "none"}
-              filter={isActive ? `url(#glow-${index})` : "none"}
-              opacity={isActive ? 1 : 0.7}
-            >
-              {isActive && (
-                <animate 
-                  attributeName="stroke-dashoffset" 
-                  values="0;100" 
-                  dur="1.5s" 
-                  repeatCount="indefinite" 
-                />
-              )}
-            </path>
-            <circle 
-              cx={target.x} 
-              cy={target.y} 
-              r={isActive ? 8 : 5} 
-              fill={getModelTypeColor(graphData.models.find(m => m.id === edge.target)?.type)} 
-              opacity={isActive ? 1 : 0.7}
-            >
-              {isActive && (
-                <animate 
-                  attributeName="r" 
-                  values="5;8;5" 
-                  dur="1s" 
-                  repeatCount="indefinite" 
-                />
-              )}
-            </circle>
-          </svg>
-        </Box>
-      );
-    });
-  };
-  
-  // Render column connections
-  const renderColumnEdges = () => {
-    return graphData.columns
-      .filter(col => col.sourceId && expandedModels[col.modelId])
-      .map((col, index) => {
-        const sourceColumn = graphData.columns.find(c => c.id === col.sourceId);
-        if (!sourceColumn || !expandedModels[sourceColumn.modelId]) return null;
-        
-        const sourceModel = graphData.models.find(m => m.id === sourceColumn.modelId);
-        const targetModel = graphData.models.find(m => m.id === col.modelId);
-        
-        if (!sourceModel || !targetModel) return null;
-        
-        const sourcePos = layout[sourceModel.id];
-        const targetPos = layout[targetModel.id];
-        
-        if (!sourcePos || !targetPos) return null;
-        
-        // Find index of column in model's column list to calculate y offset
-        const sourceColumns = graphData.columns.filter(c => c.modelId === sourceModel.id);
-        const targetColumns = graphData.columns.filter(c => c.modelId === col.modelId);
-        
-        const sourceIndex = sourceColumns.findIndex(c => c.id === sourceColumn.id);
-        const targetIndex = targetColumns.findIndex(c => c.id === col.id);
-        
-        const sourceYOffset = 70 + sourceIndex * 30; // 70px header + 30px per column
-        const targetYOffset = 70 + targetIndex * 30;
-        
-        const isActive = activeColumnLink === `${sourceColumn.id}-${col.id}`;
-        
-        // Calculate path from source column to target column
-        const path = `M ${sourcePos.x + 230} ${sourcePos.y + sourceYOffset} 
-                     C ${sourcePos.x + 280} ${sourcePos.y + sourceYOffset}, 
-                       ${targetPos.x - 30} ${targetPos.y + targetYOffset}, 
-                       ${targetPos.x + 20} ${targetPos.y + targetYOffset}`;
-        
-        return (
-          <Box 
-            key={`col-${index}`} 
-            position="absolute" 
-            zIndex={1}
-            onMouseEnter={() => setActiveColumnLink(`${sourceColumn.id}-${col.id}`)}
-            onMouseLeave={() => setActiveColumnLink(null)}
-          >
-            <svg width="100%" height="100%" style={{ position: 'absolute', pointerEvents: 'none' }}>
-              <defs>
-                <linearGradient id={`col-gradient-${index}`} x1="0%" y1="0%" x2="100%" y2="0%">
-                  <stop offset="0%" stopColor={getColumnTypeColor(sourceColumn.type)} />
-                  <stop offset="100%" stopColor={getColumnTypeColor(col.type)} />
-                </linearGradient>
-                {isActive && (
-                  <filter id={`col-glow-${index}`} x="-20%" y="-20%" width="140%" height="140%">
-                    <feGaussianBlur stdDeviation="4" result="blur" />
-                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
-                  </filter>
-                )}
-              </defs>
-              <path 
-                d={path} 
-                fill="none" 
-                stroke={`url(#col-gradient-${index})`} 
-                strokeWidth={isActive ? 3 : 1.5} 
-                strokeDasharray={isActive ? "3,3" : "none"}
-                filter={isActive ? `url(#col-glow-${index})` : "none"}
-                opacity={isActive ? 1 : 0.6}
-              >
-                {isActive && (
-                  <animate 
-                    attributeName="stroke-dashoffset" 
-                    values="0;30" 
-                    dur="1s" 
-                    repeatCount="indefinite" 
-                  />
-                )}
-              </path>
-              <circle 
-                cx={targetPos.x + 20} 
-                cy={targetPos.y + targetYOffset} 
-                r={isActive ? 6 : 4} 
-                fill={getColumnTypeColor(col.type)} 
-                opacity={isActive ? 1 : 0.8}
-              >
-                {isActive && (
-                  <animate 
-                    attributeName="r" 
-                    values="4;6;4" 
-                    dur="1s" 
-                    repeatCount="indefinite" 
-                  />
-                )}
-              </circle>
-            </svg>
-          </Box>
-        );
-      });
-  };
-  
-  // Render the models
-  const renderModels = () => {
-    return graphData.models.map(model => {
-      const pos = layout[model.id];
-      if (!pos) return null;
-      
-      const modelColumns = graphData.columns.filter(c => c.modelId === model.id);
-      const isExpanded = !!expandedModels[model.id];
-      const isActive = activeModelId === model.id;
-      
-      // Calculate height based on expansion state and number of columns
-      const height = isExpanded ? 80 + modelColumns.length * 30 : 80;
-      
-      return (
-        <Box
-          key={model.id}
-          position="absolute"
-          left={`${pos.x}px`}
-          top={`${pos.y}px`}
-          width="250px"
-          height={`${height}px`}
-          bg={model.highlight ? "gray.700" : "gray.800"}
-          borderColor={isActive || model.highlight ? getModelTypeColor(model.type) : "gray.700"}
-          borderWidth="2px"
-          borderRadius="md"
-          boxShadow={isActive || model.highlight ? `0 0 10px ${getModelTypeColor(model.type)}` : "md"}
-          transition="all 0.3s ease, height 0.3s ease, box-shadow 0.3s ease"
-          _hover={{ boxShadow: `0 0 15px ${getModelTypeColor(model.type)}` }}
-          onMouseEnter={() => setActiveModelId(model.id)}
-          onMouseLeave={() => setActiveModelId(null)}
-          overflow="hidden"
-        >
-          <HStack p={2} bg={`${getModelTypeColor(model.type)}22`} justifyContent="space-between">
-            <HStack>
-              <Box w="10px" h="10px" borderRadius="full" bg={getModelTypeColor(model.type)} />
-              <Text fontWeight="bold" isTruncated maxW="150px">{model.name}</Text>
-            </HStack>
-            <HStack spacing={2}>
-              <Tag size="sm" colorScheme={model.type === 'staging' ? 'blue' : model.type === 'intermediate' ? 'purple' : 'green'}>
-                {model.type}
-              </Tag>
-              <IconButton 
-                aria-label={isExpanded ? "Collapse" : "Expand"}
-                icon={isExpanded ? <IoChevronUp /> : <IoChevronDown />}
-                size="xs"
-                variant="ghost"
-                onClick={() => toggleModelExpand(model.id)}
-              />
-            </HStack>
-          </HStack>
-          <Text fontSize="xs" color="gray.400" px={3} pt={1} isTruncated>
-            {model.path}
-          </Text>
-          
-          {isExpanded && (
-            <VStack align="start" p={2} spacing={1} mt={1}>
-              {modelColumns.map(column => (
-                <HStack key={column.id} w="100%" spacing={2}>
-                  <Box w="8px" h="8px" borderRadius="full" bg={getColumnTypeColor(column.type)} mt="2px" />
-                  <Text fontSize="sm" isTruncated maxW="150px">{column.name}</Text>
-                  <Tag size="sm" ml="auto" colorScheme={
-                    column.type === 'primary_key' ? 'yellow' : 
-                    column.type === 'foreign_key' ? 'orange' : 
-                    column.type === 'calculated' ? 'teal' : 
-                    column.type === 'derived' ? 'cyan' : 'gray'
-                  }>
-                    <TagLabel fontSize="xs">{column.type.replace('_', ' ')}</TagLabel>
-                  </Tag>
-                </HStack>
-              ))}
-            </VStack>
-          )}
-        </Box>
-      );
-    });
-  };
-  
-  // Render a legend for the visualization
-  const renderLegend = () => {
-    return (
-      <Box 
-        position="absolute" 
-        top="20px" 
-        right="20px" 
-        bg="gray.800" 
-        p={3} 
-        borderRadius="md" 
-        boxShadow="md"
-        maxW="220px"
-      >
-        <Text fontWeight="bold" mb={2}>Legend</Text>
-        
-        <Text fontSize="sm" fontWeight="medium" mb={1}>Model Types</Text>
-        <HStack mb={2}>
-          <Box w="10px" h="10px" borderRadius="full" bg="blue.500" />
-          <Text fontSize="xs">Staging</Text>
-          <Box w="10px" h="10px" borderRadius="full" bg="purple.500" ml={2} />
-          <Text fontSize="xs">Intermediate</Text>
-          <Box w="10px" h="10px" borderRadius="full" bg="green.500" ml={2} />
-          <Text fontSize="xs">Mart</Text>
-        </HStack>
-        
-        <Text fontSize="sm" fontWeight="medium" mb={1}>Column Types</Text>
-        <HStack mb={1}>
-          <Box w="10px" h="10px" borderRadius="full" bg="yellow.400" />
-          <Text fontSize="xs">Primary Key</Text>
-          <Box w="10px" h="10px" borderRadius="full" bg="orange.400" ml={2} />
-          <Text fontSize="xs">Foreign Key</Text>
-        </HStack>
-        <HStack>
-          <Box w="10px" h="10px" borderRadius="full" bg="teal.400" />
-          <Text fontSize="xs">Calculated</Text>
-          <Box w="10px" h="10px" borderRadius="full" bg="cyan.400" ml={2} />
-          <Text fontSize="xs">Derived</Text>
-          <Box w="10px" h="10px" borderRadius="full" bg="gray.400" ml={2} />
-          <Text fontSize="xs">Regular</Text>
-        </HStack>
-      </Box>
-    );
-  };
-  
-  return (
-    <Box
-      width="100%"
-      height="600px"
-      position="relative"
-      bg="gray.900"
-      borderRadius="md"
-      overflow="hidden"
-      mt={4}
-      mb={4}
-    >
-      {/* Render background grid */}
-      <Box 
-        position="absolute" 
-        top="0" 
-        left="0" 
-        right="0" 
-        bottom="0"
-        backgroundImage="linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px)"
-        backgroundSize="20px 20px"
-        opacity="0.5"
-      />
-      
-      {renderEdges()}
-      {renderColumnEdges()}
-      {renderModels()}
-      {renderLegend()}
-      
-      <Text position="absolute" bottom="10px" right="10px" fontSize="xs" color="gray.500">
-        Interactive Data Lineage Visualization
-      </Text>
     </Box>
   );
 };
@@ -2485,74 +1637,6 @@ const parseLineageData = (text) => {
           }
         }
       }
-      
-      // Look for column definitions when showing detailed model info
-      if (line.includes('[') && line.includes(']')) {
-        // Find the current model context
-        let modelContext = null;
-        
-        // Look back a few lines to find the model context
-        for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
-          const contextLine = lines[j].trim();
-          const contextModel = data.models.find(model => 
-            contextLine.includes(model.path) || 
-            contextLine.includes(`└── ${model.name}`) ||
-            contextLine.includes(`── ${model.name}`));
-          
-          if (contextModel) {
-            modelContext = contextModel;
-            break;
-          }
-        }
-        
-        if (modelContext) {
-          // Extract column info
-          const columnMatch = line.match(/\[([^\]]+)\]\s*\(([^)]+)\)/);
-          if (columnMatch) {
-            const columnName = columnMatch[1].trim();
-            const columnDesc = columnMatch[2].trim();
-            
-            // Determine column type based on description
-            let columnType = 'regular';
-            
-            if (columnDesc.toLowerCase().includes('primary key')) {
-              columnType = 'primary_key';
-            } else if (columnDesc.toLowerCase().includes('foreign key')) {
-              columnType = 'foreign_key';
-            } else if (columnDesc.toLowerCase().includes('calculated') || 
-                      columnDesc.toLowerCase().includes('derived')) {
-              columnType = 'calculated';
-            }
-            
-            // Add column
-            const columnId = `col${++columnCount}`;
-            data.columns.push({
-              id: columnId,
-              modelId: modelContext.id,
-              name: columnName,
-              type: columnType
-            });
-            
-            // Check for reference to other columns
-            for (const model of data.models) {
-              if (columnDesc.includes(model.name)) {
-                // This column might reference a column in another model
-                const modelColumns = data.columns.filter(c => c.modelId === model.id);
-                for (const sourceColumn of modelColumns) {
-                  if (columnDesc.includes(sourceColumn.name)) {
-                    // Found a reference
-                    const currentColumn = data.columns.find(c => c.id === columnId);
-                    if (currentColumn) {
-                      currentColumn.sourceId = sourceColumn.id;
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
     }
     
     // If we have models but no edges, try to infer them from the model types
@@ -2616,820 +1700,443 @@ const parseLineageData = (text) => {
   }
 };
 
-// Replace the existing CodeDiffDisplay component with this enhanced version
-const CodeDiffDisplay = ({ originalCode, enhancedCode, filePath, language = 'sql' }) => {
-  const [diffView, setDiffView] = useState('result'); // Changed default to 'result'
-  const [copySuccess, setCopySuccess] = useState('');
-  const [error, setError] = useState(null);
-  
-  // Add safety check for required props
-  if (!enhancedCode) {
-    return (
-      <Box p={4} bg="gray.50" borderRadius="md">
-        <Text>No code available to display</Text>
-      </Box>
-    );
-  }
-  
-  try {
-    // Function to copy code to clipboard
-    const copyToClipboard = (code) => {
-      try {
-        navigator.clipboard.writeText(code)
-          .then(() => {
-            setCopySuccess('Copied!');
-            setTimeout(() => setCopySuccess(''), 2000);
-          })
-          .catch(err => {
-            console.error('Failed to copy: ', err);
-            setCopySuccess('Failed to copy');
-          });
-      } catch (err) {
-        console.error('Error in copyToClipboard:', err);
-        setCopySuccess('Failed to copy');
-      }
-    };
-    
-    // Simplified highlightDifferences function - we don't need the complex diff now
-    const highlightDifferences = (oldCode, newCode) => {
-      try {
-        // Just return the lines for rendering, no diff highlighting
-        return newCode.split('\n').map((line, i) => ({
-          lineNumber: i + 1,
-          newLine: line
-        }));
-      } catch (err) {
-        console.error('Error in highlightDifferences:', err);
-        return [];
-      }
-    };
-    
-    // Generate the lines for rendering with safety check
-    const resultLines = enhancedCode ? enhancedCode.split('\n').map((line, i) => ({
-      lineNumber: i + 1,
-      content: line
-    })) : [];
-    
-    // Render the simplified view with just the final code
-    const renderResultView = () => {
-      try {
-        return (
-          <Box width="100%" borderRadius="md" overflow="hidden" border="1px solid" borderColor="gray.300" boxShadow="md">
-            {/* File header with path */}
-            <Box p={2} bg="gray.700" color="white">
-              <HStack justify="space-between">
-                <Text fontWeight="medium" fontSize="sm" isTruncated>
-                  {filePath || 'Enhanced SQL Code'}
-                </Text>
-                <HStack>
-                  <Badge colorScheme={copySuccess ? "green" : "blue"}>
-                    {copySuccess || language || 'sql'}
-                  </Badge>
-                  <IconButton
-                    icon={<IoCopy />}
-                    size="xs"
-                    colorScheme="gray"
-                    variant="ghost"
-                    onClick={() => copyToClipboard(enhancedCode)}
-                    aria-label="Copy code"
-                  />
-                </HStack>
-              </HStack>
-            </Box>
-            
-            {/* Code content */}
-            <Box
-              bg="#1e1e1e"
-              color="white"
-              fontFamily="monospace"
-              fontSize="sm"
-              lineHeight="1.5"
-              p={2}
-              overflowX="auto"
-              maxHeight="500px"
-              overflowY="auto"
-              css={{
-                '&::-webkit-scrollbar': {
-                  width: '8px',
-                  height: '8px',
-                },
-                '&::-webkit-scrollbar-track': {
-                  background: '#2d2d2d',
-                },
-                '&::-webkit-scrollbar-thumb': {
-                  background: '#555',
-                  borderRadius: '4px',
-                },
-                '&::-webkit-scrollbar-thumb:hover': {
-                  background: '#666',
-                },
-              }}
-            >
-              {resultLines.length > 0 ? (
-                <Box display="flex" flexDirection="column">
-                  {resultLines.map((line, idx) => (
-                    <Box key={idx} display="flex" _hover={{ bg: 'rgba(255, 255, 255, 0.05)' }}>
-                      {/* Line numbers */}
-                      <Box
-                        color="gray.500"
-                        width="40px"
-                        flexShrink={0}
-                        textAlign="right"
-                        pr={2}
-                        userSelect="none"
-                        borderRight="1px solid"
-                        borderColor="gray.700"
-                      >
-                        {line.lineNumber}
-                      </Box>
-                      
-                      {/* Code content */}
-                      <Box pl={4} width="100%" whiteSpace="pre">
-                        {line.content}
-                      </Box>
-                    </Box>
-                  ))}
-                </Box>
-              ) : (
-                <Box p={4}>
-                  <Text color="gray.400">No code content to display</Text>
-                </Box>
-              )}
-            </Box>
-          </Box>
-        );
-      } catch (err) {
-        console.error('Error in renderResultView:', err);
-        setError(err.message);
-        return (
-          <Box p={4} bg="red.50" borderRadius="md">
-            <Text color="red.500">Error rendering code view: {err.message}</Text>
-          </Box>
-        );
-      }
-    };
-    
-    // Simplified split view for comparison
-    const renderSplitView = () => {
-      try {
-        if (!originalCode) {
-          return (
-            <Box p={4} bg="orange.50" borderRadius="md">
-              <Text>Original code is not available for comparison.</Text>
-            </Box>
-          );
-        }
-        
-        return (
-          <Box width="100%" borderRadius="md" overflow="hidden" border="1px solid" borderColor="gray.300" boxShadow="md">
-            {/* File header with path */}
-            <Box p={2} bg="gray.700" color="white">
-              <HStack justify="space-between">
-                <Text fontWeight="medium" fontSize="sm" isTruncated>
-                  {filePath || 'SQL Code Comparison'}
-                </Text>
-                <HStack spacing={2}>
-                  <Badge colorScheme="blue">
-                    {language || 'sql'}
-                  </Badge>
-                  <IconButton
-                    icon={<IoCopy />}
-                    size="xs"
-                    colorScheme="gray"
-                    variant="ghost"
-                    onClick={() => copyToClipboard(enhancedCode)}
-                    aria-label="Copy enhanced code"
-                  />
-                </HStack>
-              </HStack>
-            </Box>
-            
-            {/* Code content in a simpler format */}
-            <SimpleGrid columns={2} spacing={0}>
-              <Box p={2} bg="#1e1e1e" borderRight="1px solid" borderColor="gray.700">
-                <Box p={1} bg="gray.800" mb={2}>
-                  <Text fontSize="sm" color="white">Original Code</Text>
-                </Box>
-                <Box
-                  bg="#1e1e1e"
-                  color="white"
-                  fontFamily="monospace"
-                  fontSize="sm"
-                  lineHeight="1.5"
-                  overflowX="auto"
-                  height="400px"
-                  overflowY="auto"
-                  p={2}
-                  css={{
-                    '&::-webkit-scrollbar': { width: '8px', height: '8px' },
-                    '&::-webkit-scrollbar-track': { background: '#2d2d2d' },
-                    '&::-webkit-scrollbar-thumb': { background: '#555', borderRadius: '4px' },
-                  }}
-                >
-                  <Text whiteSpace="pre-wrap">{originalCode}</Text>
-                </Box>
-              </Box>
-              
-              <Box p={2} bg="#1e1e1e">
-                <Box p={1} bg="gray.800" mb={2}>
-                  <Text fontSize="sm" color="white">Enhanced Code</Text>
-                </Box>
-                <Box
-                  bg="#1e1e1e"
-                  color="white"
-                  fontFamily="monospace"
-                  fontSize="sm"
-                  lineHeight="1.5"
-                  overflowX="auto"
-                  height="400px"
-                  overflowY="auto"
-                  p={2}
-                  css={{
-                    '&::-webkit-scrollbar': { width: '8px', height: '8px' },
-                    '&::-webkit-scrollbar-track': { background: '#2d2d2d' },
-                    '&::-webkit-scrollbar-thumb': { background: '#555', borderRadius: '4px' },
-                  }}
-                >
-                  <Text whiteSpace="pre-wrap">{enhancedCode}</Text>
-                </Box>
-              </Box>
-            </SimpleGrid>
-          </Box>
-        );
-      } catch (err) {
-        console.error('Error in renderSplitView:', err);
-        setError(err.message);
-        return (
-          <Box p={4} bg="red.50" borderRadius="md">
-            <Text color="red.500">Error rendering comparison view: {err.message}</Text>
-          </Box>
-        );
-      }
-    };
-    
-    // The render logic
-    return (
-      <Box>
-        {error ? (
-          <Box p={4} bg="red.50" borderRadius="md" mb={4}>
-            <Text color="red.500">{error}</Text>
-            <Button mt={2} size="sm" onClick={() => setError(null)}>Try Again</Button>
-          </Box>
-        ) : null}
-        
-        {diffView === 'result' ? renderResultView() : renderSplitView()}
-        
-        <HStack mt={2} justifyContent="flex-end">
-          <Button 
-            size="sm" 
-            leftIcon={<Icon as={IoCodeSlashOutline} />}
-            colorScheme={diffView === 'result' ? 'blue' : 'gray'}
-            variant={diffView === 'result' ? 'solid' : 'outline'}
-            onClick={() => setDiffView('result')}
-          >
-            Result
-          </Button>
-          <Button 
-            size="sm" 
-            leftIcon={<Icon as={IoGitCompareOutline} />}
-            colorScheme={diffView === 'split' ? 'blue' : 'gray'}
-            variant={diffView === 'split' ? 'solid' : 'outline'}
-            onClick={() => setDiffView('split')}
-            isDisabled={!originalCode}
-          >
-            Compare
-          </Button>
-        </HStack>
-      </Box>
-    );
-  } catch (err) {
-    console.error('Error in CodeDiffDisplay:', err);
-    return (
-      <Box p={4} bg="red.50" borderRadius="md">
-        <Heading size="md" mb={2}>Error Displaying Code</Heading>
-        <Text mb={3}>We encountered an error while trying to display the code.</Text>
-        <CodeBlock code={enhancedCode} language={language} />
-      </Box>
-    );
-  }
+// Update the renderArchitectResponse function to process content properly
+const renderArchitectResponse = (content, sections) => {
+  // Process the content normally without adding lineage visualization
+  return renderContent(content);
 };
 
-// Component to display code enhancement responses
-const CodeEnhancementDisplay = ({ content }) => {
-  const [error, setError] = useState(null);
+// Function to render content with markdown
+const renderContent = (content) => {
+  if (!content) return null;
   
-  // Wrap extraction in try-catch to prevent white screens
-  try {
-    console.log("CodeEnhancementDisplay received content:", content ? `${content.substring(0, 100)}...` : "null");
-    
-    // Extract the JSON visualization data if present
-    const extractVisualizationData = () => {
-      try {
-        const vizMatch = content.match(/# CODE_ENHANCEMENT_VISUALIZATION\s*```json\s*([\s\S]*?)\s*```/);
-        if (vizMatch && vizMatch[1]) {
-          try {
-            const data = JSON.parse(vizMatch[1]);
-            console.log("Successfully extracted visualization data:", data);
-            return data;
-          } catch (e) {
-            console.error("Error parsing visualization data:", e);
-          }
-        }
-        return null;
-      } catch (err) {
-        console.error("Error in extractVisualizationData:", err);
-        return null;
-      }
-    };
-    
-    // Extract code blocks from the content using multiple patterns
-    const extractCodeBlocks = () => {
-      try {
-        const blocks = {};
-        
-        // Try multiple patterns for extracting the original code
-        const originalCodePatterns = [
-          // Pattern 1: Look for "Before (Original Code)" section
-          /## Before[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
-          // Pattern 2: Look for "CURRENT CODE" section
-          /# CURRENT CODE[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
-          // Pattern 3: Look for "Original Code" section
-          /Original Code[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
-          // Pattern 4: Look for "old_code" or "original_code" in JSON
-          /"old_code"|"original_code"\s*:\s*"([\s\S]*?)"/,
-          // Pattern 5: Look for first SQL block in the content
-          /```sql\s*([\s\S]*?)\s*```/
-        ];
-        
-        // Try multiple patterns for extracting the enhanced code
-        const enhancedCodePatterns = [
-          // Pattern 1: Look for "After (Enhanced Code)" section
-          /## After[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
-          // Pattern 2: Look for "Enhancement" or "Implementation" section
-          /(?:## Enhancement|## Implementation)[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
-          // Pattern 3: Look for "Enhanced Code" section
-          /Enhanced Code[\s\S]*?```sql\s*([\s\S]*?)\s*```/,
-          // Pattern 4: Look for any SQL block
-          /```sql\s*([\s\S]*?)\s*```/
-        ];
-        
-        // Try each pattern for original code
-        for (const pattern of originalCodePatterns) {
-          const match = content.match(pattern);
-          if (match && match[1]) {
-            blocks.originalCode = match[1];
-            break;
-          }
-        }
-        
-        // Try each pattern for enhanced code
-        for (const pattern of enhancedCodePatterns) {
-          const match = content.match(pattern);
-          if (match && match[1]) {
-            blocks.enhancedCode = match[1];
-            break;
-          }
-        }
-        
-        // If still no enhanced code found, look for any code block
-        if (!blocks.enhancedCode) {
-          const allCodeBlocks = content.match(/```(?:sql|[\w]*)?(?:\n|\r\n)([\s\S]*?)```/g);
-          if (allCodeBlocks && allCodeBlocks.length > 0) {
-            // Use the last code block as enhanced
-            const lastMatch = allCodeBlocks[allCodeBlocks.length - 1].match(/```(?:sql|[\w]*)?(?:\n|\r\n)([\s\S]*?)```/);
-            if (lastMatch && lastMatch[1]) {
-              blocks.enhancedCode = lastMatch[1].trim();
-            }
-          }
-        }
-        
-        console.log("Extracted code blocks:", { 
-          originalFound: !!blocks.originalCode, 
-          enhancedFound: !!blocks.enhancedCode
+  // Check if content is specifically a code enhancement response (has Before/After sections)
+  const isCodeEnhancement = 
+    content.includes('## Before (Original Code)') && 
+    content.includes('## After (Enhanced Code)');
+  
+  if (isCodeEnhancement) {
+    // For code enhancement, use the FormattedMessage component to properly render the markdown
+    return <FormattedMessage content={content} />;
+  }
+  
+  // First check for code blocks - improved pattern to handle code blocks with no language specified
+  const codeBlockRegex = /```([\w]*)(?:\n|\r\n|\r)([\s\S]*?)```/g;
+  let match;
+  let lastIndex = 0;
+  const parts = [];
+  
+  // Extract code blocks
+  while ((match = codeBlockRegex.exec(content)) !== null) {
+    // Add text before code block
+    if (match.index > lastIndex) {
+      const textPart = content.substring(lastIndex, match.index);
+      if (textPart.trim()) {
+        parts.push({
+          type: 'text',
+          content: textPart
         });
-        
-        return blocks;
-      } catch (err) {
-        console.error("Error in extractCodeBlocks:", err);
-        return { originalCode: '', enhancedCode: '' };
       }
-    };
-    
-    // Extract visualization data
-    const vizData = extractVisualizationData();
-    
-    // Extract code blocks if no visualization data
-    const codeBlocks = extractCodeBlocks();
-    
-    // Determine what to display
-    const originalCode = vizData?.original_code || codeBlocks.originalCode || '';
-    const enhancedCode = vizData?.enhanced_code || codeBlocks.enhancedCode || '';
-    const filePath = vizData?.file_path || '';
-    
-    // Return markdown content if we don't have enough data
-    if (!enhancedCode) {
-      console.log("No enhanced code found, falling back to markdown rendering");
-      return <MarkdownContent content={content} />;
     }
     
-    // Extract summary and key changes from the content
-    const extractTextSection = (sectionName) => {
-      try {
-        const sectionRegex = new RegExp(`## ${sectionName}([\\s\\S]*?)(?=##|$)`, 'i');
-        const match = content.match(sectionRegex);
-        return match ? match[1].trim() : '';
-      } catch (err) {
-        console.error(`Error extracting section ${sectionName}:`, err);
-        return '';
-      }
-    };
+    // Add code block - handle language properly
+    const language = match[1]?.trim() || 'text';
+    const code = match[2];
+    parts.push({
+      type: 'code',
+      language,
+      content: code
+    });
     
-    const summary = extractTextSection('Summary') || extractTextSection('Enhancement Summary');
-    
+    lastIndex = match.index + match[0].length;
+  }
+  
+  // Add remaining text
+  if (lastIndex < content.length) {
+    const textPart = content.substring(lastIndex);
+    if (textPart.trim()) {
+      parts.push({
+        type: 'text',
+        content: textPart
+      });
+    }
+  }
+  
+  // If we have parts, render them separately
+  if (parts.length > 0) {
     return (
-      <Box>
-        {summary && (
-          <Box mb={4} p={4} bg="blue.50" borderRadius="md">
-            <Heading size="md" mb={2} color="blue.700">Enhancement Summary</Heading>
-            <MarkdownContent content={summary} />
-          </Box>
-        )}
-        
-        <CodeDiffDisplay 
-          originalCode={originalCode} 
-          enhancedCode={enhancedCode} 
-          filePath={filePath} 
-        />
-      </Box>
-    );
-  } catch (err) {
-    // If anything goes wrong, log and show error but don't break the UI
-    console.error("Error rendering CodeEnhancementDisplay:", err);
-    setError(err.message);
-    
-    // Fallback rendering
-    return (
-      <Box>
-        {error && (
-          <Box mb={4} p={4} bg="red.50" borderRadius="md">
-            <Heading size="md" mb={2} color="red.700">Error Rendering Enhanced Code</Heading>
-            <Text>{error}</Text>
-            <Button mt={3} size="sm" colorScheme="blue" onClick={() => window.location.reload()}>
-              Refresh Page
-            </Button>
-          </Box>
-        )}
-        <MarkdownContent content={content} />
-      </Box>
+      <VStack align="start" spacing={3} width="100%">
+        {parts.map((part, index) => {
+          if (part.type === 'code') {
+            return <CodeBlock key={index} code={part.content} language={part.language} />;
+          } else {
+            return <FormattedMessage key={index} content={part.content} />;
+          }
+        })}
+      </VStack>
     );
   }
+  
+  // Default to just ReactMarkdown if no code blocks
+  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
 };
 
-// Component to display development model responses
-const DevelopmentModelDisplay = ({ content }) => {
-  // Extract the JSON visualization data if present
-  const extractVisualizationData = () => {
-    const vizMatch = content.match(/# DEVELOPMENT_VISUALIZATION\s*```json\s*([\s\S]*?)\s*```/);
-    if (vizMatch && vizMatch[1]) {
-      try {
-        return JSON.parse(vizMatch[1]);
-      } catch (e) {
-        console.error("Error parsing development visualization data:", e);
-      }
-    }
-    return null;
-  };
+// Create a separate message component to handle individual message state
+const MessageComponent = React.memo(({ message }) => {
+  const [showLineage, setShowLineage] = useState(false);
+  const [showRawJson, setShowRawJson] = useState(false);
   
-  // Extract code block from the content
-  const extractModelCode = () => {
-    const codeMatch = content.match(/```sql\s*([\s\S]*?)\s*```/);
-    return codeMatch ? codeMatch[1] : '';
-  };
-  
-  // Extract a specific section by name
-  const extractSection = (sectionName) => {
-    const sectionRegex = new RegExp(`## ${sectionName}([\\s\\S]*?)(?=##|$)`, 'i');
-    const match = content.match(sectionRegex);
-    return match ? match[1].trim() : '';
-  };
-  
-  // Extract visualization data
-  const vizData = extractVisualizationData();
-  
-  // Extract model code and sections
-  const modelCode = vizData?.model_code || extractModelCode();
-  const overview = extractSection('Overview');
-  const schema = extractSection('Schema') || extractSection('Schema/Fields');
-  const usage = extractSection('Usage');
-  const tests = extractSection('Tests');
-  
-  // If no code found, just render the content normally
-  if (!modelCode) {
-    return <MarkdownContent content={content} />;
-  }
-  
-  // Function to get DBT model type
-  const getModelType = () => {
-    const modelType = vizData?.model_type || 'table';
-    let typeDisplay = 'Table';
-    let typeColor = 'green';
-    
-    if (modelCode.includes('incremental')) {
-      typeDisplay = 'Incremental';
-      typeColor = 'purple';
-    } else if (modelCode.includes('ephemeral')) {
-      typeDisplay = 'Ephemeral';
-      typeColor = 'gray';
-    } else if (modelCode.includes('materialized') && modelCode.includes('view')) {
-      typeDisplay = 'View';
-      typeColor = 'blue';
-    }
-    
-    return { display: typeDisplay, color: typeColor };
-  };
-  
-  const modelType = getModelType();
+  const isUser = message.role === 'user';
+  const isArchitectResponse = message.role === 'assistant' && message.type === 'architect';
+  const isCodeEnhancement = isArchitectResponse && 
+    message.details?.question_type === 'CODE_ENHANCEMENT' && 
+    message.content.includes('## Before (Original Code)') && 
+    message.content.includes('## After (Enhanced Code)');
   
   return (
-    <Box>
-      {/* Header with model overview */}
       <Box 
-        borderWidth="1px" 
+      bg={isUser ? 'blue.50' : isArchitectResponse ? 'purple.50' : 'white'}
+      p={4}
         borderRadius="md" 
-        mb={6} 
-        overflow="hidden" 
-        boxShadow="md"
-      >
-        <Box 
-          bg="purple.700" 
-          color="white" 
-          p={4}
-          borderTopRadius="md"
-        >
-          <HStack justifyContent="space-between">
-            <VStack align="start" spacing={1}>
-              <Heading size="md">New DBT Model Development</Heading>
+      maxWidth={isUser ? '80%' : '95%'}
+      alignSelf={isUser ? 'flex-end' : 'flex-start'}
+      boxShadow="sm"
+      mb={4}
+      border="1px solid"
+      borderColor={isUser ? 'blue.100' : isArchitectResponse ? 'purple.100' : 'gray.200'}
+      width={isUser ? 'auto' : '95%'}
+    >
+      <VStack align="stretch" spacing={3}>
               <HStack>
-                <Badge colorScheme={modelType.color} px={2} py={1}>
-                  {modelType.display}
+          <Avatar 
+            size="sm" 
+            bg={isUser ? 'blue.500' : isArchitectResponse ? 'purple.500' : 'green.500'} 
+            name={isUser ? 'You' : isArchitectResponse ? 'Data Architect' : 'Assistant'} 
+          />
+          <Text fontWeight="bold" color={
+            isUser ? 'blue.700' : 
+            isArchitectResponse ? 'purple.700' : 
+            'green.700'
+          }>
+            {isUser ? 'You' : isArchitectResponse ? 'Data Architect' : 'Assistant'}
+          </Text>
+          
+          {isArchitectResponse && message.details?.processing_time && (
+            <Badge colorScheme="purple" ml={2}>
+              {message.details.processing_time.toFixed(1)}s
                 </Badge>
-                {modelCode.includes('ref(') && (
-                  <Badge colorScheme="blue" px={2} py={1}>
-                    Has Dependencies
-                  </Badge>
-                )}
+          )}
+          
+          {isArchitectResponse && message.details?.question_type && (
+            <Badge colorScheme={message.details.question_type === 'CODE_ENHANCEMENT' ? 'orange' : 'blue'} ml={2}>
+              {message.details.question_type}
+            </Badge>
+          )}
               </HStack>
-            </VStack>
-            <IconButton
-              icon={<IoCopy />}
-              aria-label="Copy code"
-              colorScheme="purple"
-              variant="outline"
-              onClick={() => {
-                navigator.clipboard.writeText(modelCode);
-              }}
-            />
-          </HStack>
-        </Box>
         
-        {/* Overview section */}
-        {overview && (
-          <Box p={4} bg="white">
-            <Text fontWeight="bold" fontSize="sm" color="gray.500" mb={2}>MODEL OVERVIEW</Text>
-            <MarkdownContent content={overview} />
-          </Box>
+        <Box flex="1" className={`confluence-styled-content ${!isUser ? 'code-styled-content' : ''}`}>
+          {isUser ? (
+            <Text>{message.content}</Text>
+          ) : (
+            <FormattedMessage content={message.content} />
         )}
       </Box>
       
-      {/* Main content: Code and related sections */}
-      <SimpleGrid columns={{ base: 1, md: 12 }} spacing={6} mb={6}>
-        {/* Code implementation (wider column) */}
-        <Box 
-          colSpan={{ base: 1, md: 8 }} 
+        {/* Lineage visualization if available */}
+        {message.hasLineage && message.lineageData && (
+          <ErrorBoundary>
+            <Box 
+              mt={4} 
+              p={4} 
           borderWidth="1px" 
+              borderColor="purple.200" 
           borderRadius="md" 
-          overflow="hidden" 
-          boxShadow="md"
-          gridColumn={{ base: "span 1", md: "span 8" }}
-        >
-          <Box
-            bg="#2d2d2d"
-            color="white"
-            p={2}
-            borderBottom="1px solid"
-            borderColor="gray.600"
-          >
-            <HStack justify="space-between">
-              <Text fontWeight="bold">SQL Implementation</Text>
-              <HStack>
-                <Badge colorScheme="green">model.sql</Badge>
-                <IconButton
-                  icon={<IoCopy />}
-                  size="xs"
-                  variant="ghost"
-                  colorScheme="blue"
-                  aria-label="Copy code"
-                  onClick={() => {
-                    navigator.clipboard.writeText(modelCode);
-                  }}
-                />
-              </HStack>
-            </HStack>
+              bg="white"
+              width="100%"
+            >
+              <Text fontWeight="bold" mb={3} fontSize="lg">Data Lineage Visualization</Text>
+              <Box height="500px">
+                <LineageGraph data={message.lineageData} />
           </Box>
-          
-          {/* Code editor with line numbers */}
-          <Box position="relative" bg="#1e1e1e" width="100%">
-            <HStack align="stretch" spacing={0}>
-              {/* Line numbers */}
-              <Box 
-                bg="#252525" 
-                color="gray.500" 
-                py={2} 
-                width="50px" 
-                textAlign="right" 
-                pr={2} 
-                fontFamily="monospace" 
-                fontSize="sm"
-                borderRight="1px solid"
-                borderColor="gray.700"
-                flexShrink={0}
-              >
-                {modelCode.split('\n').map((_, idx) => (
-                  <Box key={idx} lineHeight="1.5">
-                    {idx + 1}
                   </Box>
-                ))}
-              </Box>
-              
-              {/* Code content */}
+          </ErrorBoundary>
+        )}
+        
+        {/* Collapsible JSON Data - Hidden by default */}
+        {message.hasLineage && message.lineageData && (
+          <Box mt={3} width="100%">
+            <Button 
+              size="sm" 
+              width="100%" 
+              onClick={() => setShowRawJson(!showRawJson)}
+              variant="outline"
+              leftIcon={showRawJson ? <IoChevronUp /> : <IoChevronDown />}
+              justifyContent="space-between"
+              colorScheme="gray"
+            >
+              <Text>Lineage JSON</Text>
+            </Button>
+            
+            {showRawJson && (
               <Box 
-                flex="1" 
-                p={2} 
-                pl={4} 
-                overflow="auto" 
-                maxHeight="500px"
-                css={{
-                  '&::-webkit-scrollbar': {
-                    width: '8px',
-                    height: '8px',
-                  },
-                  '&::-webkit-scrollbar-track': {
-                    backgroundColor: '#2d2d2d',
-                  },
-                  '&::-webkit-scrollbar-thumb': {
-                    backgroundColor: '#555',
-                    borderRadius: '4px',
-                  },
-                }}
-              >
-                <SyntaxHighlighter
-                  language="sql"
-                  style={atomDark}
-                  showLineNumbers={false}
-                  customStyle={{
-                    margin: 0,
-                    padding: 0,
-                    background: 'transparent',
-                    fontSize: '14px',
-                  }}
-                >
-                  {modelCode}
-                </SyntaxHighlighter>
-              </Box>
-            </HStack>
-          </Box>
-        </Box>
-        
-        {/* Side panel with model details (narrower column) */}
-        <Box 
-          colSpan={{ base: 1, md: 4 }} 
+                mt={2} 
+                p={3} 
           borderWidth="1px" 
+                borderColor="gray.200" 
           borderRadius="md" 
-          boxShadow="sm"
-          gridColumn={{ base: "span 1", md: "span 4" }}
-        >
-          <Tabs colorScheme="purple" size="sm" variant="enclosed">
-            <TabList bg="gray.50" borderTopRadius="md">
-              <Tab _selected={{ bg: "white", borderBottom: "none" }}>Schema</Tab>
-              <Tab _selected={{ bg: "white", borderBottom: "none" }}>Usage</Tab>
-              <Tab _selected={{ bg: "white", borderBottom: "none" }}>Tests</Tab>
-            </TabList>
-            <TabPanels>
-              {/* Schema tab */}
-              <TabPanel p={4}>
-                <VStack align="start" spacing={3}>
-                  <Text fontSize="sm" fontWeight="bold" color="gray.600">MODEL FIELDS</Text>
-                  {schema ? (
-                    <MarkdownContent content={schema} />
-                  ) : (
-                    <Box p={4} bg="gray.50" borderRadius="md" width="100%">
-                      <Text color="gray.500" fontSize="sm">No schema information available</Text>
-                    </Box>
-                  )}
-                </VStack>
-              </TabPanel>
-              
-              {/* Usage tab */}
-              <TabPanel p={4}>
-                <VStack align="start" spacing={3}>
-                  <Text fontSize="sm" fontWeight="bold" color="gray.600">HOW TO USE THIS MODEL</Text>
-                  {usage ? (
-                    <MarkdownContent content={usage} />
-                  ) : (
-                    <Box p={4} bg="purple.50" borderRadius="md" width="100%">
-                      <Code p={2} colorScheme="purple" variant="solid" fontSize="sm">
-                        {'{{ ref("model_name") }}'}
+                bg="gray.50"
+                maxHeight="400px"
+                overflowY="auto"
+                width="100%"
+              >
+                <Code p={3} width="100%" display="block" whiteSpace="pre" overflowX="auto" fontSize="sm">
+                  {JSON.stringify(message.lineageData, null, 2)}
                       </Code>
                     </Box>
                   )}
-                </VStack>
-              </TabPanel>
-              
-              {/* Tests tab */}
-              <TabPanel p={4}>
-                <VStack align="start" spacing={3}>
-                  <Text fontSize="sm" fontWeight="bold" color="gray.600">RECOMMENDED TESTS</Text>
-                  {tests ? (
-                    <MarkdownContent content={tests} />
-                  ) : (
-                    <Box p={4} bg="orange.50" borderRadius="md" width="100%">
-                      <Text fontSize="sm" mb={2}>Add these tests to your schema.yml:</Text>
-                      <Code p={2} colorScheme="orange" fontSize="sm" whiteSpace="pre">
-{`models:
-  - name: model_name
-    columns:
-      - name: id
-        tests:
-          - unique
-          - not_null`}
-                      </Code>
                     </Box>
                   )}
                 </VStack>
-              </TabPanel>
-            </TabPanels>
-          </Tabs>
         </Box>
-      </SimpleGrid>
-      
-      {/* Quick reference panel */}
-      <Box 
-        borderWidth="1px" 
-        borderRadius="md" 
-        p={4} 
-        mb={4} 
-        bg="blue.50" 
-        borderColor="blue.200"
-      >
-        <HStack mb={3}>
-          <Icon as={IoInformation} color="blue.500" boxSize={5} />
-          <Text fontWeight="bold" color="blue.700">DBT Development Quick Reference</Text>
-        </HStack>
-        
-        <SimpleGrid columns={{ base: 1, md: 3 }} spacing={4}>
-          <Box>
-            <Text fontWeight="medium" fontSize="sm" mb={1}>Reference Models</Text>
-            <Code p={2} fontSize="xs" colorScheme="blue">{'{{ ref("model_name") }}'}</Code>
-          </Box>
-          <Box>
-            <Text fontWeight="medium" fontSize="sm" mb={1}>Reference Sources</Text>
-            <Code p={2} fontSize="xs" colorScheme="blue">{'{{ source("source_name", "table_name") }}'}</Code>
-          </Box>
-          <Box>
-            <Text fontWeight="medium" fontSize="sm" mb={1}>Configure Model</Text>
-            <Code p={2} fontSize="xs" colorScheme="blue">{'{{ config(materialized="table") }}'}</Code>
-          </Box>
-        </SimpleGrid>
-      </Box>
-    </Box>
   );
+});
+
+// Add display name for better debugging
+MessageComponent.displayName = 'ChatMessageComponent';
+
+// Update the renderMessage function to use the MessageComponent
+const renderMessage = (message) => {
+  if (!message) return null;
+  return <MessageComponent message={message} />;
 };
 
+// Main ChatPage component
 const ChatPage = () => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [processingStep, setProcessingStep] = useState('');
-  const [conversations, setConversations] = useState([]);
-  const [activeConversationId, setActiveConversationId] = useState(null);
-  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
-  const { isOpen, onOpen, onClose } = useDisclosure();
-  const toast = useToast();
-  const navigate = useNavigate();
+  const [currentConversationId, setCurrentConversationId] = useState(null);
   const { conversationId } = useParams();
+  const navigate = useNavigate();
+  const toast = useToast();
   const messagesEndRef = useRef(null);
-  const [currentConversationId, setCurrentConversationId] = useState(conversationId || null);
-  
-  const bgColor = useColorModeValue('white', 'gray.900')
-  const textColor = useColorModeValue('gray.900', 'white')
-  const borderColor = useColorModeValue('gray.100', 'gray.700')
-  const primaryColor = 'orange.500'
+  const [autoScroll, setAutoScroll] = useState(true);
+  const messagesContainerRef = useRef(null);
+
+  // Initialize conversation or load from ID - only runs when conversationId changes
+  useEffect(() => {
+    // Clear messages when component mounts if there's no conversation ID
+    if (!conversationId) {
+      setMessages([]);
+      setCurrentConversationId(null);
+    } else if (conversationId !== currentConversationId) {
+      // Only fetch if conversation ID changed
+      fetchConversation(conversationId);
+    }
+  }, [conversationId]);
+
+  // Handle scrolling behavior separately, only when messages change
+  // and only if autoScroll is enabled
+  useEffect(() => {
+    if (autoScroll && messagesEndRef.current && messages.length > 0) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages.length, autoScroll]);
+
+  // Detect user scroll to disable auto-scrolling
+  useEffect(() => {
+    const messagesContainer = messagesContainerRef.current;
+    if (!messagesContainer) return;
+
+    const handleScroll = () => {
+      // If user scrolls up, disable auto-scroll
+      const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
+      
+      // If we're not near the bottom (within 100px), disable auto-scroll
+      if (scrollHeight - (scrollTop + clientHeight) > 100) {
+        setAutoScroll(false);
+      } else {
+        setAutoScroll(true);
+      }
+    };
+
+    messagesContainer.addEventListener('scroll', handleScroll);
+    return () => messagesContainer.removeEventListener('scroll', handleScroll);
+  }, [messagesContainerRef.current]);
+
+  // Reset auto-scroll when new message is added
+  useEffect(() => {
+    // When a new message is added and it's from us or there's a loading state change, enable auto-scroll
+    if (messages.length > 0 && (messages[messages.length - 1].role === 'assistant' || loading)) {
+      setAutoScroll(true);
+    }
+  }, [messages.length, loading]);
 
   // Apply confluence styles
   React.useEffect(() => {
     // Create style element
     const styleEl = document.createElement('style');
     let cssText = '';
+    
+    // Define styles
+    const confluenceStyles = {
+      '.confluence-styled-content': {
+        fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+        lineHeight: '1.6',
+        color: '#172B4D',
+        fontSize: '14px',
+      },
+      // Regular inline code styling
+      '.confluence-styled-content code': {
+        backgroundColor: '#F4F5F7',
+        padding: '2px 4px',
+        borderRadius: '3px',
+        fontSize: '13px',
+        fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, Courier, monospace',
+      },
+      // Dark code block styling
+      '.code-styled-content pre': {
+        backgroundColor: '#282c34',
+        color: '#abb2bf',
+        borderRadius: '4px',
+        padding: '16px',
+        overflow: 'auto',
+        fontSize: '14px',
+        fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace',
+        marginBottom: '16px',
+        marginTop: '16px',
+      },
+      '.code-styled-content pre code': {
+        backgroundColor: 'transparent',
+        padding: 0,
+        color: '#abb2bf',
+        fontSize: '13px',
+        fontFamily: 'SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace',
+        border: 'none',
+      },
+      '.confluence-styled-content h1, .confluence-styled-content h2, .confluence-styled-content h3, .confluence-styled-content h4': {
+        fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+        fontWeight: '600',
+        lineHeight: '1.3',
+        margin: '16px 0 8px 0',
+        color: '#172B4D',
+      },
+      '.confluence-styled-content h1': {
+        fontSize: '20px',
+        borderBottom: '1px solid #DFE1E6',
+        paddingBottom: '8px',
+      },
+      '.confluence-styled-content h2': {
+        fontSize: '18px',
+        borderBottom: '1px solid #DFE1E6',
+        paddingBottom: '6px',
+      },
+      '.confluence-styled-content h3': {
+        fontSize: '16px',
+      },
+      '.confluence-styled-content h4': {
+        fontSize: '14px',
+        fontWeight: '600',
+      },
+      '.confluence-styled-content p': {
+        margin: '8px 0',
+        lineHeight: '1.6',
+      },
+      '.confluence-styled-content ul, .confluence-styled-content ol': {
+        paddingLeft: '24px',
+        margin: '8px 0',
+      },
+      '.confluence-styled-content li': {
+        margin: '4px 0',
+      },
+      '.confluence-styled-content blockquote': {
+        borderLeft: '3px solid #DFE1E6',
+        margin: '16px 0',
+        padding: '0 16px',
+        color: '#5E6C84',
+      },
+      '.confluence-styled-content table': {
+        borderCollapse: 'collapse',
+        width: '100%',
+        margin: '16px 0',
+      },
+      '.confluence-styled-content th, .confluence-styled-content td': {
+        border: '1px solid #DFE1E6',
+        padding: '8px',
+        textAlign: 'left',
+      },
+      '.confluence-styled-content th': {
+        backgroundColor: '#F4F5F7',
+        fontWeight: '600',
+      },
+      '.confluence-styled-content img': {
+        maxWidth: '100%',
+        height: 'auto',
+      },
+      '.confluence-styled-content hr': {
+        border: '0',
+        height: '1px',
+        backgroundColor: '#DFE1E6',
+        margin: '24px 0',
+      },
+      '.confluence-styled-content a': {
+        color: '#0052CC',
+        textDecoration: 'none',
+      },
+      '.confluence-styled-content a:hover': {
+        textDecoration: 'underline',
+      },
+      '.code-panel': {
+        margin: '16px 0',
+        borderRadius: '3px',
+        overflow: 'hidden',
+      },
+      '.code-panel-header': {
+        backgroundColor: '#F4F5F7',
+        padding: '8px 16px',
+        fontWeight: '600',
+        borderBottom: '1px solid #DFE1E6',
+      },
+      '.code-panel-body': {
+        backgroundColor: '#FFFFFF',
+        padding: '16px',
+        overflowX: 'auto',
+      },
+      '.info-panel': {
+        backgroundColor: '#DEEBFF',
+        borderRadius: '3px',
+        padding: '16px',
+        margin: '16px 0',
+        borderLeft: '3px solid #0747A6',
+      },
+      '.note-panel': {
+        backgroundColor: '#EAE6FF',
+        borderRadius: '3px',
+        padding: '16px',
+        margin: '16px 0',
+        borderLeft: '3px solid #5243AA',
+      },
+      '.warning-panel': {
+        backgroundColor: '#FFEBE6',
+        borderRadius: '3px',
+        padding: '16px',
+        margin: '16px 0',
+        borderLeft: '3px solid #DE350B',
+      },
+      '.tip-panel': {
+        backgroundColor: '#E3FCEF',
+        borderRadius: '3px',
+        padding: '16px',
+        margin: '16px 0',
+        borderLeft: '3px solid #00875A',
+      },
+      '.code-content': {
+        backgroundColor: '#282c34',
+        position: 'relative',
+        zIndex: '1',
+        color: '#abb2bf'
+      }
+    };
     
     // Convert style object to CSS text
     Object.entries(confluenceStyles).forEach(([selector, styles]) => {
@@ -3449,49 +2156,13 @@ const ChatPage = () => {
     };
   }, []);
 
-  // Initialize or load conversation from ID
-  useEffect(() => {
-    // Clear messages when component mounts if there's no conversation ID
-    if (!conversationId) {
-      setMessages([]);
-      setActiveConversationId(null);
-      setCurrentConversationId(null);
-    } else {
-      // If we have a conversation ID on mount, fetch that conversation
-      fetchConversation(conversationId);
-    }
-  }, [conversationId]);
-
-  // Fetch conversation history
-  const fetchConversations = async () => {
-    try {
-      setIsHistoryLoading(true);
-      const response = await fetch('http://localhost:8000/api/conversations');
-      if (!response.ok) {
-        throw new Error('Failed to fetch conversations');
-      }
-      const data = await response.json();
-      if (data.status === 'success') {
-        setConversations(data.conversations);
-      }
-    } catch (error) {
-      console.error('Error fetching conversations:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to load conversation history',
-        status: 'error',
-        duration: 3000,
-      });
-    } finally {
-      setIsHistoryLoading(false);
-    }
-  };
-
   // Fetch a specific conversation
   const fetchConversation = async (id) => {
     try {
-      setProcessingStep("Loading conversation...");
       console.log("Fetching conversation with ID:", id);
+      
+      // Set loading state
+      setLoading(true);
       
       const response = await fetch(`http://localhost:8000/api/conversation/${id}`);
       if (!response.ok) {
@@ -3499,14 +2170,22 @@ const ChatPage = () => {
       }
       
       const data = await response.json();
-      console.log("Conversation data:", data);
+      console.log("Conversation data received:", data);
       
-      if (!data.conversation) {
-        throw new Error("No conversation data received");
+      // Check for various possible data structures
+      if (!data) {
+        throw new Error("No data received from API");
       }
       
-      // Extract conversation data
-      const conversation = data.conversation;
+      // The API may return data in different formats, let's handle both possibilities
+      const conversation = data.conversation || data;
+      
+      if (!conversation) {
+        console.error("Invalid conversation data structure:", data);
+        throw new Error("Invalid conversation data structure received");
+      }
+      
+      console.log("Parsed conversation:", conversation);
       
       // Create properly formatted messages
       const formattedMessages = [];
@@ -3523,22 +2202,29 @@ const ChatPage = () => {
       
       // Add assistant message
       if (conversation.response) {
+        // Extract lineage data if present
+        const { lineageData, cleanedContent } = extractLineageData(conversation.response);
+        console.log("Extracted lineage data:", lineageData ? "Found" : "Not found");
+        
         formattedMessages.push({
           id: `assistant-${id}`,
           role: 'assistant',
           type: 'architect',
-          content: conversation.response,
+          content: cleanedContent,
+          hasLineage: !!lineageData,
+          lineageData: lineageData,
           details: {
-            ...conversation.technical_details,
+            ...(conversation.technical_details || {}),
             conversation_id: id
           },
           timestamp: conversation.timestamp
         });
       }
       
+      console.log("Formatted messages:", formattedMessages);
+      
       // Update state
       setMessages(formattedMessages);
-      setActiveConversationId(id);
       setCurrentConversationId(id);
       
     } catch (error) {
@@ -3551,50 +2237,123 @@ const ChatPage = () => {
         isClosable: true,
       });
     } finally {
-      setProcessingStep(null);
+      // End loading state
+      setLoading(false);
     }
   };
 
-  // Scroll to bottom when messages change
-  useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  // Function to detect and extract lineage data from response content
+  const extractLineageData = (content) => {
+    if (!content) {
+      console.warn("No content provided for lineage extraction");
+      return { lineageData: null, cleanedContent: content };
     }
-  }, [messages]);
-
-  // Start a new conversation
-  const startNewConversation = () => {
-    setMessages([]);
-    setActiveConversationId(null);
-    setCurrentConversationId(null);
-    navigate('/chat', { replace: true });
-  };
-
-  // Handle conversation selection
-  const handleConversationSelect = (id) => {
-    fetchConversation(id);
-    onClose(); // Close the drawer on mobile
+    
+    console.log("Extracting lineage data from content of length:", content.length);
+    
+    // Create a copy of the content to remove JSON blocks
+    let cleanedContent = content;
+    let lineageData = null;
+    
+    // Look for a JSON block with LINEAGE_VISUALIZATION
+    try {
+      // First try to find a structured JSON block with the exact pattern from the backend logs
+      const lineageVizMatch = content.match(/# LINEAGE_VISUALIZATION\s*```json\s*([\s\S]*?)\s*```/);
+      
+      if (lineageVizMatch && lineageVizMatch[1]) {
+        console.log("Found lineage visualization match with pattern '# LINEAGE_VISUALIZATION'");
+        try {
+          lineageData = JSON.parse(lineageVizMatch[1]);
+          console.log("Successfully extracted structured lineage data");
+          
+          // Remove the JSON block from the content
+          cleanedContent = cleanedContent.replace(/# LINEAGE_VISUALIZATION\s*```json\s*[\s\S]*?\s*```/, '');
+        } catch (e) {
+          console.error("Error parsing lineage visualization JSON:", e);
+          // Try to clean the JSON string before parsing
+          try {
+            const cleanedJson = lineageVizMatch[1].replace(/\n/g, '').trim();
+            lineageData = JSON.parse(cleanedJson);
+            console.log("Successfully parsed cleaned JSON");
+            
+            // Remove the JSON block from the content
+            cleanedContent = cleanedContent.replace(/# LINEAGE_VISUALIZATION\s*```json\s*[\s\S]*?\s*```/, '');
+          } catch (cleanError) {
+            console.error("Still failed to parse cleaned JSON:", cleanError);
+          }
+        }
+      } else {
+        // Try alternative patterns
+        console.log("Trying alternative lineage patterns");
+        
+        // Pattern 2: Without the # prefix
+        const altLineageMatch = content.match(/LINEAGE_VISUALIZATION\s*```json\s*([\s\S]*?)\s*```/);
+        if (altLineageMatch && altLineageMatch[1]) {
+          console.log("Found match with pattern 'LINEAGE_VISUALIZATION'");
+          try {
+            lineageData = JSON.parse(altLineageMatch[1]);
+            
+            // Remove the JSON block from the content
+            cleanedContent = cleanedContent.replace(/LINEAGE_VISUALIZATION\s*```json\s*[\s\S]*?\s*```/, '');
+          } catch (e) {
+            console.error("Error parsing alternative lineage JSON:", e);
+          }
+        }
+        
+        // Pattern 3: Looking for just a JSON block with models and edges
+        const jsonBlockMatch = content.match(/```json\s*({[\s\S]*?"models"[\s\S]*?"edges"[\s\S]*?})\s*```/);
+        if (jsonBlockMatch && jsonBlockMatch[1]) {
+          console.log("Found JSON block with models and edges");
+          try {
+            lineageData = JSON.parse(jsonBlockMatch[1]);
+            
+            // Remove the JSON block from the content
+            cleanedContent = cleanedContent.replace(/```json\s*({[\s\S]*?"models"[\s\S]*?"edges"[\s\S]*?})\s*```/, '');
+          } catch (e) {
+            console.error("Error parsing JSON block:", e);
+          }
+        }
+        
+        // Pattern 4: Try to extract lineage data using our custom parser
+        if (!lineageData) {
+          lineageData = parseLineageData(content);
+        }
+      }
+    } catch (err) {
+      console.error("Error in lineage extraction:", err);
+    }
+    
+    // Clean up any double newlines created by removing blocks
+    cleanedContent = cleanedContent.replace(/\n{3,}/g, '\n\n').trim();
+    
+    // If no lineage data found, return null
+    console.log("Lineage data extraction complete:", lineageData ? "Found" : "Not found");
+    return { lineageData, cleanedContent };
   };
 
   // Send message and get response from data architect
-  const sendMessage = async () => {
+  const handleSubmit = async (e) => {
+    e.preventDefault();
     if (!input.trim()) return;
     
-    const userMessage = input;
-    setInput('');
-    
-    // Add user message to the chat
-    setMessages(prev => [...prev, { 
+    // Add user message
+    const userMessage = {
+      id: Date.now(),
       role: 'user', 
-      content: userMessage,
-      id: prev.length
-    }]);
+      content: input,
+      timestamp: new Date().toISOString()
+    };
     
-    // Set loading state
+    // Update the messages state with the user message
+    const updatedMessages = [...messages, userMessage];
+    setMessages(updatedMessages);
+    setInput('');
     setLoading(true);
-    setProcessingStep('Analyzing your question with Data Architect...');
+    setAutoScroll(true); // Enable auto-scroll when sending a new message
     
     try {
+      console.log("Sending request to backend with input:", input);
+      
       // Use the Data Architect agent endpoint
       const response = await fetch('http://localhost:8000/architect/analyze/', {
         method: 'POST',
@@ -3602,7 +2361,7 @@ const ChatPage = () => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ 
-          query: userMessage,
+          query: input,
           conversation_id: currentConversationId,
           thread_id: currentConversationId
         })
@@ -3613,17 +2372,28 @@ const ChatPage = () => {
       }
       
       const data = await response.json();
-      console.log("Data Architect response:", data);
+      console.log("Data Architect response received:", data);
       
       // Create a conversation ID if needed
-      const responseConversationId = data.conversation_id || currentConversationId || uuidv4();
+      const responseConversationId = data.conversation_id || currentConversationId || crypto.randomUUID();
+      
+      // Extract lineage data if present
+      const { lineageData, cleanedContent } = extractLineageData(data.response);
+      console.log("Lineage data extraction result:", lineageData ? "Found lineage data" : "No lineage data found");
+      
+      if (lineageData) {
+        console.log("Lineage data models:", lineageData.models?.length);
+        console.log("Lineage data edges:", lineageData.edges?.length);
+      }
       
       // Add the Data Architect's response to the chat
-      setMessages(prev => [...prev, {
+      const assistantMessage = {
         role: 'assistant',
         type: 'architect',
-        content: data.response,
-        id: prev.length,
+        content: cleanedContent,
+        id: Date.now(),
+        hasLineage: !!lineageData,
+        lineageData: lineageData,
         details: {
           conversation_id: responseConversationId,
           question_type: data.question_type,
@@ -3634,10 +2404,20 @@ const ChatPage = () => {
           dbt_results: data.dbt_results?.results || [],
           relationship_results: data.relationship_results?.results || []
         }
-      }]);
+      };
+      
+      console.log("Adding assistant message with lineage:", !!lineageData);
+      
+      // Directly update the state with both messages in one update
+      setMessages([...updatedMessages, assistantMessage]);
       
       // Update conversation tracking info
       setCurrentConversationId(responseConversationId);
+      
+      // Update URL if we have a new conversation ID
+      if (responseConversationId && (!conversationId || responseConversationId !== conversationId)) {
+        navigate(`/chat/${responseConversationId}`, { replace: true });
+      }
       
     } catch (error) {
       console.error("Error sending message:", error);
@@ -3649,257 +2429,141 @@ const ChatPage = () => {
       });
       
       // Add error message to chat
-      setMessages(prev => [...prev, {
+      setMessages([...updatedMessages, {
         role: 'assistant',
         content: 'Sorry, I encountered an error processing your request. Please try again.',
-        id: prev.length,
+        id: Date.now(),
         isError: true
       }]);
     } finally {
       setLoading(false);
-      setProcessingStep('');
     }
   };
 
-  // Clear the current chat
-  const clearChat = () => {
-    // Save current conversation ID before clearing
-    const currentId = activeConversationId;
-    
-    // Clear messages and conversation ID
-    setMessages([]);
-    setActiveConversationId(null);
-    setCurrentConversationId(null);
-    
-    toast({
-      title: 'Chat Cleared',
-      description: 'The chat has been cleared. You can find it in the history tab.',
-      status: 'info',
-      duration: 3000
-    });
-  };
-
-  // Handle formatted responses from different agents
-  const handleFormattedResponses = (response) => {
-    if (response.agent === 'architect') {
-      const sections = {};
-      
-      // Process each section
-      if (response.sections) {
-        Object.keys(response.sections).forEach(key => {
-          sections[key] = response.sections[key];
-        });
-      }
-      
-      // Process implementation details
-      if (response.implementation) {
-        sections.implementation = response.implementation;
-      }
-      
-      // Combine all sections into a single content string
-      let content = '';
-      Object.entries(sections).forEach(([key, value]) => {
-        if (typeof value === 'string') {
-          const formattedKey = key.split('_')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-            .join(' ');
-          
-          content += `## ${formattedKey}\n\n${value}\n\n`;
-        }
-      });
-      
-      return renderArchitectResponse(content, sections);
-    }
-    
-    // Handle other agent types as needed
-    return <Text>{JSON.stringify(response)}</Text>;
-  };
+  // Empty state when no messages
+  const renderEmptyState = () => (
+    <VStack spacing={6} py={10} textAlign="center">
+      <Heading size="lg">Welcome to the Data Architect Chat</Heading>
+      <Text>Ask questions about your data models, lineage, and more.</Text>
+      <Text fontSize="sm" color="gray.500">
+        Try asking: "What models depend on stg_orders?" or "Show me the lineage for fct_orders"
+      </Text>
+    </VStack>
+  );
 
   return (
-    <Box minH="100vh" bg={bgColor}>
-      <Container maxW="container.lg" py={8}>
-        {messages.length === 0 ? (
-          // Initial empty state
-          <VStack spacing={8} align="center" textAlign="center" py={20}>
-            <Heading 
-              size="xl" 
-              color={textColor}
-              lineHeight="1.2"
+    <Container maxW="80%" py={4}>
+      <Box 
+        h="calc(100vh - 170px)" 
+        display="flex" 
+        flexDirection="column"
+      >
+        {/* Auto-scroll button - only show when needed */}
+        <Box mb={4}>
+          {autoScroll ? (
+            <Button 
+              size="sm" 
+              colorScheme="gray" 
+              onClick={() => setAutoScroll(false)}
+              leftIcon={<IoContract />}
             >
-              dbt Data Architect Assistant
-            </Heading>
+              Auto-scroll On
+            </Button>
+          ) : (
+            <Button 
+              size="sm" 
+              colorScheme="blue" 
+              onClick={() => setAutoScroll(true)}
+              leftIcon={<IoExpand />}
+            >
+              Auto-scroll Off
+            </Button>
+          )}
+        </Box>
 
-            <Text fontSize="lg" color="gray.600" maxW="600px">
-              Ask questions about your dbt models, explore dependencies, enhance SQL code, or get guidance on development
-            </Text>
-
-            <SimpleGrid columns={{ base: 1, md: 3 }} spacing={6} pt={8} w="full">
-              <VStack 
-                bg={useColorModeValue('gray.50', 'gray.800')} 
-                p={6}
-                borderRadius="lg"
-                spacing={3}
-                border="1px"
-                borderColor={borderColor}
-              >
-                <Icon as={IoInformation} boxSize={6} color={primaryColor} />
-                <Text fontWeight="bold">Model Information</Text>
-                <Text fontSize="sm" color="gray.600">
-                  "Can you explain the fct_orders model and how it works?"
-                </Text>
+        {/* Messages area */}
+        <Box 
+          ref={messagesContainerRef}
+          flex="1" 
+          overflowY="auto" 
+          px={4} 
+          py={4}
+          borderWidth="1px"
+          borderRadius="md"
+          mb={4}
+          bg="gray.50"
+          position="relative"
+        >
+          {!autoScroll && messages.length > 3 && (
+            <Button
+              position="sticky"
+              top="10px"
+              right="10px"
+              zIndex="10"
+              size="sm"
+              colorScheme="purple"
+              opacity="0.8"
+              _hover={{ opacity: 1 }}
+              onClick={() => {
+                setAutoScroll(true);
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+              }}
+              leftIcon={<IoChevronUp />}
+              float="right"
+              mr={2}
+            >
+              Scroll to Bottom
+            </Button>
+          )}
+          
+          {messages.length > 0 ? 
+            <VStack spacing={4} align="stretch">
+              {messages.map(renderMessage)}
+              <div ref={messagesEndRef} />
               </VStack>
-              
-              <VStack 
-                bg={useColorModeValue('gray.50', 'gray.800')} 
-                p={6}
-                borderRadius="lg"
-                spacing={3}
-                border="1px"
-                borderColor={borderColor}
-              >
-                <Icon as={IoGitBranch} boxSize={6} color={primaryColor} />
-                <Text fontWeight="bold">Data Lineage</Text>
-                <Text fontSize="sm" color="gray.600">
-                  "What models depend on stg_orders?"
-                </Text>
-              </VStack>
-              
-              <VStack 
-                bg={useColorModeValue('gray.50', 'gray.800')} 
-                p={6}
-                borderRadius="lg"
-                spacing={3}
-                border="1px"
-                borderColor={borderColor}
-              >
-                <Icon as={IoArrowRedo} boxSize={6} color={primaryColor} />
-                <Text fontWeight="bold">Code Enhancement</Text>
-                <Text fontSize="sm" color="gray.600">
-                  "Enhance models/marts/core/fct_orders.sql to add avg_gross_item_sales_amount"
-                </Text>
-              </VStack>
-            </SimpleGrid>
-            
-            <SimpleGrid columns={{ base: 1, md: 3 }} spacing={6} pt={4} w="full">
-              <VStack 
-                bg={useColorModeValue('gray.50', 'gray.800')} 
-                p={6}
-                borderRadius="lg"
-                spacing={3}
-                border="1px"
-                borderColor={borderColor}
-              >
-                <Icon as={IoConstruct} boxSize={6} color={primaryColor} />
-                <Text fontWeight="bold">Development Guidance</Text>
-                <Text fontSize="sm" color="gray.600">
-                  "Create a new incremental model for daily customer metrics"
-                </Text>
-              </VStack>
-              
-              <VStack 
-                bg={useColorModeValue('gray.50', 'gray.800')} 
-                p={6}
-                borderRadius="lg"
-                spacing={3}
-                border="1px"
-                borderColor={borderColor}
-              >
-                <Icon as={IoCodeSlash} boxSize={6} color={primaryColor} />
-                <Text fontWeight="bold">dbt Optimization</Text>
-                <Text fontSize="sm" color="gray.600">
-                  "Help me improve the performance of my fact table"
-                </Text>
-              </VStack>
-              
-              <VStack 
-                bg={useColorModeValue('gray.50', 'gray.800')} 
-                p={6}
-                borderRadius="lg"
-                spacing={3}
-                border="1px"
-                borderColor={borderColor}
-              >
-                <Icon as={IoCheckmarkCircle} boxSize={6} color={primaryColor} />
-                <Text fontWeight="bold">Documentation Help</Text>
-                <Text fontSize="sm" color="gray.600">
-                  "Generate documentation for my customer dimension model"
-                </Text>
-              </VStack>
-            </SimpleGrid>
-          </VStack>
-        ) : (
-          // Chat messages area
-          <VStack spacing={4} h="full">
-            {messages.map((message) => renderMessage(message))}
-            
-            {processingStep && (
-              <Box 
-                p={4} 
-                bg="blue.50" 
-                borderRadius="md" 
-                width={["98%", "95%", "90%"]}
-                alignSelf="flex-start"
-                boxShadow="0 2px 8px rgba(0, 0, 0, 0.05)"
-                borderWidth="1px"
-                borderColor="blue.100"
-              >
+            : 
+            renderEmptyState()
+          }
+          
+          {loading && (
+            <Box p={4} bg="blue.50" borderRadius="md" mt={4}>
                 <HStack>
-                  <Box as={IoAnalytics} color="blue.500" boxSize={5} mr={2} />
-                  <Text fontWeight="500" color="blue.700">{processingStep}</Text>
+                <Icon as={IoAnalytics} color="blue.500" boxSize={5} mr={2} />
+                <Text>Processing your request...</Text>
                 </HStack>
                 <Progress size="xs" colorScheme="blue" isIndeterminate mt={3} />
               </Box>
             )}
-            <div ref={messagesEndRef} />
-          </VStack>
-        )}
-
-        {/* Input Area */}
-        <Box 
-          position="fixed"
-          bottom={0}
-          left={0}
-          right={0}
-          p={4}
-          bg={bgColor}
-          borderTop="1px"
-          borderColor={borderColor}
-          zIndex={2}
-        >
-          <Container maxW="container.md">
-            <HStack spacing={4}>
+        </Box>
+        
+        {/* Input area */}
+        <Box as="form" onSubmit={handleSubmit}>
+          <InputGroup size="lg">
               <Input
+              placeholder="Ask about data models, lineage, or SQL..."
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask about database schemas, data models, or SQL queries..."
-                size="lg"
-                bg={useColorModeValue('white', 'gray.800')}
-                borderColor={borderColor}
-                _focus={{
-                  borderColor: primaryColor,
-                  boxShadow: `0 0 0 1px ${primaryColor}`
-                }}
-                onKeyPress={(e) => {
-                  if (e.key === 'Enter') {
-                    sendMessage();
-                  }
-                }}
-              />
+              borderColor="gray.300"
+              _focus={{ borderColor: 'purple.500', boxShadow: '0 0 0 1px purple.500' }}
+              isDisabled={loading}
+            />
+            <InputRightElement width="4.5rem">
               <Button
-                colorScheme="orange"
-                size="lg"
-                px={8}
+                h="1.75rem" 
+                size="sm" 
+                colorScheme="purple" 
                 isLoading={loading}
-                onClick={sendMessage}
+                type="submit"
                 leftIcon={<IoSend />}
+                disabled={!input.trim() || loading}
               >
                 Send
               </Button>
-            </HStack>
-          </Container>
+            </InputRightElement>
+          </InputGroup>
         </Box>
-      </Container>
     </Box>
+    </Container>
   );
 };
 
