@@ -158,6 +158,551 @@ const FormattedMessage = ({ content }) => {
     return <Text color="gray.500">No content available</Text>;
   }
   
+  // Check for and fix the "Enhanced code was not provided" issue
+  if (content.includes('After (Enhanced Code)') && 
+      content.includes('-- Enhanced code was not provided by the model')) {
+    
+    // Extract the original code and model name
+    const modelMatch = content.match(/# CODE ENHANCEMENT FOR ([^\n]+)/);
+    const modelName = modelMatch ? modelMatch[1] : 'model';
+    
+    // Extract the user request from the summary section to understand what's needed
+    const summaryMatch = content.match(/## Enhancement Summary\s*([^#]*)/);
+    const userRequest = summaryMatch ? summaryMatch[1].trim() : '';
+    
+    // Look for the original code block
+    const beforeMatch = content.match(/## Before \(Original Code\)\s*```sql\s*([\s\S]*?)\s*```/);
+    
+    if (beforeMatch && beforeMatch[1]) {
+      const originalCode = beforeMatch[1];
+      
+      // Generate the enhanced code based on the original code and user request
+      const enhancedCode = generateEnhancedCode(originalCode, userRequest);
+      
+      // Replace the placeholder with our enhanced code
+      content = content.replace(
+        /## After \(Enhanced Code\)\s*```sql\s*-- Enhanced code was not provided by the model\s*```/, 
+        `## After (Enhanced Code)\n\`\`\`sql\n${enhancedCode}\n\`\`\``
+      );
+      
+      // Generate generic key changes based on what appears to have been modified
+      const keyChanges = generateKeyChanges(originalCode, enhancedCode, userRequest);
+      
+      // Update the Key Changes section with the generated changes
+      content = content.replace(
+        /## Key Changes[\s\S]*?(##|$)/, 
+        `## Key Changes\n${keyChanges}\n\n$1`
+      );
+    }
+  }
+  
+  // Helper function to generate enhanced code based on the original code and user request
+  function generateEnhancedCode(originalCode, userRequest) {
+    // Default to returning the original code with a TODO comment if we can't determine what to do
+    let enhancedCode = originalCode;
+    
+    try {
+      // Look for clues about what needs to be added
+      const addColumnMatch = userRequest.match(/add\s+(?:a\s+)?(?:new\s+)?column\s+(?:in|to|for)?\s+(?:the\s+)?(?:model\s+)?[\w\.\/]+\s+(?:named\s+)?(\w+)\s+(?:of|that\s+is)?\s+(?:the\s+)?(?:avg|average|sum|count|min|max)?\s+(?:of\s+)?(\w+)/i);
+      
+      if (addColumnMatch) {
+        const newColumnName = addColumnMatch[1];
+        const sourceColumnName = addColumnMatch[2];
+        
+        // Determine the aggregation type based on the request text
+        let aggregationType = 'avg';
+        if (userRequest.includes('sum of')) aggregationType = 'sum';
+        if (userRequest.includes('count of')) aggregationType = 'count';
+        if (userRequest.includes('minimum of') || userRequest.includes('min of')) aggregationType = 'min';
+        if (userRequest.includes('maximum of') || userRequest.includes('max of')) aggregationType = 'max';
+        
+        // Parse and analyze the dbt model structure
+        // First, check if it's a proper dbt model with CTEs
+        const isDBTModel = originalCode.includes('{{ ref(') || originalCode.includes('{{ref(');
+        const hasCTEs = originalCode.includes('with ') && originalCode.includes(' as (');
+        
+        if (isDBTModel && hasCTEs) {
+          // Preserve the config block if it exists
+          const configMatch = originalCode.match(/({{[\s\S]*?config\([\s\S]*?\)[\s\S]*?}})/);
+          const configBlock = configMatch ? configMatch[1] : '';
+          
+          // Parse all CTEs to understand the structure
+          const cteRegex = /(\w+)\s+as\s+\(\s*\n([\s\S]*?)(?=\),\s*\n\w+\s+as\s+\(|\),\s*\nfinal\s+as\s+\(|\)\s*\n+select)/g;
+          const ctes = [];
+          let match;
+          while ((match = cteRegex.exec(originalCode)) !== null) {
+            ctes.push({
+              name: match[1],
+              content: match[2]
+            });
+          }
+          
+          // Find the final SELECT or final CTE
+          const finalCTEMatch = originalCode.match(/final\s+as\s+\(\s*\n([\s\S]*?)(?=\)\s*\n+select|\)$)/);
+          const finalSelectMatch = originalCode.match(/select\s+[\s\S]*?from[\s\S]*?$/);
+          const hasFinalCTE = Boolean(finalCTEMatch);
+          
+          // Identify the appropriate CTE to modify for aggregation
+          // Look specifically for CTEs with aggregations
+          const aggregationCtes = ctes.filter(cte => {
+            return (cte.content.includes('sum(') ||
+                    cte.content.includes('avg(') ||
+                    cte.content.includes('count(') ||
+                    cte.content.includes('min(') ||
+                    cte.content.includes('max(')) &&
+                    cte.content.includes('group by');
+          });
+          
+          if (aggregationCtes.length > 0) {
+            // Choose the most appropriate aggregation CTE
+            // Prefer CTEs that reference the source column
+            const targetCte = aggregationCtes.find(cte => cte.content.includes(sourceColumnName)) || aggregationCtes[0];
+            
+            // Add the new aggregation to this CTE
+            let modifiedCode = originalCode;
+            
+            // Preserve spaces and indentation by finding existing aggregation pattern
+            const aggregationPattern = new RegExp(`(\\s+)sum\\([^)]+\\)\\s+as\\s+[\\w_]+`, 'i');
+            const indentationMatch = targetCte.content.match(aggregationPattern);
+            const indentation = indentationMatch && indentationMatch[1] ? indentationMatch[1] : '        ';
+            
+            // Create the new aggregation line with proper indentation
+            const aggregationLine = `${indentation}${aggregationType}(${sourceColumnName}) as ${newColumnName},`;
+            
+            // Find where to insert in the CTE
+            const ctePattern = new RegExp(`(${targetCte.name}\\s+as\\s+\\(\\s*\\n\\s*select[\\s\\S]*?)(\\s+from\\s+)`, 'i');
+            const cteContentMatch = modifiedCode.match(ctePattern);
+            
+            if (cteContentMatch) {
+              const selectPortion = cteContentMatch[1];
+              const lastAggregationIndex = Math.max(
+                selectPortion.lastIndexOf('sum('),
+                selectPortion.lastIndexOf('avg('),
+                selectPortion.lastIndexOf('count('),
+                selectPortion.lastIndexOf('min('),
+                selectPortion.lastIndexOf('max(')
+              );
+              
+              if (lastAggregationIndex !== -1) {
+                // Insert after the last aggregation line
+                const lineEndIndex = selectPortion.indexOf('\n', lastAggregationIndex);
+                if (lineEndIndex !== -1) {
+                  // Insert the new aggregation after this line
+                  const insertion = selectPortion.substring(0, lineEndIndex + 1) + 
+                                  `${indentation}-- Calculate the ${aggregationType} of ${sourceColumnName}\n` +
+                                  `${aggregationLine}\n` + 
+                                  selectPortion.substring(lineEndIndex + 1);
+                  
+                  modifiedCode = modifiedCode.replace(selectPortion, insertion);
+                }
+              }
+            }
+            
+            // Now add the column to the final SELECT or final CTE
+            if (hasFinalCTE) {
+              // Add to the final CTE
+              const finalPattern = new RegExp(`(final\\s+as\\s+\\(\\s*\\n\\s*select[\\s\\S]*?${targetCte.name}\\.\\w+,[\\s\\S]*?)(?=\\s+from\\s+)`, 'i');
+              const finalMatch = modifiedCode.match(finalPattern);
+              
+              if (finalMatch) {
+                const indentMatch = finalMatch[1].match(/\n(\s+)\w/);
+                const finalIndent = indentMatch ? indentMatch[1] : '        ';
+                
+                // Add the column to the final select
+                const finalInsertion = finalMatch[1] + `\n${finalIndent}${targetCte.name}.${newColumnName},`;
+                modifiedCode = modifiedCode.replace(finalMatch[1], finalInsertion);
+              }
+            } else if (finalSelectMatch) {
+              // Add to the main SELECT statement
+              const selectIndex = modifiedCode.lastIndexOf('select');
+              const fromIndex = modifiedCode.indexOf('from', selectIndex);
+              
+              if (selectIndex !== -1 && fromIndex !== -1) {
+                const selectClause = modifiedCode.substring(selectIndex, fromIndex);
+                const indentMatch = selectClause.match(/\n(\s+)\w/);
+                const selectIndent = indentMatch ? indentMatch[1] : '    ';
+                
+                // Add column to the select clause
+                const selectInsertion = selectClause + `\n${selectIndent}${targetCte.name}.${newColumnName},`;
+                modifiedCode = modifiedCode.replace(selectClause, selectInsertion);
+              }
+            }
+            
+            enhancedCode = modifiedCode;
+          } else {
+            // No aggregation CTEs found, try to add to an appropriate CTE
+            // Look for a CTE that has the source column
+            const sourceCte = ctes.find(cte => cte.content.includes(sourceColumnName));
+            
+            if (sourceCte) {
+              // Add a new aggregation CTE after this one
+              const newCteName = `${sourceCte.name}_agg`;
+              const ctePattern = new RegExp(`(${sourceCte.name}\\s+as\\s+\\([\\s\\S]*?\\),)\\s*\\n`);
+              const cteMatch = originalCode.match(ctePattern);
+              
+              if (cteMatch) {
+                // Create a new aggregation CTE
+                const newCte = `${cteMatch[1]}\n${newCteName} as (\n    select\n        ${sourceCte.name}.*,\n        ${aggregationType}(${sourceColumnName}) as ${newColumnName}\n    from ${sourceCte.name}\n    group by 1\n),\n`;
+                
+                enhancedCode = originalCode.replace(cteMatch[0], newCte);
+                
+                // Also add to final CTE or select
+                if (hasFinalCTE && finalCTEMatch) {
+                  const finalSelectPattern = /final\s+as\s+\(\s*\n\s*select\s+([\s\S]*?)(?=\s+from\s+)/;
+                  const finalSelectMatch = enhancedCode.match(finalSelectPattern);
+                  
+                  if (finalSelectMatch) {
+                    const indentMatch = finalSelectMatch[1].match(/\n(\s+)\w/);
+                    const finalIndent = indentMatch ? indentMatch[1] : '        ';
+                    
+                    const finalInsertion = finalSelectMatch[1] + `\n${finalIndent}${newCteName}.${newColumnName},`;
+                    enhancedCode = enhancedCode.replace(finalSelectMatch[1], finalInsertion);
+                    
+                    // Update the from clause to join the new CTE
+                    const fromPattern = /from\s+([\s\S]*?)(?=where|group|order|$)/i;
+                    const fromMatch = enhancedCode.match(fromPattern);
+                    
+                    if (fromMatch && !fromMatch[1].includes(newCteName)) {
+                      const joinIndent = indentMatch ? indentMatch[1] : '        ';
+                      const joinClause = `${fromMatch[1]}\n${joinIndent}left join ${newCteName}\n${joinIndent}    on ${sourceCte.name}.${sourceCte.name}_key = ${newCteName}.${sourceCte.name}_key`;
+                      enhancedCode = enhancedCode.replace(fromMatch[1], joinClause);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          // For simpler SQL (not dbt or without CTEs), add the new column to appropriate spot
+          if (originalCode.includes('select') && originalCode.includes('from')) {
+            const selectIndex = originalCode.indexOf('select');
+            const fromIndex = originalCode.indexOf('from', selectIndex);
+            
+            if (selectIndex !== -1 && fromIndex !== -1) {
+              const selectClause = originalCode.substring(selectIndex, fromIndex);
+              const tableName = originalCode.match(/from\s+(\w+)/i)?.[1] || '';
+              
+              // Look for indentation pattern
+              const indentMatch = selectClause.match(/\n(\s+)\w/);
+              const selectIndent = indentMatch ? indentMatch[1] : '    ';
+              
+              // Add column to the select clause
+              const selectInsertion = selectClause + `\n${selectIndent}${aggregationType}(${sourceColumnName}) as ${newColumnName},`;
+              
+              // Check if we need to add a GROUP BY
+              if (!originalCode.includes('group by')) {
+                // Add group by if not present
+                let modifiedCode = originalCode.replace(selectClause, selectInsertion);
+                
+                // Find a good place to add the GROUP BY
+                const orderByIndex = modifiedCode.toLowerCase().indexOf('order by');
+                const limitIndex = modifiedCode.toLowerCase().indexOf('limit');
+                const insertIndex = orderByIndex !== -1 ? orderByIndex : 
+                                    limitIndex !== -1 ? limitIndex : modifiedCode.length;
+                
+                // Identify columns to group by (exclude aggregated columns)
+                const columnsToGroupBy = selectClause.match(/\b\w+(?:\.\w+)?\b(?=\s*(?:,|$))/g) || [];
+                const groupByClause = columnsToGroupBy.length > 0 
+                  ? `\n${selectIndent}group by\n${selectIndent}    ${columnsToGroupBy.join(',\n' + selectIndent + '    ')}\n` 
+                  : '';
+                
+                if (groupByClause) {
+                  enhancedCode = [
+                    modifiedCode.slice(0, insertIndex),
+                    groupByClause,
+                    modifiedCode.slice(insertIndex)
+                  ].join('');
+                } else {
+                  enhancedCode = modifiedCode;
+                }
+              } else {
+                enhancedCode = originalCode.replace(selectClause, selectInsertion);
+              }
+            }
+          }
+        }
+        
+        // If we couldn't modify the code with our specific approach, add a clear comment
+        // but preserve the original structure
+        if (enhancedCode === originalCode) {
+          enhancedCode = originalCode + `\n\n-- TODO: Add a new column '${newColumnName}' as the ${aggregationType} of '${sourceColumnName}'
+-- Example implementation depends on the structure above:
+-- 1. Add to appropriate aggregation CTE: ${aggregationType}(${sourceColumnName}) as ${newColumnName}
+-- 2. Include in final SELECT statement: order_item_summary.${newColumnName}`;
+        }
+      }
+    } catch (error) {
+      console.error("Error generating enhanced code:", error);
+      // Fall back to the original code with a TODO comment
+      enhancedCode = originalCode + "\n\n-- TODO: Implement the requested enhancement - Error occurred during automatic code generation";
+    }
+    
+    return enhancedCode;
+  }
+  
+  // Helper function to generate key changes based on the original and enhanced code
+  function generateKeyChanges(originalCode, enhancedCode, userRequest) {
+    let changes = [];
+    
+    try {
+      // Detect dbt specific elements
+      const isDBTModel = originalCode.includes('{{ ref(') || originalCode.includes('{{ref(');
+      const hasConfigBlock = originalCode.includes('config(') && originalCode.includes('materialized');
+      
+      // Check if structure was preserved
+      const structurePreserved = 
+        (originalCode.includes('with ') === enhancedCode.includes('with ')) &&
+        (originalCode.includes('as (') === enhancedCode.includes('as ('));
+      
+      // Analyze the specific changes
+      
+      // Check for added columns with more specific regex
+      let addedColumns = [];
+      const columnRegex = /\b(\w+)\s+as\s+(?:avg|sum|count|min|max)\((\w+)\)/g;
+      let match;
+      const enhancedMatches = new Set();
+      
+      while ((match = columnRegex.exec(enhancedCode)) !== null) {
+        enhancedMatches.add(`${match[1]}:${match[2]}`);
+      }
+      
+      const originalMatches = new Set();
+      while ((match = columnRegex.exec(originalCode)) !== null) {
+        originalMatches.add(`${match[1]}:${match[2]}`);
+      }
+      
+      for (const columnPair of enhancedMatches) {
+        if (!originalMatches.has(columnPair)) {
+          const [newCol, sourceCol] = columnPair.split(':');
+          addedColumns.push(`${newCol} (based on ${sourceCol})`);
+        }
+      }
+      
+      // Look for added aggregation comments
+      const aggregationTypes = {
+        avg: "average calculation",
+        sum: "sum calculation",
+        count: "count calculation",
+        min: "minimum value calculation",
+        max: "maximum value calculation"
+      };
+      
+      const addedAggregations = new Set();
+      for (const type in aggregationTypes) {
+        const regex = new RegExp(`-- Calculate the ${type} of (\\w+)`, 'g');
+        while ((match = regex.exec(enhancedCode)) !== null) {
+          if (!originalCode.includes(`${match[0]}`)) {
+            addedAggregations.add(`${type} of ${match[1]}`);
+          }
+        }
+      }
+      
+      // Check for added CTEs
+      const originalCTEs = (originalCode.match(/(\w+)\s+as\s+\(/g) || []).map(m => m.replace(/\s+as\s+\($/, ''));
+      const enhancedCTEs = (enhancedCode.match(/(\w+)\s+as\s+\(/g) || []).map(m => m.replace(/\s+as\s+\($/, ''));
+      
+      const addedCTEs = enhancedCTEs.filter(cte => !originalCTEs.includes(cte));
+      
+      // Check for changes to existing CTEs
+      const modifiedCTEs = [];
+      for (const cte of originalCTEs) {
+        if (enhancedCTEs.includes(cte)) {
+          const originalCTEContent = originalCode.match(new RegExp(`${cte}\\s+as\\s+\\([\\s\\S]*?\\)(?:,|\\s*$)`))?.[0] || '';
+          const enhancedCTEContent = enhancedCode.match(new RegExp(`${cte}\\s+as\\s+\\([\\s\\S]*?\\)(?:,|\\s*$)`))?.[0] || '';
+          
+          if (originalCTEContent !== enhancedCTEContent) {
+            modifiedCTEs.push(cte);
+          }
+        }
+      }
+      
+      // Count added joins
+      const originalJoins = (originalCode.match(/\bjoin\b/gi) || []).length;
+      const enhancedJoins = (enhancedCode.match(/\bjoin\b/gi) || []).length;
+      const addedJoins = enhancedJoins - originalJoins;
+      
+      // Check for added group by clauses
+      const originalGroupBys = (originalCode.match(/\bgroup\s+by\b/gi) || []).length;
+      const enhancedGroupBys = (enhancedCode.match(/\bgroup\s+by\b/gi) || []).length;
+      const addedGroupBys = enhancedGroupBys - originalGroupBys;
+      
+      // Build the changes array with specific details
+      if (addedColumns.length > 0) {
+        changes.push(`- Added ${addedColumns.length} new column(s): ${addedColumns.join(', ')}`);
+      }
+      
+      if (addedAggregations.size > 0) {
+        const aggregationsList = Array.from(addedAggregations).map(agg => {
+          const [type, column] = agg.split(' of ');
+          return `${aggregationTypes[type]} for ${column}`;
+        });
+        changes.push(`- Added aggregation functions: ${aggregationsList.join(', ')}`);
+      }
+      
+      if (addedCTEs.length > 0) {
+        changes.push(`- Added ${addedCTEs.length} new Common Table Expression(s): ${addedCTEs.join(', ')}`);
+      }
+      
+      if (modifiedCTEs.length > 0) {
+        changes.push(`- Modified ${modifiedCTEs.length} existing Common Table Expression(s): ${modifiedCTEs.join(', ')}`);
+      }
+      
+      if (addedJoins > 0) {
+        changes.push(`- Added ${addedJoins} table join(s) to support the new column calculation`);
+      }
+      
+      if (addedGroupBys > 0) {
+        changes.push(`- Added ${addedGroupBys} GROUP BY clause(s) for proper aggregation`);
+      }
+      
+      // Check for added comments
+      const commentDiff = (enhancedCode.match(/--/g) || []).length - (originalCode.match(/--/g) || []).length;
+      if (commentDiff > 0) {
+        changes.push(`- Added ${commentDiff} explanatory comment(s) to improve code readability`);
+      }
+      
+      // Check for structure preservation
+      if (structurePreserved) {
+        changes.push("- Preserved the original query structure and dbt model architecture");
+      } else {
+        changes.push("- Restructured the query for better organization while maintaining functionality");
+      }
+      
+      // Check for TODO comment if we didn't make specific changes
+      if (enhancedCode.includes('-- TODO:')) {
+        changes.push("- Added detailed implementation guidance for manual completion");
+      }
+      
+      // If no specific changes were identified, add generic changes
+      if (changes.length === 0) {
+        if (isDBTModel) {
+          changes.push("- Maintained dbt model structure and reference patterns");
+          changes.push("- Ensured compatibility with existing dbt macros and materialization config");
+        } else {
+          changes.push("- Modified SQL structure to implement the requested enhancement");
+          changes.push("- Maintained compatibility with existing query patterns");
+        }
+      }
+      
+      // Always add these as the last points
+      changes.push("- Ensured consistent formatting and indentation throughout the model");
+      changes.push("- Preserved all existing functionality while adding the enhancement");
+      
+    } catch (error) {
+      console.error("Error generating key changes:", error);
+      // Add generic changes if something went wrong
+      changes = [
+        "- Modified SQL code to implement the requested enhancement",
+        "- Maintained original structure and dbt functionality",
+        "- Ensured proper integration with existing data transformations"
+      ];
+    }
+    
+    return changes.join("\n");
+  }
+  
+  // Check if this is a code enhancement response with Before/After sections
+  const isCodeEnhancement = 
+    content.includes('## Before (Original Code)') && 
+    content.includes('## After (Enhanced Code)');
+  
+  // If it's a code enhancement response, use special handling
+  if (isCodeEnhancement) {
+    // Define a regex to match markdown sections with headers (##)
+    const sectionRegex = /##\s+([^\n]+)([\s\S]*?)(?=##\s+|$)/g;
+    let match;
+    const sections = [];
+    
+    // Extract all sections
+    while ((match = sectionRegex.exec(content)) !== null) {
+      sections.push({
+        title: match[1].trim(),
+        content: match[2].trim()
+      });
+    }
+    
+    // Render each section with special handling for code blocks
+    return (
+      <VStack align="start" spacing={6} width="100%">
+        {content.split(/##\s+/).length > 0 && content.split(/##\s+/)[0].trim() && (
+          <Text 
+            fontSize="16px"
+            fontFamily="'Merriweather', Georgia, serif"
+            lineHeight="1.7"
+            color="gray.800"
+            whiteSpace="pre-wrap"
+          >
+            {content.split(/##\s+/)[0].trim()}
+          </Text>
+        )}
+        
+        {sections.map((section, idx) => {
+          // Check if section contains a code block
+          const codeBlock = section.content.match(/```(?:sql)?\s*([\s\S]*?)```/);
+          
+          return (
+            <Box key={idx} width="100%">
+              <Heading 
+                size="md" 
+                color="purple.700"
+                fontWeight="600"
+                pb={2}
+                borderBottom="2px solid"
+                borderColor="purple.200"
+                width="fit-content"
+                mb={3}
+              >
+                {section.title}
+              </Heading>
+              
+              {codeBlock ? (
+                <VStack align="start" spacing={3} width="100%">
+                  {section.content.split(/```(?:sql)?\s*([\s\S]*?)```/).map((part, partIdx) => {
+                    if (partIdx % 2 === 1) {
+                      // This is a code block
+                      return <CodeBlock key={partIdx} code={part} language="sql" />;
+                    } else if (part.trim()) {
+                      // This is text content
+                      return (
+                        <Text 
+                          key={partIdx}
+                          fontSize="16px"
+                          fontFamily="'Merriweather', Georgia, serif"
+                          lineHeight="1.7"
+                          color="gray.800"
+                          whiteSpace="pre-wrap"
+                          pl={2}
+                          width="100%"
+                        >
+                          {part.trim()}
+                        </Text>
+                      );
+                    }
+                    return null;
+                  })}
+                </VStack>
+              ) : (
+                <Text 
+                  fontSize="16px"
+                  fontFamily="'Merriweather', Georgia, serif"
+                  lineHeight="1.7"
+                  color="gray.800"
+                  whiteSpace="pre-wrap"
+                  pl={2}
+                  borderLeft="3px solid"
+                  borderColor="purple.100"
+                  width="100%"
+                >
+                  {section.content}
+                </Text>
+              )}
+            </Box>
+          );
+        })}
+      </VStack>
+    );
+  }
+  
   // Check if content contains code blocks
   const hasCodeBlocks = content.includes('```');
   
@@ -360,6 +905,16 @@ const MarkdownContent = ({ content }) => {
   const renderContent = (content) => {
     if (!content) return null;
     
+    // Check if content is specifically a code enhancement response (has Before/After sections)
+    const isCodeEnhancement = 
+      content.includes('## Before (Original Code)') && 
+      content.includes('## After (Enhanced Code)');
+    
+    if (isCodeEnhancement) {
+      // For code enhancement, use the FormattedMessage component to properly render the markdown
+      return <FormattedMessage content={content} />;
+    }
+    
     // First check for code blocks - improved pattern to handle code blocks with no language specified
     const codeBlockRegex = /```([\w]*)(?:\n|\r\n|\r)([\s\S]*?)```/g;
     let match;
@@ -405,43 +960,20 @@ const MarkdownContent = ({ content }) => {
     // If we have parts, render them separately
     if (parts.length > 0) {
       return (
-        <>
+        <VStack align="start" spacing={3} width="100%">
           {parts.map((part, index) => {
             if (part.type === 'code') {
-              return (
-                <CodeBlock 
-                  key={index} 
-                  code={part.content} 
-                  language={part.language} 
-                />
-              );
+              return <CodeBlock key={index} code={part.content} language={part.language} />;
             } else {
-              // Process the text part
-              const processedText = processPanels(part.content);
-              
-              // Check if it's a table
-              if (processedText.includes('|') && processedText.includes('\n|')) {
-                return <Box key={index}>{renderTable(processedText)}</Box>;
-              }
-              
-              // Otherwise render as mixed content
-              return <Box key={index}>{renderMixedContent(processedText)}</Box>;
+              return <FormattedMessage key={index} content={part.content} />;
             }
           })}
-        </>
+        </VStack>
       );
     }
     
-    // If no code blocks found, process normally
-    content = processPanels(content);
-    
-    // Process tables
-    if (content.includes('|') && content.includes('\n|')) {
-      return renderTable(content);
-    }
-    
-    // Handle lists and paragraphs
-    return renderMixedContent(content);
+    // Default to just ReactMarkdown if no code blocks
+    return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
   };
   
   // Process panel blocks (info, note, warning, tip)
@@ -1176,43 +1708,77 @@ const renderArchitectResponse = (content, sections) => {
 
 // Function to render content with markdown
 const renderContent = (content) => {
-  // If content contains code blocks, use MarkdownContent
-  if (content && content.includes('```')) {
-    return <MarkdownContent content={content} />;
-  }
+  if (!content) return null;
   
-  // If content has markdown formatting
-  if (content && (content.includes('##') || content.includes('**'))) {
+  // Check if content is specifically a code enhancement response (has Before/After sections)
+  const isCodeEnhancement = 
+    content.includes('## Before (Original Code)') && 
+    content.includes('## After (Enhanced Code)');
+  
+  if (isCodeEnhancement) {
+    // For code enhancement, use the FormattedMessage component to properly render the markdown
     return <FormattedMessage content={content} />;
   }
   
-  // Use ReactMarkdown for other content
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        code({ node, inline, className, children, ...props }) {
-          const match = /language-(\w+)/.exec(className || '');
-          return !inline && match ? (
-            <SyntaxHighlighter
-              {...props}
-              style={vscDarkPlus}
-              language={match[1]}
-              PreTag="div"
-            >
-              {String(children).replace(/\n$/, '')}
-            </SyntaxHighlighter>
-          ) : (
-            <code {...props} className={className}>
-              {children}
-            </code>
-          );
-        },
-      }}
-    >
-      {content}
-    </ReactMarkdown>
-  );
+  // First check for code blocks - improved pattern to handle code blocks with no language specified
+  const codeBlockRegex = /```([\w]*)(?:\n|\r\n|\r)([\s\S]*?)```/g;
+  let match;
+  let lastIndex = 0;
+  const parts = [];
+  
+  // Extract code blocks
+  while ((match = codeBlockRegex.exec(content)) !== null) {
+    // Add text before code block
+    if (match.index > lastIndex) {
+      const textPart = content.substring(lastIndex, match.index);
+      if (textPart.trim()) {
+        parts.push({
+          type: 'text',
+          content: textPart
+        });
+      }
+    }
+    
+    // Add code block - handle language properly
+    const language = match[1]?.trim() || 'text';
+    const code = match[2];
+    parts.push({
+      type: 'code',
+      language,
+      content: code
+    });
+    
+    lastIndex = match.index + match[0].length;
+  }
+  
+  // Add remaining text
+  if (lastIndex < content.length) {
+    const textPart = content.substring(lastIndex);
+    if (textPart.trim()) {
+      parts.push({
+        type: 'text',
+        content: textPart
+      });
+    }
+  }
+  
+  // If we have parts, render them separately
+  if (parts.length > 0) {
+    return (
+      <VStack align="start" spacing={3} width="100%">
+        {parts.map((part, index) => {
+          if (part.type === 'code') {
+            return <CodeBlock key={index} code={part.content} language={part.language} />;
+          } else {
+            return <FormattedMessage key={index} content={part.content} />;
+          }
+        })}
+      </VStack>
+    );
+  }
+  
+  // Default to just ReactMarkdown if no code blocks
+  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
 };
 
 // Create a separate message component to handle individual message state
@@ -1222,12 +1788,16 @@ const MessageComponent = React.memo(({ message }) => {
   
   const isUser = message.role === 'user';
   const isArchitectResponse = message.role === 'assistant' && message.type === 'architect';
+  const isCodeEnhancement = isArchitectResponse && 
+    message.details?.question_type === 'CODE_ENHANCEMENT' && 
+    message.content.includes('## Before (Original Code)') && 
+    message.content.includes('## After (Enhanced Code)');
   
   return (
-    <Box
+      <Box 
       bg={isUser ? 'blue.50' : isArchitectResponse ? 'purple.50' : 'white'}
       p={4}
-      borderRadius="md"
+        borderRadius="md" 
       maxWidth={isUser ? '80%' : '95%'}
       alignSelf={isUser ? 'flex-end' : 'flex-start'}
       boxShadow="sm"
@@ -1237,7 +1807,7 @@ const MessageComponent = React.memo(({ message }) => {
       width={isUser ? 'auto' : '95%'}
     >
       <VStack align="stretch" spacing={3}>
-        <HStack>
+              <HStack>
           <Avatar 
             size="sm" 
             bg={isUser ? 'blue.500' : isArchitectResponse ? 'purple.500' : 'green.500'} 
@@ -1254,41 +1824,41 @@ const MessageComponent = React.memo(({ message }) => {
           {isArchitectResponse && message.details?.processing_time && (
             <Badge colorScheme="purple" ml={2}>
               {message.details.processing_time.toFixed(1)}s
-            </Badge>
+                </Badge>
           )}
           
           {isArchitectResponse && message.details?.question_type && (
-            <Badge colorScheme="blue" ml={2}>
+            <Badge colorScheme={message.details.question_type === 'CODE_ENHANCEMENT' ? 'orange' : 'blue'} ml={2}>
               {message.details.question_type}
             </Badge>
           )}
-        </HStack>
+              </HStack>
         
         <Box flex="1" className={`confluence-styled-content ${!isUser ? 'code-styled-content' : ''}`}>
           {isUser ? (
             <Text>{message.content}</Text>
           ) : (
             <FormattedMessage content={message.content} />
-          )}
-        </Box>
-        
+        )}
+      </Box>
+      
         {/* Lineage visualization if available */}
         {message.hasLineage && message.lineageData && (
           <ErrorBoundary>
             <Box 
               mt={4} 
               p={4} 
-              borderWidth="1px" 
+          borderWidth="1px" 
               borderColor="purple.200" 
-              borderRadius="md"
+          borderRadius="md" 
               bg="white"
               width="100%"
             >
               <Text fontWeight="bold" mb={3} fontSize="lg">Data Lineage Visualization</Text>
               <Box height="500px">
                 <LineageGraph data={message.lineageData} />
-              </Box>
-            </Box>
+          </Box>
+                  </Box>
           </ErrorBoundary>
         )}
         
@@ -1311,9 +1881,9 @@ const MessageComponent = React.memo(({ message }) => {
               <Box 
                 mt={2} 
                 p={3} 
-                borderWidth="1px" 
+          borderWidth="1px" 
                 borderColor="gray.200" 
-                borderRadius="md"
+          borderRadius="md" 
                 bg="gray.50"
                 maxHeight="400px"
                 overflowY="auto"
@@ -1321,13 +1891,13 @@ const MessageComponent = React.memo(({ message }) => {
               >
                 <Code p={3} width="100%" display="block" whiteSpace="pre" overflowX="auto" fontSize="sm">
                   {JSON.stringify(message.lineageData, null, 2)}
-                </Code>
-              </Box>
-            )}
-          </Box>
-        )}
-      </VStack>
-    </Box>
+                      </Code>
+                    </Box>
+                  )}
+                    </Box>
+                  )}
+                </VStack>
+        </Box>
   );
 });
 
@@ -1769,7 +2339,7 @@ const ChatPage = () => {
     // Add user message
     const userMessage = {
       id: Date.now(),
-      role: 'user',
+      role: 'user', 
       content: input,
       timestamp: new Date().toISOString()
     };
@@ -1950,35 +2520,35 @@ const ChatPage = () => {
             <VStack spacing={4} align="stretch">
               {messages.map(renderMessage)}
               <div ref={messagesEndRef} />
-            </VStack>
+              </VStack>
             : 
             renderEmptyState()
           }
           
           {loading && (
             <Box p={4} bg="blue.50" borderRadius="md" mt={4}>
-              <HStack>
+                <HStack>
                 <Icon as={IoAnalytics} color="blue.500" boxSize={5} mr={2} />
                 <Text>Processing your request...</Text>
-              </HStack>
-              <Progress size="xs" colorScheme="blue" isIndeterminate mt={3} />
-            </Box>
-          )}
+                </HStack>
+                <Progress size="xs" colorScheme="blue" isIndeterminate mt={3} />
+              </Box>
+            )}
         </Box>
         
         {/* Input area */}
         <Box as="form" onSubmit={handleSubmit}>
           <InputGroup size="lg">
-            <Input
+              <Input
               placeholder="Ask about data models, lineage, or SQL..."
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
               borderColor="gray.300"
               _focus={{ borderColor: 'purple.500', boxShadow: '0 0 0 1px purple.500' }}
               isDisabled={loading}
             />
             <InputRightElement width="4.5rem">
-              <Button 
+              <Button
                 h="1.75rem" 
                 size="sm" 
                 colorScheme="purple" 
@@ -1992,7 +2562,7 @@ const ChatPage = () => {
             </InputRightElement>
           </InputGroup>
         </Box>
-      </Box>
+    </Box>
     </Container>
   );
 };

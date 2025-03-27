@@ -1899,6 +1899,36 @@ export const LineageGraph = ({ data }) => {
                           key={column.id}
                           label={
                             <Box minWidth="220px"> {/* Ensure tooltip has minimum width for better readability */}
+                              {/* Add Column Details Section */}
+                              <Text fontWeight="bold" mb={2} borderBottom="1px solid" borderColor="gray.200" pb={1}>
+                                Column Details
+                              </Text>
+                              <VStack align="start" spacing={2} mb={3}>
+                                <Box width="100%" p={2} bg="blue.50" borderRadius="md">
+                                  <Text fontSize="sm" fontWeight="semibold">{column.name}</Text>
+                                  
+                                  <HStack mt={1} spacing={2}>
+                                    <Tag size="sm" colorScheme={column.type === 'primary_key' ? 'purple' : column.type === 'foreign_key' ? 'blue' : 'gray'}>
+                                      <TagLabel fontSize="xs">{column.type || 'regular'}</TagLabel>
+                                    </Tag>
+                                    <Tag size="sm" colorScheme="teal">
+                                      <TagLabel fontSize="xs">{column.dataType}</TagLabel>
+                                    </Tag>
+                                  </HStack>
+                                  
+                                  {column.description && (
+                                    <Text fontSize="xs" color="gray.600" mt={2}>
+                                      {column.description}
+                                    </Text>
+                                  )}
+                                  {!column.description && (
+                                    <Text fontSize="xs" color="gray.500" mt={2} fontStyle="italic">
+                                      No description available
+                                    </Text>
+                                  )}
+                                </Box>
+                              </VStack>
+                              
                               <Text fontWeight="bold" mb={2} borderBottom="1px solid" borderColor="gray.200" pb={1}>
                                 Column Relationships
                               </Text>
