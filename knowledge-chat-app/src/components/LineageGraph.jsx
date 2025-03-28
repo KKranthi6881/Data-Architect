@@ -34,10 +34,22 @@ import {
   ListItem,
   Grid,
   GridItem,
+  Modal,
+  ModalOverlay,
+  ModalContent,
+  ModalHeader,
+  ModalFooter,
+  ModalBody,
+  ModalCloseButton,
+  Slider,
+  SliderTrack,
+  SliderFilledTrack,
+  SliderThumb,
 } from '@chakra-ui/react';
-import { IoChevronUp, IoChevronDown, IoArrowRedo, IoArrowForward, IoArrowUp, IoArrowBack, IoArrowDown, IoSearch, IoMenu, IoList, IoExpand, IoContract } from 'react-icons/io5';
+import { IoChevronUp, IoChevronDown, IoArrowRedo, IoArrowForward, IoArrowUp, IoArrowBack, IoArrowDown, IoSearch, IoMenu, IoList, IoExpand, IoContract, IoResize } from 'react-icons/io5';
 import { MdKeyboardArrowDown, MdKeyboardArrowRight } from 'react-icons/md';
 import { TbArrowsRightLeft, TbArrowsHorizontal, TbArrowsVertical, TbZoomIn, TbZoomOut, TbArrowBack, TbArrowsMaximize, TbTable, TbMapPin, TbMaximize, TbMinimize } from 'react-icons/tb';
+import { FiArrowLeft, FiArrowRight } from 'react-icons/fi';
 
 export const LineageGraph = ({ data }) => {
   // Add error boundary state
@@ -48,6 +60,10 @@ export const LineageGraph = ({ data }) => {
   const [isPanningMode, setIsPanningMode] = useState(false);
   const [isMouseDown, setIsMouseDown] = useState(false);
   const [lastMousePosition, setLastMousePosition] = useState({ x: 0, y: 0 });
+  
+  // Add state for slider values
+  const [horizontalSliderValue, setHorizontalSliderValue] = useState(0);
+  const [verticalSliderValue, setVerticalSliderValue] = useState(0);
   
   // Add console logging to debug incoming data
   useEffect(() => {
@@ -807,15 +823,55 @@ export const LineageGraph = ({ data }) => {
       const midX = (startX + endX) / 2;
       const midY = (startY + endY) / 2;
       
-      // Check if any columns in this connection are active
-      const hasActiveRelation = links.some(linkInfo => 
-        activeColumnLink === linkInfo.link.source || activeColumnLink === linkInfo.link.target
-      );
+      // Improved active connection detection:
+      // Check if any columns in this connection are in the active column's network
+      let connectionStatus = "default";
       
-      // Use neutral color by default, highlighted when active
-      const connectionColor = hasActiveRelation 
-        ? modernColors.connection.active 
-        : modernColors.connection.default;
+      if (activeColumnLink) {
+        // Check if this connection is directly related to active column
+        const isDirectRelation = links.some(linkInfo => 
+          linkInfo.link.source === activeColumnLink || 
+          linkInfo.link.target === activeColumnLink
+        );
+        
+        // If direct relation found, mark it as active
+        if (isDirectRelation) {
+          connectionStatus = "active";
+        } else if (connectedColumnsInfo && connectedColumnsInfo.connected) {
+          // Check if any connection in this group involves a column that's connected to our active column
+          const hasIndirectRelation = links.some(linkInfo => 
+            connectedColumnsInfo.connected.has(linkInfo.link.source) || 
+            connectedColumnsInfo.connected.has(linkInfo.link.target)
+          );
+          
+          if (hasIndirectRelation) {
+            connectionStatus = "related";
+          }
+        }
+      }
+      
+      // Apply styling based on connection status
+      let connectionColor, opacity, strokeWidth, strokeDasharray;
+      
+      switch (connectionStatus) {
+        case "active":
+          connectionColor = modernColors.connection.active;
+          opacity = 1;
+          strokeWidth = 2;
+          strokeDasharray = "none";
+          break;
+        case "related":
+          connectionColor = "#3182CE"; // Blue
+          opacity = 0.7;
+          strokeWidth = 1.5;
+          strokeDasharray = "4,4";
+          break;
+        default:
+          connectionColor = modernColors.connection.default;
+          opacity = activeColumnLink ? 0.2 : 0.6; // Dim non-related connections when a column is active
+          strokeWidth = 1;
+          strokeDasharray = "4,4";
+      }
       
       // Determine arrow direction based on layout and model positions
       let arrowPath;
@@ -836,24 +892,23 @@ export const LineageGraph = ({ data }) => {
             d={mainPath}
             fill="none"
             stroke={connectionColor}
-            strokeWidth={hasActiveRelation ? 1.5 : 1}
-            opacity={hasActiveRelation ? 0.9 : 0.6}
-            strokeDasharray="4,4"
+            strokeWidth={strokeWidth}
+            opacity={opacity}
+            strokeDasharray={strokeDasharray}
             style={{ 
               transition: "all 0.2s ease",
-              filter: hasActiveRelation ? 'drop-shadow(0 1px 2px rgba(0,0,0,0.1))' : 'none' 
+              filter: connectionStatus !== "default" ? 'drop-shadow(0 1px 2px rgba(0,0,0,0.1))' : 'none' 
             }}
           />
           
           {/* Arrow head */}
           <g transform={`translate(${endX}, ${endY})`}>
-            <path 
+            <path
               d={arrowPath}
-              stroke={connectionColor}
-              strokeWidth={hasActiveRelation ? 1.5 : 1}
-              strokeLinecap="round"
-              strokeLinejoin="round"
               fill="none"
+              stroke={connectionColor}
+              strokeWidth={strokeWidth}
+              opacity={opacity}
               style={{ transition: "all 0.2s ease" }}
             />
           </g>
@@ -866,7 +921,7 @@ export const LineageGraph = ({ data }) => {
               r={10} 
               fill="white" 
               stroke={connectionColor} 
-              strokeWidth={hasActiveRelation ? 1 : 0.5}
+              strokeWidth={strokeWidth}
               filter="drop-shadow(0 1px 1px rgba(0,0,0,0.05))"
               style={{ transition: "all 0.2s ease" }}
             />
@@ -876,7 +931,7 @@ export const LineageGraph = ({ data }) => {
               textAnchor="middle"
               fontSize="10px"
               fontWeight="500"
-              fill={hasActiveRelation ? modernColors.connection.active : modernColors.connection.text}
+              fill={connectionStatus !== "default" ? connectionColor : modernColors.connection.text}
               style={{ transition: "all 0.2s ease" }}
             >
               {links.length}
@@ -1106,24 +1161,33 @@ export const LineageGraph = ({ data }) => {
   // Add a function to highlight connected columns
   const getConnectedColumns = (columnId) => {
     if (!columnId || !graphData.column_lineage) {
-      return new Set();
+      return { 
+        connected: new Set(),
+        sources: new Set(),
+        targets: new Set()
+      };
     }
     
     const connected = new Set();
+    const sources = new Set();
+    const targets = new Set();
+    
     graphData.column_lineage.forEach(link => {
       if (link.source === columnId) {
         connected.add(link.target);
+        targets.add(link.target);
       }
       if (link.target === columnId) {
         connected.add(link.source);
+        sources.add(link.source);
       }
     });
     
-    return connected;
+    return { connected, sources, targets };
   };
 
   // Calculate the connected columns when activeColumnLink changes
-  const connectedColumns = useMemo(() => {
+  const connectedColumnsInfo = useMemo(() => {
     return getConnectedColumns(activeColumnLink);
   }, [activeColumnLink, graphData.column_lineage]);
 
@@ -1138,6 +1202,21 @@ export const LineageGraph = ({ data }) => {
     }
     
     const relationships = [];
+    const currentColumn = graphData.columns.find(c => c.id === columnId);
+    const currentModel = currentColumn ? graphData.models.find(m => m.id === currentColumn.modelId) : null;
+    
+    // If no current column/model info, provide appropriate feedback
+    if (!currentColumn || !currentModel) {
+      return {
+        relationships: [],
+        hasRelationships: false,
+        message: "Could not find column information"
+      };
+    }
+    
+    // Count incoming and outgoing relationships
+    let incomingCount = 0;
+    let outgoingCount = 0;
     
     graphData.column_lineage.forEach(link => {
       if (link.source === columnId || link.target === columnId) {
@@ -1148,22 +1227,63 @@ export const LineageGraph = ({ data }) => {
         if (otherColumn) {
           const otherModel = graphData.models.find(m => m.id === otherColumn.modelId);
           if (otherModel) {
+            // Count the relationship direction
+            if (isSource) {
+              outgoingCount++;
+            } else {
+              incomingCount++;
+            }
+            
             relationships.push({
               direction: isSource ? 'target' : 'source',
               columnName: otherColumn.name,
               modelName: otherModel.name,
+              modelType: otherModel.type || "unknown",
               columnId: otherColumnId,
-              dataType: otherColumn.dataType || 'unknown'
+              dataType: otherColumn.dataType || 'unknown',
+              description: otherColumn.description || `No description available for ${otherColumn.name}`
             });
           }
         }
       }
     });
     
+    // Create a helpful message even when no relationships are found
+    let message = null;
+    if (relationships.length === 0) {
+      // Check if the model has any relationships at all
+      const modelHasAnyRelationships = graphData.column_lineage.some(link => {
+        const sourceColumn = graphData.columns.find(c => c.id === link.source);
+        const targetColumn = graphData.columns.find(c => c.id === link.target);
+        return (sourceColumn && sourceColumn.modelId === currentModel.id) || 
+               (targetColumn && targetColumn.modelId === currentModel.id);
+      });
+      
+      if (modelHasAnyRelationships) {
+        message = `No relationships found for this specific column (${currentColumn.name})`;
+      } else {
+        message = `No column relationships defined for this model (${currentModel.name})`;
+      }
+    } else {
+      // Provide information about the relationship count and direction
+      message = `Found ${relationships.length} relationship${relationships.length !== 1 ? 's' : ''}`;
+      if (incomingCount > 0 && outgoingCount > 0) {
+        message += ` (${incomingCount} incoming, ${outgoingCount} outgoing)`;
+      } else if (incomingCount > 0) {
+        message += ` (${incomingCount} incoming)`;
+      } else if (outgoingCount > 0) {
+        message += ` (${outgoingCount} outgoing)`;
+      }
+    }
+    
     return {
       relationships,
       hasRelationships: relationships.length > 0,
-      message: relationships.length > 0 ? null : "No relationships found for this column"
+      incomingCount,
+      outgoingCount,
+      currentColumn,
+      currentModel,
+      message
     };
   };
   
@@ -1246,27 +1366,30 @@ export const LineageGraph = ({ data }) => {
       
       // Determine spacing based on number of models
       const totalModels = graphData.models.length;
-      let baseSpacing;
       
-      // Dynamic spacing based on model count
+      // Dynamic spacing based on model count - INCREASED spacing values
+      let baseSpacing;
       if (totalModels > 12) {
-        baseSpacing = 300; // Smaller spacing for many models
+        baseSpacing = 400; // Increased from 300 to 400
       } else if (totalModels > 8) {
-        baseSpacing = 350; // Slightly larger spacing for medium number of models
+        baseSpacing = 500; // Increased from 350 to 500
       } else if (totalModels > 4) {
-        baseSpacing = 450; // Moderate spacing for a few models
+        baseSpacing = 600; // Increased from 450 to 600
       } else {
-        baseSpacing = 500; // Large spacing for very few models
+        baseSpacing = 700; // Increased from 500 to 700
       }
       
-      // Reduce horizontal spacing if we have many models per level
-      const horizontalSpacing = maxNodesInLevel > 4 ? baseSpacing * 0.8 : baseSpacing;
+      // Reduce horizontal spacing if we have many models per level, but increase minimum
+      const horizontalSpacing = maxNodesInLevel > 4 ? Math.max(baseSpacing * 0.8, 350) : baseSpacing;
       
       // Calculate the layout for each model
       const newLayout = {};
       
       // Define fixed height for collapsed model boxes - make smaller
-      const collapsedHeight = 60; // Reduced from 80px to 60px for better compact view
+      const collapsedHeight = 60; 
+      
+      // Check if manual layout exists
+      const hasManualPositions = Object.keys(layout).length > 0;
       
       Object.entries(levels).forEach(([level, nodeIds]) => {
         const levelNum = parseInt(level);
@@ -1275,35 +1398,116 @@ export const LineageGraph = ({ data }) => {
           const model = graphData.models.find(m => m.id === nodeId);
           if (!model) return;
           
-          // Calculate position based on layout mode
-          let x, y;
-          
-          if (layoutMode === 'horizontal') {
-            // In horizontal layout, levels go left to right, nodes are stacked vertically in each level
-            x = levelNum * horizontalSpacing;
-            y = idx * baseSpacing;
+          // If model already has position in layout and we're maintaining manual positions,
+          // preserve its x/y coordinates
+          if (hasManualPositions && layout[nodeId] && dragModelId !== null) {
+            const existingLayout = layout[nodeId];
+            
+            // Count columns for this model to calculate expanded height
+            const modelColumns = graphData.columns?.filter(col => col.modelId === nodeId) || [];
+            const columnCount = modelColumns.length;
+            
+            // Calculate expanded height based on number of columns with more space
+            const expandedHeight = collapsedHeight + Math.min(Math.max(columnCount * 40, 100), 400);
+            
+            newLayout[nodeId] = {
+              x: existingLayout.x,
+              y: existingLayout.y,
+              width: 280,
+              height: expandedModels[nodeId] ? expandedHeight : collapsedHeight
+            };
           } else {
-            // In vertical layout, levels go top to bottom, nodes are arranged horizontally in each level
-            x = idx * horizontalSpacing;
-            y = levelNum * baseSpacing;
+            // Calculate position based on layout mode
+            let x, y;
+            
+            if (layoutMode === 'horizontal') {
+              // In horizontal layout, levels go left to right, nodes are stacked vertically in each level
+              x = levelNum * horizontalSpacing;
+              // Add more vertical spacing for better separation
+              y = idx * (baseSpacing + (maxNodesInLevel > 4 ? 100 : 200));
+            } else {
+              // In vertical layout, levels go top to bottom, nodes are arranged horizontally in each level
+              // Add more horizontal spacing for better separation
+              x = idx * (horizontalSpacing + (maxNodesInLevel > 4 ? 100 : 200));
+              y = levelNum * baseSpacing;
+            }
+            
+            // Count columns for this model to calculate expanded height
+            const modelColumns = graphData.columns?.filter(col => col.modelId === nodeId) || [];
+            const columnCount = modelColumns.length;
+            
+            // Calculate expanded height based on number of columns with more space
+            const expandedHeight = collapsedHeight + Math.min(Math.max(columnCount * 40, 100), 400);
+            
+            newLayout[nodeId] = {
+              x,
+              y,
+              width: 280,
+              height: expandedModels[nodeId] ? expandedHeight : collapsedHeight
+            };
           }
-          
-          // Count columns for this model to calculate expanded height
-          const modelColumns = graphData.columns?.filter(col => col.modelId === nodeId) || [];
-          const columnCount = modelColumns.length;
-          
-          // Calculate expanded height based on number of columns with more space
-          // Base height plus height per column with more padding
-          const expandedHeight = collapsedHeight + Math.min(Math.max(columnCount * 40, 100), 400);
-          
-          newLayout[nodeId] = {
-            x,
-            y,
-            width: 280, // Increase width a bit for better readability
-            height: expandedModels[nodeId] ? expandedHeight : collapsedHeight
-          };
         });
       });
+      
+      // Check for overlaps and resolve them
+      const resolveOverlaps = () => {
+        let hasOverlap = true;
+        const padding = 20; // Minimum space between boxes
+        const iterations = 0;
+        const maxIterations = 5;
+        
+        while (hasOverlap && iterations < maxIterations) {
+          hasOverlap = false;
+          
+          // Compare each pair of models
+          const modelIds = Object.keys(newLayout);
+          for (let i = 0; i < modelIds.length; i++) {
+            const modelA = newLayout[modelIds[i]];
+            
+            for (let j = i + 1; j < modelIds.length; j++) {
+              const modelB = newLayout[modelIds[j]];
+              
+              // Check if they overlap
+              const overlapX = 
+                modelA.x < modelB.x + modelB.width + padding && 
+                modelA.x + modelA.width + padding > modelB.x;
+                
+              const overlapY = 
+                modelA.y < modelB.y + modelB.height + padding && 
+                modelA.y + modelA.height + padding > modelB.y;
+                
+              if (overlapX && overlapY) {
+                hasOverlap = true;
+                
+                // Determine the smallest movement needed to resolve overlap
+                const moveRight = modelB.x + modelB.width + padding - modelA.x;
+                const moveLeft = modelA.x + modelA.width + padding - modelB.x;
+                const moveDown = modelB.y + modelB.height + padding - modelA.y;
+                const moveUp = modelA.y + modelA.height + padding - modelB.y;
+                
+                // Find the smallest required move
+                const minMove = Math.min(moveRight, moveLeft, moveDown, moveUp);
+                
+                // Apply the movement to model B
+                if (minMove === moveRight) {
+                  newLayout[modelIds[i]].x += moveRight;
+                } else if (minMove === moveLeft) {
+                  newLayout[modelIds[j]].x += moveLeft;
+                } else if (minMove === moveDown) {
+                  newLayout[modelIds[i]].y += moveDown;
+                } else if (minMove === moveUp) {
+                  newLayout[modelIds[j]].y += moveUp;
+                }
+              }
+            }
+          }
+        }
+      };
+      
+      // Run the overlap resolution if we have generated a new layout
+      if (!hasManualPositions || dragModelId === null) {
+        resolveOverlaps();
+      }
       
       return newLayout;
     };
@@ -1320,7 +1524,7 @@ export const LineageGraph = ({ data }) => {
       setHasError(true);
       setErrorMessage(`Layout error: ${err.message}`);
     }
-  }, [graphData.models, graphData.edges, graphData.columns, layoutMode, expandedModels]);
+  }, [graphData.models, graphData.edges, graphData.columns, layoutMode, expandedModels, layout, dragModelId]);
   
   // Add a function to manually initialize layout with fixed positions
   const initializeManualLayout = () => {
@@ -1405,662 +1609,759 @@ export const LineageGraph = ({ data }) => {
     onClose();
   };
   
-  // Add fullscreen state
+  // Add fullscreen state with modal
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // Save previous state to restore when exiting fullscreen
+  const [previousState, setPreviousState] = useState(null);
   
-  // Toggle fullscreen mode
+  // Toggle fullscreen mode using modal
   const toggleFullscreen = () => {
-    setIsFullscreen(!isFullscreen);
+    if (!isFullscreen) {
+      // Save current state before going fullscreen
+      setPreviousState({
+        scale,
+        offset: { ...offset },
+        expandedModels: { ...expandedModels }
+      });
+      
+      // When entering fullscreen, automatically fit to view after a short delay
+      setIsFullscreen(true);
+      setTimeout(() => {
+        fitToView();
+      }, 300);
+    } else {
+      // Restore previous state when exiting fullscreen
+      setIsFullscreen(false);
+      if (previousState) {
+        setTimeout(() => {
+          setScale(previousState.scale);
+          setOffset(previousState.offset);
+        }, 100);
+      }
+    }
   };
   
-  // Now provide the actual render method
-  return (
-    <Box 
-      ref={containerRef}
-      position="relative"
-      width="100%"
-      height={isFullscreen ? "calc(100vh - 100px)" : "400px"}
-      borderWidth="1px"
-      borderRadius="md"
-      borderColor="gray.200"
-      overflow="hidden"
-      boxShadow="sm"
-      bg="white"
-      onMouseDown={isPanningMode ? handleGraphPanning : undefined}
-      style={{
-        cursor: isPanningMode 
-          ? (isMouseDown ? "grabbing" : "grab") 
-          : "default",
-        transition: "height 0.3s ease"
-      }}
-    >
-      {/* Table navigation drawer */}
-      <Drawer isOpen={isOpen} placement="left" onClose={onClose} size="xs">
-        <DrawerOverlay />
-        <DrawerContent>
-          <DrawerCloseButton />
-          <DrawerHeader borderBottomWidth="1px">
-            Navigate to Table
-          </DrawerHeader>
-
-          <DrawerBody>
-            <InputGroup mb={4} mt={2}>
-              <InputLeftElement pointerEvents="none">
-                <Icon as={IoSearch} color="gray.400" />
-              </InputLeftElement>
-              <Input 
-                placeholder="Search tables..." 
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                variant="filled"
-              />
-            </InputGroup>
-            
-            {Object.keys(filteredModels).length === 0 ? (
-              <Text color="gray.500" textAlign="center" mt={8}>
-                No tables match your search
-              </Text>
-            ) : (
-              Object.entries(filteredModels).map(([type, models]) => (
-                <Box key={type} mb={4}>
-                  <HStack mb={2}>
-                    <Box w={2} h={2} borderRadius="full" bg={getModelTypeColor(type)} />
-                    <Text fontWeight="bold" fontSize="sm" textTransform="capitalize">
-                      {type}
-                    </Text>
-                    <Text fontSize="xs" color="gray.500">({models.length})</Text>
-                  </HStack>
-                  
-                  <List spacing={1}>
-                    {models.map(model => (
-                      <ListItem 
-                        key={model.id}
-                        p={2}
-                        borderRadius="md"
-                        cursor="pointer"
-                        _hover={{ bg: "gray.100" }}
-                        onClick={() => navigateToModel(model.id)}
-                      >
-                        <HStack>
-                          <Icon as={TbTable} color="gray.500" />
-                          <Box>
-                            <Text fontSize="sm" fontWeight="medium">{model.name}</Text>
-                            {model.path && (
-                              <Text fontSize="xs" color="gray.500" noOfLines={1}>
-                                {model.path}
-                              </Text>
-                            )}
-                          </Box>
-                        </HStack>
-                      </ListItem>
-                    ))}
-                  </List>
-                </Box>
-              ))
-            )}
-          </DrawerBody>
-        </DrawerContent>
-      </Drawer>
-      
-      {/* Navigation button */}
+  // Function to handle horizontal scroll
+  const handleHorizontalScroll = (val) => {
+    // Calculate the delta from the previous value
+    const delta = val - horizontalSliderValue;
+    // Update the offset based on the delta
+    setOffset(prev => ({ 
+      x: prev.x + delta, 
+      y: prev.y 
+    }));
+    // Store the new value
+    setHorizontalSliderValue(val);
+  };
+  
+  // Function to handle vertical scroll
+  const handleVerticalScroll = (val) => {
+    // Calculate the delta from the previous value
+    const delta = val - verticalSliderValue;
+    // Update the offset based on the delta
+    setOffset(prev => ({ 
+      x: prev.x, 
+      y: prev.y + delta 
+    }));
+    // Store the new value
+    setVerticalSliderValue(val);
+  };
+  
+  // Function to reset sliders after they're released
+  const resetSliders = () => {
+    setHorizontalSliderValue(0);
+    setVerticalSliderValue(0);
+  };
+  
+  // Render the LineageGraph content
+  const renderLineageContent = () => {
+    return (
       <Box 
-        position="absolute" 
-        top={4} 
-        left={4} 
-        zIndex={10}
-      >
-        <Button
-          leftIcon={<Icon as={IoList} />}
-          colorScheme="blue"
-          variant="solid"
-          size="sm"
-          onClick={onOpen}
-          boxShadow="md"
-        >
-          Tables
-        </Button>
-        
-        {/* Updated Controls Container - Moved under Tables button */}
-        <Box 
-          mt={3}
-          bg="white"
-          p={2}
-          borderRadius="md"
-          boxShadow="md"
-          display="flex"
-          flexDirection="column"
-          gap={2}
-          width="auto"
-        >
-          {/* Compact Controls Row 1 - Main actions */}
-          <HStack spacing={1}>
-            <Tooltip label="Auto Fit" placement="bottom">
-              <IconButton
-                size="sm"
-                icon={<Icon as={TbArrowsMaximize} />}
-                onClick={fitToView}
-                aria-label="Auto Fit"
-                colorScheme="blue"
-              />
-            </Tooltip>
-            
-            <Tooltip label="Toggle Fullscreen" placement="bottom">
-              <IconButton
-                size="sm"
-                icon={<Icon as={isFullscreen ? TbMinimize : TbMaximize} />}
-                onClick={toggleFullscreen}
-                aria-label="Toggle Fullscreen"
-                colorScheme="purple"
-              />
-            </Tooltip>
-            
-            <Tooltip label="Toggle Layout Direction" placement="bottom">
-              <IconButton
-                size="sm"
-                icon={<Icon as={layoutMode === 'horizontal' ? TbArrowsHorizontal : TbArrowsVertical} />}
-                onClick={toggleLayoutMode}
-                aria-label="Toggle Layout"
-                variant="outline"
-              />
-            </Tooltip>
-            
-            <Tooltip label="Reset View" placement="bottom">
-              <IconButton
-                size="sm"
-                icon={<Icon as={TbArrowBack} />}
-                onClick={resetLayout}
-                aria-label="Reset View"
-                variant="outline"
-              />
-            </Tooltip>
-          </HStack>
-          
-          {/* Compact Controls Row 2 - Zoom and Navigation */}
-          <HStack spacing={1}>
-            <Tooltip label="Zoom Out" placement="bottom">
-              <IconButton
-                size="sm"
-                icon={<Icon as={TbZoomOut} />}
-                onClick={() => setScale(prev => Math.max(prev / 1.2, 0.5))}
-                aria-label="Zoom Out"
-                variant="outline"
-              />
-            </Tooltip>
-            
-            <Text fontSize="xs" fontWeight="medium" width="40px" textAlign="center">
-              {Math.round(scale * 100)}%
-            </Text>
-            
-            <Tooltip label="Zoom In" placement="bottom">
-              <IconButton
-                size="sm"
-                icon={<Icon as={TbZoomIn} />}
-                onClick={() => setScale(prev => Math.min(prev * 1.2, 2))}
-                aria-label="Zoom In"
-                variant="outline"
-              />
-            </Tooltip>
-            
-            <Tooltip label={isPanningMode ? "Exit Pan Mode" : "Pan Mode"} placement="bottom">
-              <IconButton
-                size="sm"
-                icon={<Icon as={TbMapPin} />}
-                onClick={togglePanningMode}
-                aria-label="Pan Mode"
-                colorScheme={isPanningMode ? "purple" : "gray"}
-                variant={isPanningMode ? "solid" : "outline"}
-              />
-            </Tooltip>
-          </HStack>
-          
-          {/* Compact Controls Row 3 - Directional Navigation */}
-          <HStack spacing={1} justifyContent="center">
-            <Tooltip label="Move Left" placement="bottom">
-              <IconButton
-                size="xs"
-                icon={<Icon as={IoArrowBack} />}
-                onClick={() => setOffset(prev => ({ x: prev.x + 50, y: prev.y }))}
-                aria-label="Move Left"
-                variant="ghost"
-              />
-            </Tooltip>
-            
-            <VStack spacing={1}>
-              <Tooltip label="Move Up" placement="top">
-                <IconButton
-                  size="xs"
-                  icon={<Icon as={IoArrowUp} />}
-                  onClick={() => setOffset(prev => ({ x: prev.x, y: prev.y + 50 }))}
-                  aria-label="Move Up"
-                  variant="ghost"
-                />
-              </Tooltip>
-              
-              <Tooltip label="Center" placement="bottom">
-                <IconButton
-                  size="xs"
-                  icon={<Icon as={TbArrowsMaximize} />}
-                  onClick={fitToView}
-                  aria-label="Center"
-                  variant="ghost"
-                />
-              </Tooltip>
-              
-              <Tooltip label="Move Down" placement="bottom">
-                <IconButton
-                  size="xs"
-                  icon={<Icon as={IoArrowDown} />}
-                  onClick={() => setOffset(prev => ({ x: prev.x, y: prev.y - 50 }))}
-                  aria-label="Move Down"
-                  variant="ghost"
-                />
-              </Tooltip>
-            </VStack>
-            
-            <Tooltip label="Move Right" placement="bottom">
-              <IconButton
-                size="xs"
-                icon={<Icon as={IoArrowForward} />}
-                onClick={() => setOffset(prev => ({ x: prev.x - 50, y: prev.y }))}
-                aria-label="Move Right"
-                variant="ghost"
-              />
-            </Tooltip>
-          </HStack>
-        </Box>
-      </Box>
-
-      {/* Error message if needed */}
-      {hasError && (
-        <Box 
-          position="absolute" 
-          top="50%" 
-          left="50%" 
-          transform="translate(-50%, -50%)"
-          textAlign="center"
-          p={4}
-          bg="red.50"
-          borderRadius="md"
-          borderWidth="1px"
-          borderColor="red.200"
-          maxWidth="80%"
-        >
-          <Heading size="md" color="red.500" mb={2}>Error</Heading>
-          <Text>{errorMessage || "There was an error rendering the lineage graph."}</Text>
-        </Box>
-      )}
-      
-      {/* Loading state */}
-      {!hasError && Object.keys(layout).length === 0 && (
-        <Box 
-          position="absolute" 
-          top="50%" 
-          left="50%" 
-          transform="translate(-50%, -50%)"
-          textAlign="center"
-          p={4}
-        >
-          <Heading size="md" mb={2}>Initializing Graph</Heading>
-          <Text color="gray.600" mb={4}>Calculating layout for data models...</Text>
-          <Text fontSize="sm" color="gray.500" mb={4}>
-            Models: {graphData.models?.length || 0}, 
-            Edges: {graphData.edges?.length || 0}
-          </Text>
-          
-          <Button 
-            size="sm"
-            colorScheme="blue"
-            onClick={initializeManualLayout}
-          >
-            Initialize Manually
-          </Button>
-        </Box>
-      )}
-      
-      {/* Viewport Transformation Container */}
-      <Box 
-        position="absolute"
-        top={0}
-        left={0}
+        ref={containerRef}
+        position="relative"
         width="100%"
-        height="100%"
+        height={isFullscreen ? "calc(100vh - 120px)" : "400px"}
+        borderWidth={isFullscreen ? "0" : "1px"}
+        borderRadius={isFullscreen ? "0" : "md"}
+        borderColor="gray.200"
+        overflow="hidden"
+        boxShadow={isFullscreen ? "none" : "sm"}
+        bg="white"
+        onMouseDown={isPanningMode ? handleGraphPanning : undefined}
         style={{
-          transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
-          transformOrigin: '0 0',
-          transition: isDragging ? 'none' : 'transform 0.3s ease'
+          cursor: isPanningMode 
+            ? (isMouseDown ? "grabbing" : "grab") 
+            : "default",
+          transition: "height 0.3s ease"
         }}
       >
-        {/* SVG Container for edges and column connections */}
-        <svg 
-          width="100%" 
-          height="100%" 
-          style={{ 
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            pointerEvents: 'none',
-            overflow: 'visible'
+        {/* Table navigation drawer */}
+        <Drawer isOpen={isOpen} placement="left" onClose={onClose} size="xs">
+          <DrawerOverlay />
+          <DrawerContent>
+            <DrawerCloseButton />
+            <DrawerHeader borderBottomWidth="1px">
+              Navigate to Table
+            </DrawerHeader>
+
+            <DrawerBody>
+              <InputGroup mb={4} mt={2}>
+                <InputLeftElement pointerEvents="none">
+                  <Icon as={IoSearch} color="gray.400" />
+                </InputLeftElement>
+                <Input 
+                  placeholder="Search tables..." 
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  variant="filled"
+                />
+              </InputGroup>
+              
+              {Object.keys(filteredModels).length === 0 ? (
+                <Text color="gray.500" textAlign="center" mt={8}>
+                  No matching tables found
+                </Text>
+              ) : (
+                <VStack align="stretch" spacing={2}>
+                  {Object.entries(filteredModels).map(([type, models]) => (
+                    <Box key={type}>
+                      <Text 
+                        fontWeight="bold" 
+                        fontSize="sm" 
+                        color="gray.600" 
+                        mb={1}
+                        textTransform="uppercase"
+                      >
+                        {type}
+                      </Text>
+                      <List spacing={1}>
+                        {models.map(model => (
+                          <ListItem 
+                            key={model.id}
+                            p={2}
+                            borderRadius="md"
+                            _hover={{ bg: "gray.100" }}
+                            cursor="pointer"
+                            onClick={() => navigateToModel(model.id)}
+                          >
+                            <HStack>
+                              <Box 
+                                w={2} 
+                                h={2} 
+                                borderRadius="full" 
+                                bg={getModelTypeColor(model.type)}
+                              />
+                              <Text fontSize="sm">{model.name}</Text>
+                            </HStack>
+                          </ListItem>
+                        ))}
+                      </List>
+                    </Box>
+                  ))}
+                </VStack>
+              )}
+            </DrawerBody>
+          </DrawerContent>
+        </Drawer>
+        
+        {/* Controls container - Top Left */}
+        <Box 
+          position="absolute"
+          top={4}
+          left={4}
+          zIndex={10}
+          display="flex"
+          flexDirection="column"
+          alignItems="flex-start"
+        >
+          <Button
+            leftIcon={<Icon as={IoList} />}
+            colorScheme="blue"
+            variant="solid"
+            size="sm"
+            onClick={onOpen}
+            boxShadow="md"
+          >
+            Tables
+          </Button>
+          
+          {/* Updated Controls Container - Moved under Tables button */}
+          <Box 
+            mt={3}
+            bg="white"
+            p={2}
+            borderRadius="md"
+            boxShadow="md"
+            display="flex"
+            flexDirection="column"
+            gap={2}
+            width="auto"
+          >
+            {/* Compact Controls Row 1 - Main actions */}
+            <HStack spacing={1}>
+              <Tooltip label="Auto Fit" placement="bottom">
+                <IconButton
+                  size="sm"
+                  icon={<Icon as={TbArrowsMaximize} />}
+                  onClick={fitToView}
+                  aria-label="Auto Fit"
+                  colorScheme="blue"
+                />
+              </Tooltip>
+              
+              <Tooltip label={isFullscreen ? "Exit Fullscreen" : "Fullscreen"} placement="bottom">
+                <IconButton
+                  size="sm"
+                  icon={<Icon as={isFullscreen ? TbMinimize : TbMaximize} />}
+                  onClick={toggleFullscreen}
+                  aria-label="Toggle Fullscreen"
+                  colorScheme="purple"
+                />
+              </Tooltip>
+              
+              <Tooltip label="Toggle Layout Direction" placement="bottom">
+                <IconButton
+                  size="sm"
+                  icon={<Icon as={layoutMode === 'horizontal' ? TbArrowsHorizontal : TbArrowsVertical} />}
+                  onClick={toggleLayoutMode}
+                  aria-label="Toggle Layout"
+                  variant="outline"
+                />
+              </Tooltip>
+              
+              <Tooltip label="Reset View" placement="bottom">
+                <IconButton
+                  size="sm"
+                  icon={<Icon as={TbArrowBack} />}
+                  onClick={resetLayout}
+                  aria-label="Reset View"
+                  variant="outline"
+                />
+              </Tooltip>
+            </HStack>
+            
+            {/* Compact Controls Row 2 - Zoom and Navigation */}
+            <HStack spacing={1}>
+              <Tooltip label="Zoom Out" placement="bottom">
+                <IconButton
+                  size="sm"
+                  icon={<Icon as={TbZoomOut} />}
+                  onClick={() => setScale(prev => Math.max(prev / 1.2, 0.5))}
+                  aria-label="Zoom Out"
+                  variant="outline"
+                />
+              </Tooltip>
+              
+              <Text fontSize="xs" fontWeight="medium" width="40px" textAlign="center">
+                {Math.round(scale * 100)}%
+              </Text>
+              
+              <Tooltip label="Zoom In" placement="bottom">
+                <IconButton
+                  size="sm"
+                  icon={<Icon as={TbZoomIn} />}
+                  onClick={() => setScale(prev => Math.min(prev * 1.2, 2))}
+                  aria-label="Zoom In"
+                  variant="outline"
+                />
+              </Tooltip>
+              
+              <Tooltip label={isPanningMode ? "Exit Pan Mode" : "Pan Mode"} placement="bottom">
+                <IconButton
+                  size="sm"
+                  icon={<Icon as={TbMapPin} />}
+                  onClick={togglePanningMode}
+                  aria-label="Pan Mode"
+                  colorScheme={isPanningMode ? "purple" : "gray"}
+                  variant={isPanningMode ? "solid" : "outline"}
+                />
+              </Tooltip>
+            </HStack>
+            
+            {/* Scrolling Controls - Replacing the arrow buttons */}
+            <Box px={1} pt={2} width="100%">
+              {/* Horizontal scroll label */}
+              <Flex justify="space-between" mb={1}>
+                <Text fontSize="xs" fontWeight="medium" color="gray.600">Horizontal Scroll</Text>
+                <Tooltip label="Center View" placement="top">
+                  <IconButton
+                    size="xs"
+                    icon={<Icon as={TbArrowsMaximize} />}
+                    onClick={fitToView}
+                    aria-label="Center View"
+                    variant="ghost"
+                  />
+                </Tooltip>
+              </Flex>
+
+              {/* Horizontal scroll slider */}
+              <Slider 
+                min={-100} 
+                max={100} 
+                step={5}
+                value={horizontalSliderValue}
+                onChange={handleHorizontalScroll}
+                onChangeEnd={resetSliders}
+                mb={3}
+                colorScheme="blue"
+              >
+                <SliderTrack bg="gray.100">
+                  <SliderFilledTrack />
+                </SliderTrack>
+                <SliderThumb boxSize={4}>
+                  <Box color="blue.500" as={IoResize} transform="rotate(90deg)" />
+                </SliderThumb>
+              </Slider>
+
+              {/* Vertical scroll label */}
+              <Text fontSize="xs" fontWeight="medium" color="gray.600" mb={1}>Vertical Scroll</Text>
+              
+              {/* Vertical scroll slider */}
+              <Slider 
+                min={-100} 
+                max={100} 
+                step={5}
+                value={verticalSliderValue}
+                onChange={handleVerticalScroll}
+                onChangeEnd={resetSliders}
+                colorScheme="blue"
+              >
+                <SliderTrack bg="gray.100">
+                  <SliderFilledTrack />
+                </SliderTrack>
+                <SliderThumb boxSize={4}>
+                  <Box color="blue.500" as={IoResize} />
+                </SliderThumb>
+              </Slider>
+            </Box>
+          </Box>
+        </Box>
+
+        {/* Error message if needed */}
+        {hasError && (
+          <Box 
+            position="absolute" 
+            top="50%" 
+            left="50%" 
+            transform="translate(-50%, -50%)"
+            textAlign="center"
+            p={4}
+            bg="red.50"
+            borderRadius="md"
+            borderWidth="1px"
+            borderColor="red.200"
+            maxWidth="80%"
+          >
+            <Heading size="md" color="red.500" mb={2}>Error</Heading>
+            <Text>{errorMessage || "There was an error rendering the lineage graph."}</Text>
+          </Box>
+        )}
+        
+        {/* Loading state */}
+        {!hasError && Object.keys(layout).length === 0 && (
+          <Box 
+            position="absolute" 
+            top="50%" 
+            left="50%" 
+            transform="translate(-50%, -50%)"
+            textAlign="center"
+            p={4}
+          >
+            <Heading size="md" mb={2}>Initializing Graph</Heading>
+            <Text color="gray.600" mb={4}>Calculating layout for data models...</Text>
+            <Text fontSize="sm" color="gray.500" mb={4}>
+              Models: {graphData.models?.length || 0}, 
+              Edges: {graphData.edges?.length || 0}
+            </Text>
+            
+            <Button 
+              onClick={initializeManualLayout}
+              colorScheme="blue"
+              size="sm"
+            >
+              Initialize Manually
+            </Button>
+          </Box>
+        )}
+        
+        {/* Go back to the previous rendering method for consistent coordinates */}
+        <Box 
+          position="absolute"
+          top={0}
+          left={0}
+          width="100%"
+          height="100%"
+          style={{
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+            transformOrigin: '0 0',
+            transition: isDragging ? 'none' : 'transform 0.2s ease'
           }}
         >
-          <g>{renderEdges()}</g>
-          <g>{renderColumnConnections()}</g>
-        </svg>
-        
-        {/* Models Container */}
-        <Box position="absolute" top={0} left={0} style={{ pointerEvents: 'auto' }}>
-          {graphData.models.map(model => {
-            const modelLayout = layout[model.id];
-            
-            if (!modelLayout) return null;
-            
-            const isExpanded = expandedModels[model.id];
-            const modelTypeColor = getModelTypeColor(model.type);
-            
-            // Get columns for this model
-            const modelColumns = graphData.columns?.filter(col => col.modelId === model.id) || [];
-            
-            return (
-              <Box
-                key={model.id}
-                position="absolute"
-                top={modelLayout.y}
-                left={modelLayout.x}
-                width={modelLayout.width}
-                height={modelLayout.height}
-                bg="white"
-                borderWidth="1px"
-                borderRadius="md"
-                borderColor={model.highlight ? "orange.400" : "gray.200"}
-                boxShadow={model.highlight ? "0 0 0 2px rgba(237, 137, 54, 0.4)" : "md"}
-                overflow="hidden"
-                transition="all 0.3s ease" 
-                _hover={{ 
-                  boxShadow: "lg",
-                  borderColor: "gray.300"
-                }}
-                onMouseEnter={() => setActiveModelId(model.id)}
-                onMouseLeave={() => setActiveModelId(null)}
-                style={{
-                  cursor: 'move'
-                }}
-                onMouseDown={(e) => handleDragStart(model.id, e)}
-              >
-                {/* Model Header - Clickable to expand/collapse */}
-                <Box 
-                  p={isExpanded ? 3 : 2} // Reduce padding for collapsed state
-                  borderBottomWidth={isExpanded ? "1px" : "0"}
-                  borderColor="gray.100"
+          {/* SVG Container for edges and column connections */}
+          <svg 
+            width="100%" 
+            height="100%" 
+            style={{ 
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              pointerEvents: 'none',
+              overflow: 'visible'
+            }}
+          >
+            <g>{renderEdges()}</g>
+            <g>{renderColumnConnections()}</g>
+          </svg>
+          
+          {/* Models Container - same coordinate system as arrows now */}
+          <Box position="relative" top={0} left={0} style={{ pointerEvents: 'auto' }}>
+            {graphData.models.map(model => {
+              const modelLayout = layout[model.id];
+              
+              if (!modelLayout) return null;
+              
+              const isExpanded = expandedModels[model.id];
+              const modelTypeColor = getModelTypeColor(model.type);
+              
+              // Get columns for this model
+              const modelColumns = graphData.columns?.filter(col => col.modelId === model.id) || [];
+              
+              return (
+                <Box
+                  key={model.id}
+                  position="absolute"
+                  top={modelLayout.y}
+                  left={modelLayout.x}
+                  width={modelLayout.width}
+                  height={modelLayout.height}
                   bg="white"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggleModelExpansion(model.id);
+                  borderWidth="1px"
+                  borderRadius="md"
+                  borderColor={model.highlight ? "orange.400" : "gray.200"}
+                  boxShadow={model.highlight ? "0 0 0 2px rgba(237, 137, 54, 0.4)" : "md"}
+                  overflow="hidden"
+                  transition="all 0.3s ease" 
+                  _hover={{ 
+                    boxShadow: "lg",
+                    borderColor: "gray.300"
                   }}
-                  cursor="pointer"
+                  onMouseEnter={() => setActiveModelId(model.id)}
+                  onMouseLeave={() => setActiveModelId(null)}
+                  style={{
+                    cursor: 'move'
+                  }}
+                  onMouseDown={(e) => handleDragStart(model.id, e)}
                 >
-                  <HStack justifyContent="space-between" mb={1}>
-                    <HStack>
-                      <Box 
-                        w={2} 
-                        h={2} 
-                        borderRadius="full" 
-                        bg={modelTypeColor} 
-                        mr={1}
+                  {/* Model Header - Clickable to expand/collapse */}
+                  <Box 
+                    p={isExpanded ? 3 : 2}
+                    borderBottomWidth={isExpanded ? "1px" : "0"}
+                    borderColor="gray.100"
+                    bg="white"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleModelExpansion(model.id);
+                    }}
+                    cursor="pointer"
+                  >
+                    <HStack justifyContent="space-between" mb={1}>
+                      <HStack>
+                        <Box 
+                          w={2} 
+                          h={2} 
+                          borderRadius="full" 
+                          bg={modelTypeColor} 
+                          mr={1}
+                        />
+                        {getModelTypeBadge(model.type)}
+                      </HStack>
+                      
+                      <Icon 
+                        as={isExpanded ? IoChevronUp : IoChevronDown} 
+                        color="gray.400"
+                        _hover={{ color: "gray.600" }}
                       />
-                      {getModelTypeBadge(model.type)}
                     </HStack>
                     
-                    <Icon 
-                      as={isExpanded ? IoChevronUp : IoChevronDown} 
-                      color="gray.400"
-                      _hover={{ color: "gray.600" }}
-                    />
-                  </HStack>
-                  
-                  <Text 
-                    fontWeight="semibold" 
-                    fontSize={isExpanded ? "md" : "sm"} // Smaller font when collapsed
-                    color="gray.800"
-                    noOfLines={1}
-                  >
-                    {model.name}
-                  </Text>
-                  
-                  <Text 
-                    fontSize="xs" 
-                    color="gray.500" 
-                    mt={0.5}
-                    noOfLines={1}
-                    display={isExpanded ? "block" : "none"} // Hide path when collapsed to save space
-                  >
-                    {model.path}
-                  </Text>
-                </Box>
-                
-                {/* Model Columns (if expanded) */}
-                {isExpanded && modelColumns.length > 0 && (
-                  <VStack 
-                    spacing={1} 
-                    p={2} 
-                    align="stretch" 
-                    maxH="350px" // Increased from 200px to 350px to show more columns
-                    overflowY="auto"
-                    bg="gray.50"
-                    css={{
-                      '&::-webkit-scrollbar': {
-                        width: '8px',
-                      },
-                      '&::-webkit-scrollbar-track': {
-                        width: '10px',
-                        background: 'rgba(0, 0, 0, 0.05)',
-                        borderRadius: '4px',
-                      },
-                      '&::-webkit-scrollbar-thumb': {
-                        background: 'rgba(0, 0, 0, 0.1)',
-                        borderRadius: '4px',
-                        '&:hover': {
-                          background: 'rgba(0, 0, 0, 0.2)',
-                        },
-                      },
-                    }}
-                    position="relative"
-                  >
-                    {/* Scroll indicator for many columns */}
-                    {modelColumns.length > 8 && (
-                      <Box 
-                        position="absolute" 
-                        bottom="5px" 
-                        right="5px" 
-                        zIndex={2}
-                        bg="white" 
-                        borderRadius="full" 
-                        boxShadow="md"
-                        p={1}
-                        opacity={0.8}
-                      >
-                        <Tooltip label={`${modelColumns.length} columns total`} placement="top">
-                          <Text fontSize="xs" fontWeight="bold" color="gray.500">
-                            {modelColumns.length}
-                          </Text>
-                        </Tooltip>
-                      </Box>
-                    )}
+                    <Text 
+                      fontWeight="semibold" 
+                      fontSize={isExpanded ? "md" : "sm"}
+                      color="gray.800"
+                      noOfLines={1}
+                    >
+                      {model.name}
+                    </Text>
                     
-                    {modelColumns.map(column => {
-                      const isActive = activeColumnLink === column.id;
-                      const isConnected = connectedColumns.has(column.id);
-                      const columnColor = getColumnTypeColor(column.type, isActive);
-                      const { icon, label } = getColumnTypeInfo(column.type);
+                    <Text 
+                      fontSize="xs" 
+                      color="gray.500" 
+                      mt={0.5}
+                      noOfLines={1}
+                      display={isExpanded ? "block" : "none"}
+                    >
+                      {model.path}
+                    </Text>
+                  </Box>
+                  
+                  {/* Model Columns (if expanded) */}
+                  {isExpanded && modelColumns.length > 0 && (
+                    <VStack 
+                      spacing={1} 
+                      p={2} 
+                      align="stretch" 
+                      maxH="350px"
+                      overflowY="auto"
+                      bg="gray.50"
+                      css={{
+                        '&::-webkit-scrollbar': {
+                          width: '8px',
+                        },
+                        '&::-webkit-scrollbar-track': {
+                          width: '10px',
+                          background: 'rgba(0, 0, 0, 0.05)',
+                          borderRadius: '4px',
+                        },
+                        '&::-webkit-scrollbar-thumb': {
+                          background: 'rgba(0, 0, 0, 0.1)',
+                          borderRadius: '4px',
+                          '&:hover': {
+                            background: 'rgba(0, 0, 0, 0.2)',
+                          },
+                        },
+                      }}
+                      position="relative"
+                    >
+                      {/* Scroll indicator for many columns */}
+                      {modelColumns.length > 8 && (
+                        <Box 
+                          position="absolute" 
+                          bottom="5px" 
+                          right="5px" 
+                          zIndex={2}
+                          bg="white" 
+                          borderRadius="full" 
+                          boxShadow="md"
+                          p={1}
+                          opacity={0.8}
+                        >
+                          <Tooltip label={`${modelColumns.length} columns total`} placement="top">
+                            <Text fontSize="xs" fontWeight="bold" color="gray.500">
+                              {modelColumns.length}
+                            </Text>
+                          </Tooltip>
+                        </Box>
+                      )}
                       
-                      // Get relationships for tooltip - use enhanced function
-                      const relationshipInfo = getColumnRelationshipInfo(column.id);
-                      
-                      return (
-                        <Tooltip
-                          key={column.id}
-                          label={
-                            <Box minWidth="220px"> {/* Ensure tooltip has minimum width for better readability */}
-                              {/* Add Column Details Section */}
-                              <Text fontWeight="bold" mb={2} borderBottom="1px solid" borderColor="gray.200" pb={1}>
-                                Column Details
-                              </Text>
-                              <VStack align="start" spacing={2} mb={3}>
-                                <Box width="100%" p={2} bg="blue.50" borderRadius="md">
-                                  <Text fontSize="sm" fontWeight="semibold">{column.name}</Text>
-                                  
-                                  <HStack mt={1} spacing={2}>
-                                    <Tag size="sm" colorScheme={column.type === 'primary_key' ? 'purple' : column.type === 'foreign_key' ? 'blue' : 'gray'}>
-                                      <TagLabel fontSize="xs">{column.type || 'regular'}</TagLabel>
-                                    </Tag>
-                                    <Tag size="sm" colorScheme="teal">
-                                      <TagLabel fontSize="xs">{column.dataType}</TagLabel>
-                                    </Tag>
-                                  </HStack>
-                                  
-                                  {column.description && (
-                                    <Text fontSize="xs" color="gray.600" mt={2}>
+                      {modelColumns.map(column => {
+                        const isActive = activeColumnLink === column.id;
+                        const isConnected = connectedColumnsInfo.connected && connectedColumnsInfo.connected.has(column.id);
+                        const isSource = connectedColumnsInfo.sources && connectedColumnsInfo.sources.has(column.id);
+                        const isTarget = connectedColumnsInfo.targets && connectedColumnsInfo.targets.has(column.id);
+                        
+                        let columnHighlightStatus = "default";
+                        if (isActive) columnHighlightStatus = "active";
+                        else if (isConnected) columnHighlightStatus = "connected";
+                        else if (activeColumnLink) columnHighlightStatus = "dimmed";
+                        
+                        const columnColor = getColumnTypeColor(column.type, isActive);
+                        const { icon, label } = getColumnTypeInfo(column.type);
+                        
+                        // Get relationships for tooltip - use enhanced function
+                        const relationshipInfo = getColumnRelationshipInfo(column.id);
+
+                        return (
+                          <Tooltip
+                            key={column.id}
+                            label={
+                              <Box p={2} minWidth="200px" maxWidth="300px">
+                                {column.description && (
+                                  <Box mb={2}>
+                                    <Text fontSize="xs" fontWeight="semibold" color="gray.600">
+                                      Description:
+                                    </Text>
+                                    <Text fontSize="xs" color="gray.700">
                                       {column.description}
                                     </Text>
-                                  )}
-                                  {!column.description && (
-                                    <Text fontSize="xs" color="gray.500" mt={2} fontStyle="italic">
-                                      No description available
+                                  </Box>
+                                )}
+                                
+                                <Box mb={2}>
+                                  <Text fontSize="xs" fontWeight="semibold" color="gray.600">
+                                    Type: 
+                                  </Text>
+                                  <HStack mt={1} spacing={2}>
+                                    <Tag size="sm" colorScheme="gray" variant="subtle">
+                                      <TagLabel fontSize="2xs">{column.dataType || "unknown"}</TagLabel>
+                                    </Tag>
+                                    <Tag size="sm" colorScheme="blue" variant="subtle">
+                                      <TagLabel fontSize="2xs">{label}</TagLabel>
+                                    </Tag>
+                                  </HStack>
+                                </Box>
+                                
+                                <Divider my={1} />
+                                
+                                <Box>
+                                  <Text fontSize="xs" fontWeight="semibold" color="gray.600">
+                                    Relationships:
+                                  </Text>
+                                  {relationshipInfo.relationships && relationshipInfo.relationships.length > 0 ? (
+                                    <VStack align="start" spacing={1} mt={1}>
+                                      {relationshipInfo.relationships.map((rel, idx) => (
+                                        <HStack key={idx} spacing={1}>
+                                          <Icon 
+                                            as={rel.direction === 'source' ? FiArrowLeft : FiArrowRight} 
+                                            color={rel.direction === 'source' ? "green.500" : "orange.500"}
+                                            boxSize="12px"
+                                          />
+                                          <Text fontSize="xs">{rel.columnName}</Text>
+                                          <Text fontSize="xs" color="gray.500">({rel.modelName})</Text>
+                                        </HStack>
+                                      ))}
+                                    </VStack>
+                                  ) : (
+                                    <Text fontSize="xs" color="gray.500" mt={1}>
+                                      No relationships found for this column
                                     </Text>
                                   )}
                                 </Box>
-                              </VStack>
-                              
-                              <Text fontWeight="bold" mb={2} borderBottom="1px solid" borderColor="gray.200" pb={1}>
-                                Column Relationships
-                              </Text>
-                              {relationshipInfo.hasRelationships ? (
-                                <VStack align="start" spacing={2}>
-                                  {relationshipInfo.relationships.map((rel, idx) => (
-                                    <Box key={idx} p={1} bg="gray.50" borderRadius="md" width="100%">
-                                      <HStack spacing={1} mb={1}>
-                                        <Icon 
-                                          as={rel.direction === 'source' ? IoArrowBack : IoArrowForward} 
-                                          color={rel.direction === 'source' ? "blue.500" : "green.500"}
-                                          boxSize={4}
-                                        />
-                                        <Text fontSize="sm" fontWeight="semibold">
-                                          {rel.direction === 'source' ? 'Used by' : 'References'}:
-                                        </Text>
-                                      </HStack>
-                                      <Box pl={6}> {/* Indent relationship details */}
-                                        <Text fontSize="sm">
-                                          <Text as="span" fontWeight="semibold">{rel.columnName}</Text>
-                                        </Text>
-                                        <Text fontSize="xs" color="gray.600">
-                                          in model <Text as="span" fontStyle="italic">{rel.modelName}</Text>
-                                        </Text>
-                                        <HStack mt={1}>
-                                          <Tag size="sm" variant="subtle" colorScheme="gray">
-                                            <TagLabel fontSize="2xs">{rel.dataType}</TagLabel>
-                                          </Tag>
-                                        </HStack>
-                                      </Box>
-                                    </Box>
-                                  ))}
-                                </VStack>
-                              ) : (
-                                <VStack align="start" spacing={2}>
-                                  <Text fontSize="sm" color="gray.500">{relationshipInfo.message}</Text>
-                                  <Text fontSize="xs" color="blue.600">
-                                    Columns without relationships won't show lineage connections.
-                                  </Text>
-                                </VStack>
-                              )}
-                            </Box>
-                          }
-                          placement="right"
-                          openDelay={300}
-                          bg="white"
-                          color="gray.800"
-                          boxShadow="md"
-                          borderRadius="md"
-                          p={2}
-                          hasArrow
-                          gutter={12}
-                        >
-                          <HStack 
-                            p={1.5}
+                              </Box>
+                            }
+                            placement="right"
+                            openDelay={300}
+                            bg="white"
+                            color="gray.800"
+                            boxShadow="md"
                             borderRadius="md"
-                            bg={isActive || isConnected ? "orange.50" : "white"}
-                            borderWidth="1px"
-                            borderColor={isActive ? "orange.300" : isConnected ? "orange.200" : "gray.100"}
-                            _hover={{ 
-                              bg: "orange.50",
-                              borderColor: "orange.200"
-                            }}
-                            onMouseEnter={() => setActiveColumnLink(column.id)}
-                            onMouseLeave={() => setActiveColumnLink(null)}
-                            cursor="pointer"
-                            position="relative"
-                            transition="all 0.2s ease"
+                            p={2}
+                            hasArrow
+                            gutter={12}
                           >
-                            <Box 
-                              w={2} 
-                              h={2} 
-                              borderRadius="full" 
-                              bg={columnColor}
-                            />
-                            <Text 
-                              fontSize="xs" 
-                              fontWeight={isActive || isConnected ? "semibold" : "medium"}
-                              color="gray.800"
-                              flex="1"
-                              noOfLines={1}
+                            <HStack
+                              p={1}
+                              borderRadius="sm"
+                              bg={
+                                columnHighlightStatus === "active" ? "blue.50" :
+                                columnHighlightStatus === "connected" ? "gray.50" :
+                                "transparent"
+                              }
+                              cursor="pointer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveColumnLink(activeColumnLink === column.id ? null : column.id);
+                              }}
+                              _hover={{ bg: isActive ? "blue.50" : "gray.50" }}
+                              opacity={
+                                columnHighlightStatus === "dimmed" ? 0.5 : 1
+                              }
+                              transition="all 0.2s"
+                              position="relative"
+                              borderLeftWidth="2px"
+                              borderLeftColor={
+                                isActive ? "blue.500" :
+                                isSource ? "green.500" :
+                                isTarget ? "orange.500" :
+                                "transparent"
+                              }
                             >
-                              {column.name}
-                            </Text>
-                            
-                            {label && (
-                              <Tag size="sm" borderRadius="full" colorScheme={column.type === 'primary_key' ? 'purple' : column.type === 'foreign_key' ? 'blue' : 'gray'} variant="subtle">
-                                <TagLabel fontSize="2xs" fontWeight="bold">{label}</TagLabel>
-                              </Tag>
-                            )}
-                            
-                            <Tag size="sm" borderRadius="full" colorScheme="gray" variant="subtle">
-                              <TagLabel fontSize="2xs">{column.dataType}</TagLabel>
-                            </Tag>
-                            
-                            {relationshipInfo.hasRelationships && (
                               <Box 
-                                position="absolute"
-                                right="-2px"
-                                top="-2px"
-                                w={2}
-                                h={2}
-                                borderRadius="full"
-                                bg={isActive || isConnected ? "orange.400" : "blue.400"}
-                                animation={isActive || isConnected ? "pulse 1.5s infinite" : "none"}
+                                w={2} 
+                                h={2} 
+                                borderRadius="full" 
+                                bg={columnColor}
                               />
-                            )}
-                          </HStack>
-                        </Tooltip>
-                      );
-                    })}
-                  </VStack>
-                )}
-                
-                {/* Show a placeholder message if expanded but no columns */}
-                {isExpanded && modelColumns.length === 0 && (
-                  <Box 
-                    p={3}
-                    bg="gray.50"
-                    textAlign="center"
-                  >
-                    <Text fontSize="xs" color="gray.500">
-                      No columns available
-                    </Text>
-                  </Box>
-                )}
-              </Box>
-            );
-          })}
+                              <Text 
+                                fontSize="xs" 
+                                fontWeight={isActive || isConnected ? "semibold" : "medium"}
+                                color="gray.800"
+                                flex="1"
+                                noOfLines={1}
+                              >
+                                {column.name}
+                              </Text>
+                              
+                              {label && (
+                                <Tag size="sm" borderRadius="full" colorScheme={column.type === 'primary_key' ? 'purple' : column.type === 'foreign_key' ? 'blue' : 'gray'} variant="subtle">
+                                  <TagLabel fontSize="2xs" fontWeight="bold">{label}</TagLabel>
+                                </Tag>
+                              )}
+                              
+                              <Tag size="sm" borderRadius="full" colorScheme="gray" variant="subtle">
+                                <TagLabel fontSize="2xs">{column.dataType}</TagLabel>
+                              </Tag>
+                              
+                              {relationshipInfo.hasRelationships && (
+                                <Box 
+                                  position="absolute"
+                                  right="-2px"
+                                  top="-2px"
+                                  w={2}
+                                  h={2}
+                                  borderRadius="full"
+                                  bg={isActive || isConnected ? "orange.400" : "blue.400"}
+                                  animation={isActive || isConnected ? "pulse 1.5s infinite" : "none"}
+                                />
+                              )}
+                            </HStack>
+                          </Tooltip>
+                        );
+                      })}
+                    </VStack>
+                  )}
+                  
+                  {/* Show a placeholder message if expanded but no columns */}
+                  {isExpanded && modelColumns.length === 0 && (
+                    <Box 
+                      p={3}
+                      bg="gray.50"
+                      textAlign="center"
+                    >
+                      <Text fontSize="xs" color="gray.500">
+                        No columns available
+                      </Text>
+                    </Box>
+                  )}
+                </Box>
+              );
+            })}
+          </Box>
         </Box>
       </Box>
-    </Box>
-  );
+    );
+  };
+
+  // Now return either the modal or inline component based on fullscreen state
+  if (isFullscreen) {
+    return (
+      <Modal 
+        isOpen={isFullscreen} 
+        onClose={toggleFullscreen} 
+        size="full"
+        motionPreset="slideInBottom"
+      >
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>
+            <Flex justifyContent="space-between" alignItems="center">
+              <Text>Data Lineage Visualization</Text>
+              <IconButton
+                icon={<Icon as={TbMinimize} />}
+                onClick={toggleFullscreen}
+                aria-label="Exit Fullscreen"
+                colorScheme="purple"
+                size="sm"
+              />
+            </Flex>
+          </ModalHeader>
+          <ModalBody p={0}>
+            {renderLineageContent()}
+          </ModalBody>
+        </ModalContent>
+      </Modal>
+    );
+  }
+  
+  // Normal inline rendering
+  return renderLineageContent();
 };
 
